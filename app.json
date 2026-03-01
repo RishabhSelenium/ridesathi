@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "RideSathi",
+    "slug": "ridesathi-react",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#020617"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.ridesathi.app"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Allow RideSathi to use your location to auto-update your city."
+        }
+      ],
+      "expo-notifications"
+    ],
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
