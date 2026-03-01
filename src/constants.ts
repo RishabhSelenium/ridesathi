@@ -118,7 +118,7 @@ export const MOCK_RIDES: RidePost[] = [
     currentParticipants: ['u1', 'u2', 'me-123'],
     requests: ['u3'],
     city: 'Gurugram',
-    visibility: 'City',
+    visibility: ['City'],
     createdAt: new Date().toISOString()
   },
   {
@@ -140,7 +140,7 @@ export const MOCK_RIDES: RidePost[] = [
     currentParticipants: ['u2'],
     requests: [],
     city: 'Noida',
-    visibility: 'City',
+    visibility: ['City'],
     createdAt: new Date().toISOString()
   },
   {
@@ -162,7 +162,7 @@ export const MOCK_RIDES: RidePost[] = [
     currentParticipants: ['me-123', 'u1'],
     requests: [],
     city: 'New Delhi',
-    visibility: 'Friends',
+    visibility: ['Friends'],
     createdAt: new Date().toISOString()
   }
 ];

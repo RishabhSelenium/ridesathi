@@ -54,7 +54,20 @@ import {
   MOCK_RIDES,
   MOCK_USERS
 } from './src/constants';
-import { ChatMessage, Conversation, HelpPost, HelpReply, NewsArticle, Notification, RidePost, User } from './src/types';
+import { ChatMessage, Conversation, HelpPost, HelpReply, NewsArticle, Notification, RidePost, RideVisibility, User } from './src/types';
+import { signOutFirebase, subscribeToAuthState } from './src/firebase/auth';
+import { sendChatMessageToRealtime, subscribeChatMessages } from './src/firebase/chat';
+import { isFirebaseConfigured } from './src/firebase/client';
+import {
+  deleteRideInFirestore,
+  fetchHelpPostsFromFirestore,
+  fetchRidesFromFirestore,
+  fetchUsersFromFirestore,
+  upsertHelpPostInFirestore,
+  upsertRideInFirestore,
+  upsertUserInFirestore
+} from './src/firebase/firestore';
+import { triggerRideCancelledNotification, triggerRideCreatedNotification } from './src/firebase/functions';
 
 const STORAGE_KEYS = {
   theme: 'ridesathi.theme',
@@ -75,8 +88,30 @@ type RootStackParamList = {
 };
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
+const FIREBASE_ENABLED = isFirebaseConfigured();
 
 const uniqueStrings = (values: string[]) => Array.from(new Set(values));
+const RIDE_VISIBILITY_OPTIONS: RideVisibility[] = ['Nearby', 'City', 'Friends'];
+const isRideVisibility = (value: string): value is RideVisibility => RIDE_VISIBILITY_OPTIONS.includes(value as RideVisibility);
+
+const normalizeRideVisibility = (value: unknown): RideVisibility[] => {
+  if (Array.isArray(value)) {
+    const normalized = value.filter((item): item is RideVisibility => typeof item === 'string' && isRideVisibility(item));
+    return normalized.length > 0 ? Array.from(new Set<RideVisibility>(normalized)) : ['City'];
+  }
+
+  if (typeof value === 'string' && isRideVisibility(value)) {
+    return [value];
+  }
+
+  return ['City'];
+};
+
+const normalizeRides = (items: RidePost[]): RidePost[] =>
+  items.map((ride) => ({
+    ...ride,
+    visibility: normalizeRideVisibility(ride.visibility)
+  }));
 
 const safeParse = <T,>(value: string | null, fallback: T): T => {
   if (!value) return fallback;
@@ -183,11 +218,49 @@ const App = () => {
         setCurrentUser(nextCurrentUser);
         setUsers(safeParse<User[]>(savedUsers, MOCK_USERS));
         setNotifications(safeParse<Notification[]>(savedNotifications, MOCK_NOTIFICATIONS));
-        setRides(safeParse<RidePost[]>(savedRides, MOCK_RIDES));
+        setRides(normalizeRides(safeParse<RidePost[]>(savedRides, MOCK_RIDES)));
         setHelpPosts(safeParse<HelpPost[]>(savedHelpPosts, MOCK_HELP));
         setConversations(safeParse<Conversation[]>(savedConversations, MOCK_CONVERSATIONS));
         setNewsArticles(safeParse<NewsArticle[]>(savedNews, MOCK_NEWS));
         setLocationMode(safeParse<LocationMode>(savedLocationMode, 'auto'));
+
+        if (FIREBASE_ENABLED) {
+          try {
+            const [remoteUsers, remoteRides, remoteHelpPosts] = await Promise.all([
+              fetchUsersFromFirestore(),
+              fetchRidesFromFirestore(),
+              fetchHelpPostsFromFirestore()
+            ]);
+
+            if (!mounted) return;
+
+            if (remoteUsers.length > 0) {
+              const me = remoteUsers.find((user) => user.id === nextCurrentUser.id);
+              if (me) {
+                setCurrentUser((prev) => ({
+                  ...prev,
+                  ...me,
+                  friendRequests: {
+                    ...prev.friendRequests,
+                    ...me.friendRequests
+                  }
+                }));
+              }
+
+              setUsers(remoteUsers.filter((user) => user.id !== nextCurrentUser.id));
+            }
+
+            if (remoteRides.length > 0) {
+              setRides(normalizeRides(remoteRides));
+            }
+
+            if (remoteHelpPosts.length > 0) {
+              setHelpPosts(remoteHelpPosts);
+            }
+          } catch {
+            // ignore cloud load failures and keep local data
+          }
+        }
       } finally {
         if (mounted) {
           setHydrated(true);
@@ -203,6 +276,16 @@ const App = () => {
   }, []);
 
   useEffect(() => {
+    if (!FIREBASE_ENABLED) return;
+    const unsubscribe = subscribeToAuthState((user) => {
+      if (user) {
+        setIsLoggedIn(true);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
     if (!hydrated) return;
     saveToStorage(STORAGE_KEYS.theme, theme);
   }, [hydrated, theme]);
@@ -213,8 +296,20 @@ const App = () => {
   }, [hydrated, currentUser]);
 
   useEffect(() => {
+    if (!hydrated || !FIREBASE_ENABLED) return;
+    void upsertUserInFirestore(currentUser);
+  }, [hydrated, currentUser]);
+
+  useEffect(() => {
     if (!hydrated) return;
     saveToStorage(STORAGE_KEYS.users, users);
+  }, [hydrated, users]);
+
+  useEffect(() => {
+    if (!hydrated || !FIREBASE_ENABLED) return;
+    users.forEach((user) => {
+      void upsertUserInFirestore(user);
+    });
   }, [hydrated, users]);
 
   useEffect(() => {
@@ -279,6 +374,40 @@ const App = () => {
       setSelectedRideId(null);
     }
   }, [isRideDetailOpen, selectedRideId, selectedRide]);
+
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !activeConversation) return;
+    const conversationId = activeConversation.id;
+
+    return subscribeChatMessages(conversationId, (messages) => {
+      if (messages.length === 0) return;
+      const lastMessage = messages[messages.length - 1];
+
+      setConversations((prev) =>
+        prev.map((conversation) =>
+          conversation.id === conversationId
+            ? {
+                ...conversation,
+                messages,
+                lastMessage: lastMessage.text,
+                timestamp: lastMessage.timestamp
+              }
+            : conversation
+        )
+      );
+
+      setActiveConversation((prev) =>
+        prev && prev.id === conversationId
+          ? {
+              ...prev,
+              messages,
+              lastMessage: lastMessage.text,
+              timestamp: lastMessage.timestamp
+            }
+          : prev
+      );
+    });
+  }, [activeConversation?.id]);
 
   const resolveCityFromGeocode = (address: Location.LocationGeocodedAddress | undefined) =>
     address?.city ?? address?.district ?? address?.subregion ?? address?.region ?? null;
@@ -449,7 +578,20 @@ const App = () => {
   };
 
   const handleUpdateRide = (rideId: string, updates: Partial<RidePost>) => {
-    setRides((prev) => prev.map((ride) => (ride.id === rideId ? { ...ride, ...updates } : ride)));
+    setRides((prev) => {
+      let updatedRide: RidePost | null = null;
+      const next = prev.map((ride) => {
+        if (ride.id !== rideId) return ride;
+        updatedRide = { ...ride, ...updates };
+        return updatedRide;
+      });
+
+      if (updatedRide && FIREBASE_ENABLED) {
+        void upsertRideInFirestore(updatedRide);
+      }
+
+      return next;
+    });
   };
 
   const handleCancelRide = (rideId: string) => {
@@ -474,46 +616,78 @@ const App = () => {
     }
 
     setRides((prev) => prev.filter((ride) => ride.id !== rideId));
+    if (FIREBASE_ENABLED) {
+      void deleteRideInFirestore(rideId);
+      void triggerRideCancelledNotification(rideId, rideToCancel.title, currentUser.id).catch(() => undefined);
+    }
     setIsRideDetailOpen(false);
     setSelectedRideId(null);
   };
 
   const handleRequestToJoinRide = (rideId: string) => {
-    setRides((prev) =>
-      prev.map((ride) => {
+    setRides((prev) => {
+      let updatedRide: RidePost | null = null;
+      const next = prev.map((ride) => {
         if (ride.id !== rideId) return ride;
         if (ride.currentParticipants.includes(currentUser.id) || ride.requests.includes(currentUser.id)) return ride;
-        return { ...ride, requests: [...ride.requests, currentUser.id] };
-      })
-    );
+        updatedRide = { ...ride, requests: [...ride.requests, currentUser.id] };
+        return updatedRide;
+      });
+
+      if (updatedRide && FIREBASE_ENABLED) {
+        void upsertRideInFirestore(updatedRide);
+      }
+
+      return next;
+    });
   };
 
   const handleAcceptRideRequest = (rideId: string, userId: string) => {
-    setRides((prev) =>
-      prev.map((ride) => {
+    setRides((prev) => {
+      let updatedRide: RidePost | null = null;
+      const next = prev.map((ride) => {
         if (ride.id !== rideId) return ride;
 
         if (ride.currentParticipants.includes(userId)) {
-          return { ...ride, requests: ride.requests.filter((id) => id !== userId) };
+          updatedRide = { ...ride, requests: ride.requests.filter((id) => id !== userId) };
+          return updatedRide;
         }
 
         if (ride.currentParticipants.length >= ride.maxParticipants) {
           return ride;
         }
 
-        return {
+        updatedRide = {
           ...ride,
           currentParticipants: [...ride.currentParticipants, userId],
           requests: ride.requests.filter((id) => id !== userId)
         };
-      })
-    );
+        return updatedRide;
+      });
+
+      if (updatedRide && FIREBASE_ENABLED) {
+        void upsertRideInFirestore(updatedRide);
+      }
+
+      return next;
+    });
   };
 
   const handleRejectRideRequest = (rideId: string, userId: string) => {
-    setRides((prev) =>
-      prev.map((ride) => (ride.id === rideId ? { ...ride, requests: ride.requests.filter((id) => id !== userId) } : ride))
-    );
+    setRides((prev) => {
+      let updatedRide: RidePost | null = null;
+      const next = prev.map((ride) => {
+        if (ride.id !== rideId) return ride;
+        updatedRide = { ...ride, requests: ride.requests.filter((id) => id !== userId) };
+        return updatedRide;
+      });
+
+      if (updatedRide && FIREBASE_ENABLED) {
+        void upsertRideInFirestore(updatedRide);
+      }
+
+      return next;
+    });
   };
 
   const handleOpenRideDetail = (ride: RidePost) => {
@@ -548,6 +722,9 @@ const App = () => {
     };
 
     setHelpPosts((prev) => [newHelp, ...prev]);
+    if (FIREBASE_ENABLED) {
+      void upsertHelpPostInFirestore(newHelp);
+    }
     setIsCreateHelpModalOpen(false);
     setIsCreateMenuOpen(false);
     setFeedFilter('help');
@@ -570,6 +747,10 @@ const App = () => {
     };
 
     setRides((prev) => [newRide, ...prev]);
+    if (FIREBASE_ENABLED) {
+      void upsertRideInFirestore(newRide);
+      void triggerRideCreatedNotification(newRide).catch(() => undefined);
+    }
     setIsCreateRideModalOpen(false);
     setIsCreateMenuOpen(false);
     setFeedFilter('rides');
@@ -582,14 +763,40 @@ const App = () => {
   };
 
   const handleResolveHelp = (id: string) => {
-    setHelpPosts((prev) => prev.map((post) => (post.id === id ? { ...post, resolved: true } : post)));
+    setHelpPosts((prev) => {
+      let updatedPost: HelpPost | null = null;
+      const next = prev.map((post) => {
+        if (post.id !== id) return post;
+        updatedPost = { ...post, resolved: true };
+        return updatedPost;
+      });
+
+      if (updatedPost && FIREBASE_ENABLED) {
+        void upsertHelpPostInFirestore(updatedPost);
+      }
+
+      return next;
+    });
     if (selectedHelpPost?.id === id) {
       setSelectedHelpPost((prev) => (prev ? { ...prev, resolved: true } : null));
     }
   };
 
   const handleUpvoteHelp = (id: string) => {
-    setHelpPosts((prev) => prev.map((post) => (post.id === id ? { ...post, upvotes: post.upvotes + 1 } : post)));
+    setHelpPosts((prev) => {
+      let updatedPost: HelpPost | null = null;
+      const next = prev.map((post) => {
+        if (post.id !== id) return post;
+        updatedPost = { ...post, upvotes: post.upvotes + 1 };
+        return updatedPost;
+      });
+
+      if (updatedPost && FIREBASE_ENABLED) {
+        void upsertHelpPostInFirestore(updatedPost);
+      }
+
+      return next;
+    });
     if (selectedHelpPost?.id === id) {
       setSelectedHelpPost((prev) => (prev ? { ...prev, upvotes: prev.upvotes + 1 } : null));
     }
@@ -606,7 +813,20 @@ const App = () => {
       createdAt: new Date().toISOString()
     };
 
-    setHelpPosts((prev) => prev.map((post) => (post.id === postId ? { ...post, replies: [...post.replies, reply] } : post)));
+    setHelpPosts((prev) => {
+      let updatedPost: HelpPost | null = null;
+      const next = prev.map((post) => {
+        if (post.id !== postId) return post;
+        updatedPost = { ...post, replies: [...post.replies, reply] };
+        return updatedPost;
+      });
+
+      if (updatedPost && FIREBASE_ENABLED) {
+        void upsertHelpPostInFirestore(updatedPost);
+      }
+
+      return next;
+    });
     if (selectedHelpPost?.id === postId) {
       setSelectedHelpPost((prev) => (prev ? { ...prev, replies: [...prev.replies, reply] } : null));
     }
@@ -748,6 +968,10 @@ const App = () => {
         return updatedConversation;
       })
     );
+
+    if (FIREBASE_ENABLED) {
+      void sendChatMessageToRealtime(conversationId, newMsg);
+    }
   };
 
   const handleOpenChatRoom = (conversation: Conversation) => {
@@ -800,6 +1024,9 @@ const App = () => {
   };
 
   const handleLogout = () => {
+    if (FIREBASE_ENABLED) {
+      void signOutFirebase();
+    }
     setIsLoggedIn(false);
     setActiveTab('feed');
     setIsCreateMenuOpen(false);

@@ -1,5 +1,6 @@
 export type RideType = 'Coffee Ride' | 'Night Ride' | 'Long Tour' | 'Track Day' | 'Sunday Morning';
 export type ExperienceLevel = 'Beginner' | 'Intermediate' | 'Advanced' | 'Pro';
+export type RideVisibility = 'Nearby' | 'City' | 'Friends';
 
 export interface User {
   id: string;
@@ -43,7 +44,7 @@ export interface RidePost {
   currentParticipants: string[];
   requests: string[];
   city: string;
-  visibility: 'Nearby' | 'City' | 'Friends';
+  visibility: RideVisibility[];
   createdAt: string;
 }
 

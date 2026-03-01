@@ -28,7 +28,7 @@ import {
   formatDay
 } from '../app/ui';
 import { Badge, LabeledInput, SelectorRow } from './common';
-import { Conversation, HelpPost, MapPoint, Notification, RidePost, RideType, User } from '../types';
+import { Conversation, HelpPost, MapPoint, Notification, RidePost, RideType, RideVisibility, User } from '../types';
 
 type RouteCoordinate = {
   latitude: number;
@@ -43,6 +43,15 @@ type RouteMapRegion = {
   longitudeDelta: number;
 };
 
+type RoutePressEvent = {
+  nativeEvent: {
+    coordinate: {
+      latitude: number;
+      longitude: number;
+    };
+  };
+};
+
 type RouteMapModule = {
   MapView: React.ComponentType<{
     style?: unknown;
@@ -53,6 +62,7 @@ type RouteMapModule = {
       bottom: number;
       left: number;
     };
+    onPress?: (event: RoutePressEvent) => void;
     children?: React.ReactNode;
   }>;
   Marker: React.ComponentType<{
@@ -140,6 +150,9 @@ const buildGoogleDirectionsUrl = (coordinates: RouteCoordinate[]): string | null
 
   return `https://www.google.com/maps/dir/?${query}`;
 };
+
+const buildRouteTextFromPoints = (points: MapPoint[]): string =>
+  points.map((point, index) => point.label ?? `Stop ${index + 1}`).join(' -> ');
 
 export const LocationSettingsModal = ({
   visible,
@@ -425,22 +438,30 @@ export const CreateRideModal = ({
   const [date, setDate] = useState('');
   const [startTime, setStartTime] = useState('');
   const [maxParticipants, setMaxParticipants] = useState('5');
-  const [visibility, setVisibility] = useState<RidePost['visibility']>('City');
+  const [visibility, setVisibility] = useState<RideVisibility[]>(['City']);
+  const [routePoints, setRoutePoints] = useState<MapPoint[]>([]);
+  const [draftRoutePoints, setDraftRoutePoints] = useState<MapPoint[]>([]);
+  const [isStopPickerOpen, setIsStopPickerOpen] = useState(false);
+  const [isRouteAutofilled, setIsRouteAutofilled] = useState(false);
+  const visibilityOptions: RideVisibility[] = ['City', 'Nearby', 'Friends'];
 
   const submit = () => {
-    if (!title || !route || !date || !startTime) return;
+    const hasRouteText = route.trim().length > 0;
+    if (!title || !date || !startTime || (!hasRouteText && routePoints.length === 0)) return;
 
     const max = Math.max(2, Math.min(20, Number(maxParticipants) || 5));
+    const normalizedVisibility: RideVisibility[] = visibility.length > 0 ? visibility : ['City'];
+    const finalRoute = hasRouteText ? route.trim() : buildRouteTextFromPoints(routePoints);
 
     onSubmit({
       title,
       type,
-      route,
+      route: finalRoute,
       date,
       startTime,
       maxParticipants: max,
-      visibility,
-      routePoints: []
+      visibility: normalizedVisibility,
+      routePoints
     });
 
     setTitle('');
@@ -449,62 +470,270 @@ export const CreateRideModal = ({
     setDate('');
     setStartTime('');
     setMaxParticipants('5');
-    setVisibility('City');
+    setVisibility(['City']);
+    setRoutePoints([]);
+    setDraftRoutePoints([]);
+    setIsStopPickerOpen(false);
+    setIsRouteAutofilled(false);
   };
 
+  const handleOpenStopPicker = () => {
+    setDraftRoutePoints(routePoints.map((point) => ({ ...point })));
+    setIsStopPickerOpen(true);
+  };
+
+  const handleAddStopFromMap = (event: RoutePressEvent) => {
+    const { latitude, longitude } = event.nativeEvent.coordinate;
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+
+    setDraftRoutePoints((prev) => [
+      ...prev,
+      {
+        lat: latitude,
+        lng: longitude,
+        label: `Stop ${prev.length + 1}`
+      }
+    ]);
+  };
+
+  const handleUndoStop = () => {
+    setDraftRoutePoints((prev) => prev.slice(0, -1));
+  };
+
+  const handleClearStops = () => {
+    setDraftRoutePoints([]);
+  };
+
+  const handleApplyStops = () => {
+    const normalizedPoints = draftRoutePoints.map((point, index) => ({
+      ...point,
+      label: point.label?.trim() || `Stop ${index + 1}`
+    }));
+
+    setRoutePoints(normalizedPoints);
+    if (!route.trim() || isRouteAutofilled) {
+      setRoute(buildRouteTextFromPoints(normalizedPoints));
+      setIsRouteAutofilled(true);
+    }
+    setIsStopPickerOpen(false);
+  };
+
+  const toggleVisibility = (option: RideVisibility) => {
+    setVisibility((prev) => {
+      if (prev.includes(option)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((item) => item !== option);
+      }
+      return [...prev, option];
+    });
+  };
+
+  const pickerCoordinates = toRouteCoordinates(draftRoutePoints);
+  const pickerRegion = buildRouteRegion(pickerCoordinates);
+
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={styles.modalBackdrop}>
-        <Pressable style={styles.modalScrim} onPress={onClose} />
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-          <View style={[styles.bottomSheet, { backgroundColor: t.surface, borderTopColor: t.primary }]}> 
-            <View style={styles.rowBetween}>
-              <Text style={[styles.modalTitle, { color: t.text }]}>Create Ride</Text>
-              <TouchableOpacity onPress={onClose}>
-                <MaterialCommunityIcons name="close" size={24} color={t.muted} />
+    <>
+      <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+        <SafeAreaView style={styles.modalBackdrop}>
+          <Pressable style={styles.modalScrim} onPress={onClose} />
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <View style={[styles.bottomSheet, { backgroundColor: t.surface, borderTopColor: t.primary }]}> 
+              <View style={styles.rowBetween}>
+                <Text style={[styles.modalTitle, { color: t.text }]}>Create Ride</Text>
+                <TouchableOpacity onPress={onClose}>
+                  <MaterialCommunityIcons name="close" size={24} color={t.muted} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView contentContainerStyle={styles.formSection} showsVerticalScrollIndicator={false}>
+                <LabeledInput label="Ride Title" value={title} onChangeText={setTitle} theme={theme} placeholder="Highway sunrise run" />
+
+                <SelectorRow
+                  label="Ride Type"
+                  options={['Sunday Morning', 'Coffee Ride', 'Night Ride', 'Long Tour', 'Track Day']}
+                  selected={type}
+                  onSelect={(value) => setType(value as RideType)}
+                  theme={theme}
+                />
+
+                <View>
+                  <Text style={[styles.inputLabel, { color: t.muted }]}>Visibility</Text>
+                  <View style={styles.wrapRow}>
+                    {visibilityOptions.map((option) => {
+                      const isActive = visibility.includes(option);
+                      return (
+                        <TouchableOpacity
+                          key={option}
+                          style={[
+                            styles.selectorChip,
+                            {
+                              borderColor: isActive ? t.primary : t.border,
+                              backgroundColor: isActive ? `${t.primary}22` : t.subtle
+                            }
+                          ]}
+                          onPress={() => toggleVisibility(option)}
+                        >
+                          <Text style={[styles.selectorChipText, { color: isActive ? t.primary : t.muted }]}>{option}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                  <Text style={[styles.metaText, { color: t.muted }]}>Select one or more audiences.</Text>
+                </View>
+
+                <LabeledInput
+                  label="Route"
+                  value={route}
+                  onChangeText={(value) => {
+                    setRoute(value);
+                    setIsRouteAutofilled(false);
+                  }}
+                  theme={theme}
+                  placeholder="Noida -> Jewar -> Mathura"
+                />
+
+                <View style={[styles.routeMapCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <View style={styles.rowBetween}>
+                    <Text style={[styles.inputLabel, { color: t.muted, marginBottom: 0 }]}>Map Stops</Text>
+                    <View style={[styles.newsScoreChip, { borderColor: t.border, backgroundColor: t.card }]}>
+                      <Text style={[styles.metaText, { color: t.muted }]}>{routePoints.length} stops</Text>
+                    </View>
+                  </View>
+
+                  <TouchableOpacity style={[styles.ghostButton, { borderColor: t.border, backgroundColor: t.card }]} onPress={handleOpenStopPicker}>
+                    <MaterialCommunityIcons name="map-marker-path" size={18} color={t.primary} />
+                    <Text style={[styles.ghostButtonText, { color: t.primary }]}>
+                      {routePoints.length > 0 ? 'Edit Stops on Map' : 'Add Stops on Map'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {routePoints.length > 0 && (
+                    <View style={styles.routePointList}>
+                      {routePoints.map((point, index) => (
+                        <View key={`${point.lat}-${point.lng}-${index}`} style={styles.routePointRow}>
+                          <View style={[styles.routePointDot, { backgroundColor: index === 0 ? TOKENS[theme].green : t.primary }]} />
+                          <View style={styles.flex1}>
+                            <Text style={[styles.boldText, { color: t.text }]}>{point.label ?? `Stop ${index + 1}`}</Text>
+                            <Text style={[styles.metaText, { color: t.muted }]}>
+                              {point.lat.toFixed(4)}, {point.lng.toFixed(4)}
+                            </Text>
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+
+                <LabeledInput label="Date (YYYY-MM-DD)" value={date} onChangeText={setDate} theme={theme} placeholder="2026-03-15" />
+                <LabeledInput label="Start Time" value={startTime} onChangeText={setStartTime} theme={theme} placeholder="05:30 AM" />
+                <LabeledInput
+                  label="Max Participants"
+                  value={maxParticipants}
+                  onChangeText={(value) => setMaxParticipants(value.replace(/\D/g, '').slice(0, 2))}
+                  theme={theme}
+                  placeholder="5"
+                  keyboardType="number-pad"
+                />
+
+                <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={submit}>
+                  <MaterialCommunityIcons name="flag-checkered" size={18} color="#fff" />
+                  <Text style={styles.primaryButtonText}>Launch Ride</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </Modal>
+
+      <Modal visible={isStopPickerOpen} animationType="slide" onRequestClose={() => setIsStopPickerOpen(false)}>
+        <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg }]}> 
+          <View style={[styles.modalHeader, { borderBottomColor: t.border }]}> 
+            <View style={styles.rowAligned}>
+              <TouchableOpacity
+                onPress={() => setIsStopPickerOpen(false)}
+                style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+              >
+                <MaterialCommunityIcons name="arrow-left" size={20} color={t.text} />
+              </TouchableOpacity>
+              <Text style={[styles.modalTitle, { color: t.text }]}>Route Stops</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.primaryCompactButton, { borderColor: t.primary, backgroundColor: t.primary }]}
+              onPress={handleApplyStops}
+            >
+              <MaterialCommunityIcons name="check" size={16} color="#fff" />
+              <Text style={[styles.primaryCompactButtonText, { color: '#fff' }]}>Use Stops</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.routePickerBody}>
+            <Text style={[styles.bodyText, { color: t.muted }]}>
+              Tap anywhere on the map to add multiple route stops in order.
+            </Text>
+
+            {routeMapModule ? (
+              <View style={[styles.routePickerMapFrame, { borderColor: t.border }]}>
+                <routeMapModule.MapView style={styles.routePickerMap} initialRegion={pickerRegion} onPress={handleAddStopFromMap}>
+                  {pickerCoordinates.length > 1 && (
+                    <routeMapModule.Polyline coordinates={pickerCoordinates} strokeWidth={4} strokeColor={t.primary} />
+                  )}
+                  {pickerCoordinates.map((point, index) => (
+                    <routeMapModule.Marker
+                      key={`${point.latitude}-${point.longitude}-${index}`}
+                      coordinate={point}
+                      title={draftRoutePoints[index]?.label ?? `Stop ${index + 1}`}
+                      pinColor={index === 0 ? TOKENS[theme].green : index === pickerCoordinates.length - 1 ? TOKENS[theme].red : t.primary}
+                    />
+                  ))}
+                </routeMapModule.MapView>
+              </View>
+            ) : (
+              <View style={[styles.mapUnavailable, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                <MaterialCommunityIcons name="map-search-outline" size={18} color={t.primary} />
+                <Text style={[styles.metaText, { color: t.muted }]}>Install `react-native-maps` to add route stops from map.</Text>
+              </View>
+            )}
+
+            <View style={styles.routePickerActionRow}>
+              <TouchableOpacity
+                style={[styles.routePickerActionButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                disabled={draftRoutePoints.length === 0}
+                onPress={handleUndoStop}
+              >
+                <Text style={[styles.smallButtonText, { color: draftRoutePoints.length === 0 ? `${t.muted}66` : t.muted }]}>Undo</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.routePickerActionButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                disabled={draftRoutePoints.length === 0}
+                onPress={handleClearStops}
+              >
+                <Text style={[styles.smallButtonText, { color: draftRoutePoints.length === 0 ? `${TOKENS[theme].red}66` : TOKENS[theme].red }]}>
+                  Clear
+                </Text>
               </TouchableOpacity>
             </View>
 
-            <ScrollView contentContainerStyle={styles.formSection} showsVerticalScrollIndicator={false}>
-              <LabeledInput label="Ride Title" value={title} onChangeText={setTitle} theme={theme} placeholder="Highway sunrise run" />
-
-              <SelectorRow
-                label="Ride Type"
-                options={['Sunday Morning', 'Coffee Ride', 'Night Ride', 'Long Tour', 'Track Day']}
-                selected={type}
-                onSelect={(value) => setType(value as RideType)}
-                theme={theme}
-              />
-
-              <SelectorRow
-                label="Visibility"
-                options={['City', 'Nearby', 'Friends']}
-                selected={visibility}
-                onSelect={(value) => setVisibility(value as RidePost['visibility'])}
-                theme={theme}
-              />
-
-              <LabeledInput label="Route" value={route} onChangeText={setRoute} theme={theme} placeholder="Noida -> Jewar -> Mathura" />
-              <LabeledInput label="Date (YYYY-MM-DD)" value={date} onChangeText={setDate} theme={theme} placeholder="2026-03-15" />
-              <LabeledInput label="Start Time" value={startTime} onChangeText={setStartTime} theme={theme} placeholder="05:30 AM" />
-              <LabeledInput
-                label="Max Participants"
-                value={maxParticipants}
-                onChangeText={(value) => setMaxParticipants(value.replace(/\D/g, '').slice(0, 2))}
-                theme={theme}
-                placeholder="5"
-                keyboardType="number-pad"
-              />
-
-              <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={submit}>
-                <MaterialCommunityIcons name="flag-checkered" size={18} color="#fff" />
-                <Text style={styles.primaryButtonText}>Launch Ride</Text>
-              </TouchableOpacity>
+            <ScrollView style={styles.flex1} contentContainerStyle={styles.routePointList} showsVerticalScrollIndicator={false}>
+              {draftRoutePoints.length === 0 ? (
+                <View style={[styles.routePickerEmpty, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <MaterialCommunityIcons name="map-marker-plus-outline" size={18} color={t.primary} />
+                  <Text style={[styles.metaText, { color: t.muted }]}>No stops yet. Tap map to add the first stop.</Text>
+                </View>
+              ) : (
+                draftRoutePoints.map((point, index) => (
+                  <View key={`${point.lat}-${point.lng}-${index}`} style={[styles.routePickerPointRow, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <Text style={[styles.boldText, { color: t.text }]}>{point.label ?? `Stop ${index + 1}`}</Text>
+                    <Text style={[styles.metaText, { color: t.muted }]}>
+                      {point.lat.toFixed(4)}, {point.lng.toFixed(4)}
+                    </Text>
+                  </View>
+                ))
+              )}
             </ScrollView>
           </View>
-        </KeyboardAvoidingView>
-      </SafeAreaView>
-    </Modal>
+        </SafeAreaView>
+      </Modal>
+    </>
   );
 };
 

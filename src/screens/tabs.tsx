@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Image,
   KeyboardAvoidingView,
@@ -49,6 +49,7 @@ export const LoginScreen = ({
   const [phoneNumber, setPhoneNumber] = useState('');
   const [otp, setOtp] = useState('');
   const [error, setError] = useState('');
+  const phoneInputRef = useRef<TextInput>(null);
   const t = TOKENS[theme];
 
   const expectedOtp = phoneNumber.slice(-4);
@@ -78,11 +79,18 @@ export const LoginScreen = ({
     onLogin();
   };
 
+  const handleChangeNumber = () => {
+    setOtp('');
+    setError('');
+    setStep('phone');
+    setTimeout(() => phoneInputRef.current?.focus(), 0);
+  };
+
   return (
     <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg }]}> 
       <ExpoStatusBar style={theme === 'light' ? 'dark' : 'light'} translucent={false} backgroundColor={t.bg} />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.fullScreen}>
-        <ScrollView contentContainerStyle={styles.loginScroll} keyboardShouldPersistTaps="handled">
+        <ScrollView contentContainerStyle={styles.loginScroll} keyboardShouldPersistTaps="always">
           <View style={[styles.loginCard, { backgroundColor: t.surface, borderColor: t.border }]}> 
             <View style={styles.loginTopRow}>
               <View style={[styles.brandIconWrap, { backgroundColor: t.primary }]}> 
@@ -115,6 +123,7 @@ export const LoginScreen = ({
               <View style={styles.formSection}>
                 <Text style={[styles.inputLabel, { color: t.muted }]}>Phone Number</Text>
                 <TextInput
+                  ref={phoneInputRef}
                   style={[styles.input, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
                   keyboardType="number-pad"
                   maxLength={10}
@@ -151,7 +160,7 @@ export const LoginScreen = ({
                   <Text style={styles.primaryButtonText}>Verify & Enter</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity onPress={() => setStep('phone')}>
+                <TouchableOpacity onPress={handleChangeNumber}>
                   <Text style={[styles.linkText, { color: t.muted }]}>Change number</Text>
                 </TouchableOpacity>
               </View>
@@ -565,4 +574,3 @@ export const ProfileTab = ({
     </View>
   );
 };
-

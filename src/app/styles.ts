@@ -649,6 +649,51 @@ export const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4
   },
+  routePickerBody: {
+    flex: 1,
+    paddingHorizontal: 14,
+    paddingTop: 12,
+    paddingBottom: 14,
+    gap: 10
+  },
+  routePickerMapFrame: {
+    borderWidth: 1,
+    borderRadius: 14,
+    overflow: 'hidden'
+  },
+  routePickerMap: {
+    width: '100%',
+    height: 300
+  },
+  routePickerActionRow: {
+    flexDirection: 'row',
+    gap: 8
+  },
+  routePickerActionButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 12,
+    minHeight: 42,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  routePickerEmpty: {
+    borderWidth: 1,
+    borderRadius: 12,
+    minHeight: 70,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 10
+  },
+  routePickerPointRow: {
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    gap: 4
+  },
   participantPill: {
     alignItems: 'center',
     gap: 4,
