@@ -7,7 +7,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import Constants from 'expo-constants';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import * as Location from 'expo-location';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import {
   Alert,
   Linking,
@@ -27,7 +27,6 @@ import {
   FriendStatus,
   LocationMode,
   PermissionStatus,
-  Tab,
   Theme,
   TOKENS,
   avatarFallback
@@ -68,6 +67,7 @@ import {
   upsertUserInFirestore
 } from './src/firebase/firestore';
 import { triggerRideCancelledNotification, triggerRideCreatedNotification } from './src/firebase/functions';
+import { AppStateProvider, useAppState } from './src/state/app-state-context';
 
 const STORAGE_KEYS = {
   theme: 'ridesathi.theme',
@@ -154,40 +154,68 @@ const SplashRoute = ({ theme, onComplete }: { theme: Theme; onComplete: () => vo
   return <SplashScreen theme={theme} />;
 };
 
-const App = () => {
+const AppShell = () => {
   const isExpoGo = Constants.executionEnvironment === 'storeClient' || Constants.appOwnership === 'expo';
-  const [hydrated, setHydrated] = useState(false);
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [theme, setTheme] = useState<Theme>('dark');
-  const [activeTab, setActiveTab] = useState<Tab>('feed');
-  const [feedFilter, setFeedFilter] = useState<'rides' | 'help'>('rides');
-
-  const [currentUser, setCurrentUser] = useState<User>(MOCK_CURRENT_USER);
-  const [users, setUsers] = useState<User[]>(MOCK_USERS);
-  const [notifications, setNotifications] = useState<Notification[]>(MOCK_NOTIFICATIONS);
-  const [rides, setRides] = useState<RidePost[]>(MOCK_RIDES);
-  const [helpPosts, setHelpPosts] = useState<HelpPost[]>(MOCK_HELP);
-  const [conversations, setConversations] = useState<Conversation[]>(MOCK_CONVERSATIONS);
-  const [newsArticles, setNewsArticles] = useState<NewsArticle[]>(MOCK_NEWS);
-  const [locationMode, setLocationMode] = useState<LocationMode>('auto');
-  const [locationPermissionStatus, setLocationPermissionStatus] = useState<PermissionStatus>('undetermined');
-  const [notificationPermissionStatus, setNotificationPermissionStatus] = useState<PermissionStatus>('undetermined');
-  const [isDetectingLocation, setIsDetectingLocation] = useState(false);
-
-  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
-  const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
-  const [manualCityInput, setManualCityInput] = useState('');
-  const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
-  const [isCreateRideModalOpen, setIsCreateRideModalOpen] = useState(false);
-  const [isCreateHelpModalOpen, setIsCreateHelpModalOpen] = useState(false);
-  const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
-
-  const [isRideDetailOpen, setIsRideDetailOpen] = useState(false);
-  const [selectedRideId, setSelectedRideId] = useState<string | null>(null);
-  const [isHelpDetailOpen, setIsHelpDetailOpen] = useState(false);
-  const [selectedHelpPost, setSelectedHelpPost] = useState<HelpPost | null>(null);
-  const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const {
+    hydrated,
+    setHydrated,
+    isLoggedIn,
+    setIsLoggedIn,
+    theme,
+    setTheme,
+    activeTab,
+    setActiveTab,
+    feedFilter,
+    setFeedFilter,
+    currentUser,
+    setCurrentUser,
+    users,
+    setUsers,
+    notifications,
+    setNotifications,
+    rides,
+    setRides,
+    helpPosts,
+    setHelpPosts,
+    conversations,
+    setConversations,
+    newsArticles,
+    setNewsArticles,
+    locationMode,
+    setLocationMode,
+    locationPermissionStatus,
+    setLocationPermissionStatus,
+    notificationPermissionStatus,
+    setNotificationPermissionStatus,
+    isDetectingLocation,
+    setIsDetectingLocation,
+    isNotificationsOpen,
+    setIsNotificationsOpen,
+    isLocationModalOpen,
+    setIsLocationModalOpen,
+    manualCityInput,
+    setManualCityInput,
+    isCreateMenuOpen,
+    setIsCreateMenuOpen,
+    isCreateRideModalOpen,
+    setIsCreateRideModalOpen,
+    isCreateHelpModalOpen,
+    setIsCreateHelpModalOpen,
+    isEditProfileOpen,
+    setIsEditProfileOpen,
+    isRideDetailOpen,
+    setIsRideDetailOpen,
+    selectedRideId,
+    setSelectedRideId,
+    isHelpDetailOpen,
+    setIsHelpDetailOpen,
+    selectedHelpPost,
+    setSelectedHelpPost,
+    activeConversation,
+    setActiveConversation,
+    selectedUserId,
+    setSelectedUserId
+  } = useAppState();
 
   const t = TOKENS[theme];
   const androidTopInset = Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) : 0;
@@ -1348,5 +1376,10 @@ const App = () => {
   );
 };
 
+const App = () => (
+  <AppStateProvider>
+    <AppShell />
+  </AppStateProvider>
+);
 
 export default App;

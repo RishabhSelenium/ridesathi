@@ -1,11 +1,13 @@
 {
   "expo": {
     "name": "ThrottleUp",
-    "slug": "ridesathi-react",
+    "slug": "throttleup",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./src/assets/logo2.png",
     "userInterfaceStyle": "automatic",
     "splash": {
+      "image": "./src/assets/logo2.png",
       "resizeMode": "contain",
       "backgroundColor": "#020617"
     },
@@ -16,7 +18,11 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.ridesathi.app"
+      "package": "com.ridesathi.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./src/assets/logo2.png",
+        "backgroundColor": "#1a1a2e"
+      }
     },
     "plugins": [
       [

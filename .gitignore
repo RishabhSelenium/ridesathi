@@ -9,6 +9,10 @@ yarn-debug.*
 yarn-error.*
 .DS_Store
 
+# Secrets
+.env
+.env.local
+
 # Project-specific ignores
 src/gen/
 package-lock.json
