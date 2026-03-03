@@ -138,6 +138,47 @@ export const styles = StyleSheet.create({
     height: 178,
     borderRadius: 14
   },
+  newsImageFallback: {
+    width: '100%',
+    height: 178,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  newsImageFallbackContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8
+  },
+  newsImageFallbackPill: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6
+  },
+  newsImageFallbackPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+    textTransform: 'uppercase'
+  },
+  newsImageFallbackSource: {
+    fontSize: 18,
+    fontWeight: '800',
+    lineHeight: 22,
+    textAlign: 'center',
+    paddingHorizontal: 16
+  },
+  newsImageFallbackSubtext: {
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.25
+  },
   newsMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -154,6 +195,22 @@ export const styles = StyleSheet.create({
     fontSize: 17,
     lineHeight: 26,
     fontWeight: '500'
+  },
+  newsReadMoreButton: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderRadius: 12,
+    minHeight: 34,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6
+  },
+  newsReadMoreText: {
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.35
   },
   newsTag: {
     borderWidth: 1,
@@ -334,6 +391,41 @@ export const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center'
   },
+  syncBanner: {
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10
+  },
+  syncBannerContent: {
+    flex: 1,
+    gap: 2
+  },
+  syncBannerTitle: {
+    fontSize: 12,
+    fontWeight: '800'
+  },
+  syncBannerMessage: {
+    fontSize: 11,
+    lineHeight: 15
+  },
+  syncBannerRetry: {
+    minWidth: 70,
+    height: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 5
+  },
+  syncBannerRetryText: {
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase'
+  },
   chatRow: {
     borderWidth: 1,
     borderRadius: 16,
@@ -487,6 +579,31 @@ export const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     fontWeight: '800'
+  },
+  newsReaderWebView: {
+    flex: 1
+  },
+  newsReaderLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  newsReaderErrorWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    gap: 12
+  },
+  newsReaderErrorTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    textAlign: 'center'
+  },
+  newsReaderErrorText: {
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 19
   },
   modalFooter: {
     borderTopWidth: 1,
@@ -920,7 +1037,6 @@ export const styles = StyleSheet.create({
     textTransform: 'uppercase'
   },
   headerProfileButton: {
-    marginLeft: 8,
     width: 34,
     height: 34,
     borderRadius: 17,

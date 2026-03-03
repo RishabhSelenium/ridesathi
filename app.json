@@ -18,13 +18,19 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.ridesathi.app",
+      "package": "com.reinagain.throttleup",
+      "softwareKeyboardLayoutMode": "resize",
+      "googleServicesFile": "./android/app/google-services.json",
       "adaptiveIcon": {
-        "foregroundImage": "./src/assets/logo2.png",
-        "backgroundColor": "#1a1a2e"
+        "foregroundImage": "./src/assets/adaptive-logo.png",
+        "backgroundColor": "#F97316"
       }
     },
+    "updates": {
+      "enabled": false
+    },
     "plugins": [
+      "@react-native-firebase/app",
       [
         "expo-location",
         {

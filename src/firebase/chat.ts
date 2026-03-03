@@ -28,36 +28,44 @@ const normalizeRealtimeMessage = (value: unknown): RealtimeChatMessage | null =>
 
 export const subscribeChatMessages = (
   conversationId: string,
-  onMessages: (messages: ChatMessage[]) => void
+  onMessages: (messages: ChatMessage[]) => void,
+  onError?: (error: Error) => void
 ): (() => void) => {
   const services = getFirebaseServices();
   if (!services) {
     onMessages([]);
+    onError?.(new Error('Realtime chat service is unavailable.'));
     return () => undefined;
   }
 
   const messagesRef = ref(services.realtimeDb, messagePathForConversation(conversationId));
 
-  return onValue(messagesRef, (snapshot) => {
-    const value = snapshot.val() as Record<string, unknown> | null;
-    if (!value) {
-      onMessages([]);
-      return;
+  return onValue(
+    messagesRef,
+    (snapshot) => {
+      const value = snapshot.val() as Record<string, unknown> | null;
+      if (!value) {
+        onMessages([]);
+        return;
+      }
+
+      const normalized = Object.values(value)
+        .map(normalizeRealtimeMessage)
+        .filter((item): item is RealtimeChatMessage => item !== null)
+        .sort((a, b) => a.timestampEpoch - b.timestampEpoch)
+        .map<ChatMessage>((item) => ({
+          id: item.id,
+          senderId: item.senderId,
+          text: item.text,
+          timestamp: item.timestamp
+        }));
+
+      onMessages(normalized);
+    },
+    (error) => {
+      onError?.(error instanceof Error ? error : new Error('Chat sync failed.'));
     }
-
-    const normalized = Object.values(value)
-      .map(normalizeRealtimeMessage)
-      .filter((item): item is RealtimeChatMessage => item !== null)
-      .sort((a, b) => a.timestampEpoch - b.timestampEpoch)
-      .map<ChatMessage>((item) => ({
-        id: item.id,
-        senderId: item.senderId,
-        text: item.text,
-        timestamp: item.timestamp
-      }));
-
-    onMessages(normalized);
-  });
+  );
 };
 
 export const sendChatMessageToRealtime = async (

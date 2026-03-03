@@ -12,6 +12,9 @@ yarn-error.*
 # Secrets
 .env
 .env.local
+google-services.json
+android/app/google-services.json
+GoogleService-Info.plist
 
 # Project-specific ignores
 src/gen/

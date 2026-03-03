@@ -5,13 +5,14 @@ React Native (Expo) migration of the original ThrottleUp web prototype.
 ## Included in this migration
 
 - Splash + login flow
-- OTP prototype rule: OTP = phone number last 4 digits
+- Firebase phone OTP login (native Android build)
+- Live bike news feed (Google News RSS aggregation with local cache fallback)
 - Feed (rides/help), My Rides, Chats, Profile tabs
 - Ride details, help details, chat room overlays
 - Create ride/help flows
 - Friend requests + notifications flows
 - Profile edit flow
-- Local persistence via AsyncStorage
+- Local persistence via AsyncStorage + cloud sync via Firebase
 
 ## Run locally
 
@@ -69,11 +70,40 @@ cp .env.example .env
 
 ### 3. Phone OTP note
 
-Firebase phone auth in Expo requires an app verifier (reCAPTCHA/SafetyNet).  
-This repo includes service wrappers, while the current login screen still supports the prototype OTP path.
+Phone auth is native-only via `@react-native-firebase/auth` (Android dev build/APK).
+
+- reCAPTCHA fallback has been removed.
+- Expo Go does not support this OTP flow; use `npx expo run:android` and open the installed dev build.
+- If Firebase is not configured correctly, OTP will fail instead of switching to prototype mode.
+- User phone number is stored in Firestore `users/{uid}` as `phoneNumber`.
+
+### 4. News feed note
+
+- News tab fetches latest articles from external RSS feeds (motorcycle/bike + MotoGP topics).
+- Feed auto-refreshes on app launch, whenever News tab opens, and every 15 minutes while app is running.
+- If network fails, the app keeps showing cached news from AsyncStorage (or mock fallback on first run).
+
+### 5. Security rules (versioned)
+
+This repo now versions Firebase security rules:
+
+- Firestore: `firestore.rules`
+- Realtime Database: `database.rules.json`
+- Firebase config mapping: `firebase.json`
+
+Deploy only security rules:
+
+```bash
+firebase deploy --only firestore:rules,database
+```
+
+If you use a specific Firebase project id:
+
+```bash
+firebase deploy --project <your-project-id> --only firestore:rules,database
+```
 
 ## Notes
 
-- This is still mock-first for data/API calls.
-- No backend API wiring in this app yet.
-- Existing server in your web project can be integrated next.
+- Data is still partially mock-seeded on first run, then synced with Firebase when enabled.
+- This app has no separate custom backend server in this repo; Firebase is the backend.

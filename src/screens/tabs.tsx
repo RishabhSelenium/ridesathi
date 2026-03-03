@@ -2,6 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import React, { useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -17,7 +18,48 @@ import {
 import { styles } from '../app/styles';
 import { TOKENS, Theme, avatarFallback, formatClock, formatRelative } from '../app/ui';
 import { Badge, RideCard } from '../components/common';
+
 import { Conversation, HelpPost, NewsArticle, RidePost, Squad, User } from '../types';
+
+const SyncErrorBanner = ({
+  theme,
+  title,
+  message,
+  isSyncing,
+  onRetry
+}: {
+  theme: Theme;
+  title: string;
+  message: string;
+  isSyncing: boolean;
+  onRetry: () => void;
+}) => {
+  const t = TOKENS[theme];
+
+  return (
+    <View style={[styles.syncBanner, { borderColor: `${TOKENS[theme].red}66`, backgroundColor: t.subtle }]}>
+      <MaterialCommunityIcons name="cloud-alert-outline" size={18} color={TOKENS[theme].red} />
+      <View style={styles.syncBannerContent}>
+        <Text style={[styles.syncBannerTitle, { color: TOKENS[theme].red }]}>{title}</Text>
+        <Text style={[styles.syncBannerMessage, { color: t.muted }]}>{message}</Text>
+      </View>
+      <TouchableOpacity
+        style={[styles.syncBannerRetry, { borderColor: t.border, backgroundColor: t.card, opacity: isSyncing ? 0.7 : 1 }]}
+        onPress={onRetry}
+        disabled={isSyncing}
+      >
+        {isSyncing ? (
+          <ActivityIndicator size="small" color={t.primary} />
+        ) : (
+          <>
+            <MaterialCommunityIcons name="refresh" size={14} color={t.primary} />
+            <Text style={[styles.syncBannerRetryText, { color: t.primary }]}>Retry</Text>
+          </>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+};
 
 export const SplashScreen = ({ theme }: { theme: Theme }) => {
   const t = TOKENS[theme];
@@ -39,44 +81,83 @@ export const SplashScreen = ({ theme }: { theme: Theme }) => {
 export const LoginScreen = ({
   onLogin,
   theme,
-  onToggleTheme
+  onToggleTheme,
+  firebaseEnabled
 }: {
-  onLogin: () => void;
+  onLogin: (payload: { uid?: string; phoneNumber: string }) => Promise<void>;
   theme: Theme;
   onToggleTheme: (next: Theme) => void;
+  firebaseEnabled: boolean;
 }) => {
   const [step, setStep] = useState<'phone' | 'otp'>('phone');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [otp, setOtp] = useState('');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const phoneInputRef = useRef<TextInput>(null);
   const t = TOKENS[theme];
 
+  const e164Phone = phoneNumber.length === 10 ? `+91${phoneNumber}` : '';
+  const maskedPhone = phoneNumber.length >= 4 ? `+91******${phoneNumber.slice(-4)}` : '+91******0000';
+  const otpLength = 4;
   const expectedOtp = phoneNumber.slice(-4);
-  const maskedPhone = phoneNumber.length >= 4 ? `+91******${phoneNumber.slice(-4)}` : '+91******9443';
+
+  const readError = (value: unknown) => {
+    const rawMessage = value instanceof Error ? value.message : 'Unable to continue right now.';
+    const message = rawMessage.toLowerCase();
+
+    if (message.includes('too-many-requests')) {
+      return 'Too many attempts. Please wait a few minutes and try again.';
+    }
+
+    if (message.includes('invalid-phone-number')) {
+      return 'Invalid phone number. Please check and try again.';
+    }
+
+    if (message.includes('invalid-verification-code')) {
+      return 'Incorrect OTP. Please re-enter the code.';
+    }
+
+    if (message.includes('code-expired')) {
+      return 'OTP expired. Please request a new code.';
+    }
+
+    return rawMessage;
+  };
 
   const handleGetOtp = () => {
     if (phoneNumber.length < 10) {
       setError('Enter a valid 10-digit phone number.');
       return;
     }
+
     setError('');
     setStep('otp');
   };
 
-  const handleVerify = () => {
-    if (otp.length < 4) {
-      setError('Enter the 4-digit OTP.');
+  const handleVerify = async () => {
+    if (otp.length < otpLength) {
+      setError(`Enter the ${otpLength}-digit PIN.`);
       return;
     }
 
     if (otp !== expectedOtp) {
-      setError('Invalid OTP. For prototype, use your phone last 4 digits.');
+      setError('Incorrect PIN. Enter the last 4 digits of your phone number.');
       return;
     }
 
     setError('');
-    onLogin();
+    setIsSubmitting(true);
+
+    try {
+      const uid = `user-${phoneNumber}`;
+      await onLogin({ uid, phoneNumber: e164Phone });
+    } catch (verifyError) {
+      const rawMessage = verifyError instanceof Error ? verifyError.message : 'Unable to log in. Try again.';
+      setError(rawMessage);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleChangeNumber = () => {
@@ -89,7 +170,7 @@ export const LoginScreen = ({
   return (
     <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg }]}>
       <ExpoStatusBar style={theme === 'light' ? 'dark' : 'light'} translucent={false} backgroundColor={t.bg} />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.fullScreen}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.fullScreen}>
         <ScrollView contentContainerStyle={styles.loginScroll} keyboardShouldPersistTaps="always">
           <View style={[styles.loginCard, { backgroundColor: t.surface, borderColor: t.border }]}>
             <View style={styles.loginTopRow}>
@@ -112,10 +193,10 @@ export const LoginScreen = ({
               </View>
             </View>
 
-            <Text style={[styles.loginTitle, { color: t.text }]}>{step === 'phone' ? 'Ride Connected' : 'Enter Verification code'}</Text>
+            <Text style={[styles.loginTitle, { color: t.text }]}>{step === 'phone' ? 'Ride Connected' : 'Enter Your PIN'}</Text>
             {step !== 'phone' && (
               <Text style={[styles.loginSubtitle, { color: t.muted }]}>
-                {`We've sent a 4-digit code to ${maskedPhone}`}
+                {`Enter the last 4 digits of ${maskedPhone}`}
               </Text>
             )}
 
@@ -135,9 +216,12 @@ export const LoginScreen = ({
                     setError('');
                   }}
                 />
-                <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={handleGetOtp}>
-                  <MaterialCommunityIcons name="message-text-outline" size={18} color="#fff" />
-                  <Text style={styles.primaryButtonText}>Get OTP</Text>
+                <TouchableOpacity
+                  style={[styles.primaryButton, { backgroundColor: t.primary }]}
+                  onPress={handleGetOtp}
+                >
+                  <MaterialCommunityIcons name="lock-outline" size={18} color="#fff" />
+                  <Text style={styles.primaryButtonText}>Continue</Text>
                 </TouchableOpacity>
               </View>
             ) : (
@@ -145,18 +229,28 @@ export const LoginScreen = ({
                 <TextInput
                   style={[styles.input, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
                   keyboardType="number-pad"
-                  maxLength={4}
+                  maxLength={otpLength}
                   value={otp}
-                  placeholder="4 digit OTP"
+                  placeholder={`Last 4 digits of your number`}
                   placeholderTextColor={t.muted}
                   onChangeText={(value) => {
-                    setOtp(value.replace(/\D/g, '').slice(0, 4));
+                    setOtp(value.replace(/\D/g, '').slice(0, otpLength));
                     setError('');
                   }}
                 />
 
-                <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={handleVerify}>
-                  <MaterialCommunityIcons name="fingerprint" size={18} color="#fff" />
+                <TouchableOpacity
+                  style={[styles.primaryButton, { backgroundColor: t.primary, opacity: isSubmitting ? 0.7 : 1 }]}
+                  onPress={() => {
+                    void handleVerify();
+                  }}
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <MaterialCommunityIcons name="fingerprint" size={18} color="#fff" />
+                  )}
                   <Text style={styles.primaryButtonText}>Verify & Enter</Text>
                 </TouchableOpacity>
 
@@ -179,6 +273,12 @@ export const FeedTab = ({
   feedFilter,
   rides,
   helpPosts,
+  ridesSyncError,
+  helpSyncError,
+  isSyncingRides,
+  isSyncingHelp,
+  onRetryRidesSync,
+  onRetryHelpSync,
   currentUser,
   onOpenRideDetail,
   onOpenHelpDetail,
@@ -188,6 +288,12 @@ export const FeedTab = ({
   feedFilter: 'rides' | 'help';
   rides: RidePost[];
   helpPosts: HelpPost[];
+  ridesSyncError: string | null;
+  helpSyncError: string | null;
+  isSyncingRides: boolean;
+  isSyncingHelp: boolean;
+  onRetryRidesSync: () => void;
+  onRetryHelpSync: () => void;
   currentUser: User;
   onOpenRideDetail: (ride: RidePost) => void;
   onOpenHelpDetail: (post: HelpPost) => void;
@@ -198,67 +304,107 @@ export const FeedTab = ({
   if (feedFilter === 'rides') {
     return (
       <View style={styles.listWrap}>
-        {rides.map((ride) => (
-          <RideCard
-            key={ride.id}
-            ride={ride}
-            currentUserId={currentUser.id}
+        {ridesSyncError ? (
+          <SyncErrorBanner
             theme={theme}
-            onOpenDetail={onOpenRideDetail}
-            onViewProfile={onViewProfile}
+            title="Ride Sync Failed"
+            message={ridesSyncError}
+            isSyncing={isSyncingRides}
+            onRetry={onRetryRidesSync}
           />
-        ))}
+        ) : null}
+
+        {rides.length === 0 ? (
+          <View style={styles.emptyWrap}>
+            <MaterialCommunityIcons name="map-search-outline" size={48} color={t.muted} />
+            <Text style={[styles.emptyTitle, { color: t.text }]}>No rides available right now.</Text>
+            <Text style={[styles.emptySubtitle, { color: t.muted }]}>
+              {ridesSyncError ? 'Retry sync after network is back.' : 'Try switching city or adding more riding friends.'}
+            </Text>
+          </View>
+        ) : (
+          rides.map((ride) => (
+            <RideCard
+              key={ride.id}
+              ride={ride}
+              currentUserId={currentUser.id}
+              theme={theme}
+              onOpenDetail={onOpenRideDetail}
+              onViewProfile={onViewProfile}
+            />
+          ))
+        )}
       </View>
     );
   }
 
   return (
     <View style={styles.listWrap}>
-      {helpPosts.map((post) => (
-        <TouchableOpacity
-          key={post.id}
-          onPress={() => onOpenHelpDetail(post)}
-          style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}
-        >
-          <View style={styles.rowBetween}>
-            <TouchableOpacity style={styles.rowAligned} onPress={() => onViewProfile(post.creatorId)}>
-              <Image style={styles.avatarSmall} source={{ uri: post.creatorAvatar || avatarFallback }} />
-              <Text style={[styles.boldText, { color: t.text }]}>{post.creatorName}</Text>
-            </TouchableOpacity>
-            <Badge color="blue" theme={theme}>
-              {post.resolved ? 'Resolved' : post.category}
-            </Badge>
-          </View>
+      {helpSyncError ? (
+        <SyncErrorBanner
+          theme={theme}
+          title="Help Sync Failed"
+          message={helpSyncError}
+          isSyncing={isSyncingHelp}
+          onRetry={onRetryHelpSync}
+        />
+      ) : null}
 
-          <Text style={[styles.cardTitle, { color: t.text }]}>{post.title}</Text>
-
-          <View style={styles.metaRow}>
-            <View style={styles.rowAligned}>
-              <MaterialCommunityIcons name="motorbike" size={14} color={t.primary} />
-              <Text style={[styles.metaText, { color: t.muted }]}>{post.bikeModel}</Text>
-            </View>
-            <View style={styles.rowAligned}>
-              <MaterialCommunityIcons name="clock-outline" size={14} color={t.primary} />
-              <Text style={[styles.metaText, { color: t.muted }]}>{formatClock(post.createdAt)}</Text>
-            </View>
-          </View>
-
-          <Text style={[styles.bodyText, { color: t.muted }]} numberOfLines={3}>
-            {post.description}
+      {helpPosts.length === 0 ? (
+        <View style={styles.emptyWrap}>
+          <MaterialCommunityIcons name="wrench-outline" size={48} color={t.muted} />
+          <Text style={[styles.emptyTitle, { color: t.text }]}>{helpSyncError ? 'No help posts available.' : 'No help posts yet.'}</Text>
+          <Text style={[styles.emptySubtitle, { color: t.muted }]}>
+            {helpSyncError ? 'Retry sync once your connection is stable.' : 'Create one to ask the riding community.'}
           </Text>
+        </View>
+      ) : (
+        helpPosts.map((post) => (
+          <TouchableOpacity
+            key={post.id}
+            onPress={() => onOpenHelpDetail(post)}
+            style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}
+          >
+            <View style={styles.rowBetween}>
+              <TouchableOpacity style={styles.rowAligned} onPress={() => onViewProfile(post.creatorId)}>
+                <Image style={styles.avatarSmall} source={{ uri: post.creatorAvatar || avatarFallback }} />
+                <Text style={[styles.boldText, { color: t.text }]}>{post.creatorName}</Text>
+              </TouchableOpacity>
+              <Badge color="blue" theme={theme}>
+                {post.resolved ? 'Resolved' : post.category}
+              </Badge>
+            </View>
 
-          <View style={styles.rowBetween}>
-            <View style={[styles.statChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <MaterialCommunityIcons name="message-outline" size={14} color={t.muted} />
-              <Text style={[styles.statText, { color: t.muted }]}>{post.replies.length} replies</Text>
+            <Text style={[styles.cardTitle, { color: t.text }]}>{post.title}</Text>
+
+            <View style={styles.metaRow}>
+              <View style={styles.rowAligned}>
+                <MaterialCommunityIcons name="motorbike" size={14} color={t.primary} />
+                <Text style={[styles.metaText, { color: t.muted }]}>{post.bikeModel}</Text>
+              </View>
+              <View style={styles.rowAligned}>
+                <MaterialCommunityIcons name="clock-outline" size={14} color={t.primary} />
+                <Text style={[styles.metaText, { color: t.muted }]}>{formatClock(post.createdAt)}</Text>
+              </View>
             </View>
-            <View style={[styles.statChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <MaterialCommunityIcons name="arrow-up-bold" size={14} color={t.primary} />
-              <Text style={[styles.statText, { color: t.text }]}>{post.upvotes}</Text>
+
+            <Text style={[styles.bodyText, { color: t.muted }]} numberOfLines={3}>
+              {post.description}
+            </Text>
+
+            <View style={styles.rowBetween}>
+              <View style={[styles.statChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                <MaterialCommunityIcons name="message-outline" size={14} color={t.muted} />
+                <Text style={[styles.statText, { color: t.muted }]}>{post.replies.length} replies</Text>
+              </View>
+              <View style={[styles.statChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                <MaterialCommunityIcons name="arrow-up-bold" size={14} color={t.primary} />
+                <Text style={[styles.statText, { color: t.text }]}>{post.upvotes}</Text>
+              </View>
             </View>
-          </View>
-        </TouchableOpacity>
-      ))}
+          </TouchableOpacity>
+        ))
+      )}
     </View>
   );
 };
@@ -266,62 +412,123 @@ export const FeedTab = ({
 export const NewsTab = ({
   theme,
   newsArticles,
+  syncError,
+  isSyncing,
+  onRetrySync,
   onOpenArticle
 }: {
   theme: Theme;
   newsArticles: NewsArticle[];
+  syncError: string | null;
+  isSyncing: boolean;
+  onRetrySync: () => void;
   onOpenArticle: (url: string) => void;
 }) => {
   const t = TOKENS[theme];
+  const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
 
   return (
     <View style={styles.listWrap}>
-      {newsArticles.map((item) => (
-        <TouchableOpacity
-          key={item.id}
-          style={[styles.newsCard, { backgroundColor: t.card, borderColor: t.border }]}
-          onPress={() => onOpenArticle(item.url)}
-        >
-          {item.image && <Image source={{ uri: item.image }} style={styles.newsImage} resizeMode="cover" />}
+      {syncError ? (
+        <SyncErrorBanner
+          theme={theme}
+          title="News Sync Failed"
+          message={syncError}
+          isSyncing={isSyncing}
+          onRetry={onRetrySync}
+        />
+      ) : null}
 
-          <View style={styles.newsMetaRow}>
-            <View style={styles.rowAligned}>
-              <MaterialCommunityIcons name="rss" size={14} color={t.primary} />
-              <Text style={[styles.metaText, { color: t.muted }]}>{item.source}</Text>
-            </View>
-            <View style={styles.rowAligned}>
-              <Text style={[styles.metaText, { color: t.muted }]}>{formatRelative(item.publishedAt)}</Text>
-              <Text style={[styles.metaText, { color: t.muted }]}>•</Text>
-              <MaterialCommunityIcons name="check-decagram-outline" size={14} color={TOKENS[theme].blue} />
-              <Text style={[styles.metaText, { color: t.muted }]}>AI Enriched</Text>
-            </View>
-          </View>
+      {newsArticles.length === 0 ? (
+        <View style={styles.emptyWrap}>
+          <MaterialCommunityIcons name="newspaper-variant-outline" size={48} color={t.muted} />
+          <Text style={[styles.emptyTitle, { color: t.text }]}>{syncError ? 'News feed unavailable.' : 'No news available.'}</Text>
+          <Text style={[styles.emptySubtitle, { color: t.muted }]}>
+            {syncError ? 'Retry when internet connectivity returns.' : 'Pull to refresh or try again later.'}
+          </Text>
+        </View>
+      ) : (
+        newsArticles.map((item) => {
+          const primaryTag = item.tags[0] ?? 'Motorcycles';
 
-          <Text style={[styles.newsTitle, { color: t.text }]}>{item.title}</Text>
+          return (
+            <TouchableOpacity
+              key={item.id}
+              style={[styles.newsCard, { backgroundColor: t.card, borderColor: t.border }]}
+              onPress={() => onOpenArticle(item.url)}
+            >
+              {item.image && !failedImages[item.id] ? (
+                <Image
+                  source={{ uri: item.image }}
+                  style={styles.newsImage}
+                  resizeMode="cover"
+                  onError={() =>
+                    setFailedImages((previous) => (previous[item.id] ? previous : { ...previous, [item.id]: true }))
+                  }
+                />
+              ) : (
+                <View style={[styles.newsImageFallback, { backgroundColor: t.subtle, borderColor: t.border }]}>
+                  <View style={styles.newsImageFallbackContent}>
+                    <View style={[styles.newsImageFallbackPill, { borderColor: `${t.primary}66`, backgroundColor: `${t.primary}1f` }]}>
+                      <MaterialCommunityIcons name="newspaper-variant-outline" size={12} color={t.primary} />
+                      <Text style={[styles.newsImageFallbackPillText, { color: t.primary }]}>{primaryTag}</Text>
+                    </View>
+                    <Text style={[styles.newsImageFallbackSource, { color: t.text }]} numberOfLines={1}>
+                      {item.source}
+                    </Text>
+                    <Text style={[styles.newsImageFallbackSubtext, { color: t.muted }]}>Publisher preview not available</Text>
+                  </View>
+                </View>
+              )}
 
-          <Text style={[styles.newsSummary, { color: t.text }]}>{item.summary}</Text>
-
-          <View style={styles.wrapRow}>
-            {item.tags.map((tag) => (
-              <View key={`${item.id}-${tag}`} style={[styles.newsTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                <Text style={[styles.newsTagText, { color: t.muted }]}>{tag}</Text>
+              <View style={styles.newsMetaRow}>
+                <View style={styles.rowAligned}>
+                  <MaterialCommunityIcons name="rss" size={14} color={t.primary} />
+                  <Text style={[styles.metaText, { color: t.muted }]}>{item.source}</Text>
+                </View>
+                <View style={styles.rowAligned}>
+                  <Text style={[styles.metaText, { color: t.muted }]}>{formatRelative(item.publishedAt)}</Text>
+                  <Text style={[styles.metaText, { color: t.muted }]}>•</Text>
+                  <MaterialCommunityIcons name="check-decagram-outline" size={14} color={TOKENS[theme].blue} />
+                  <Text style={[styles.metaText, { color: t.muted }]}>AI Enriched</Text>
+                </View>
               </View>
-            ))}
-          </View>
 
-          <View style={styles.newsScoreRow}>
-            <View style={[styles.newsScoreChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <Text style={[styles.metaText, { color: t.muted }]}>Dup {(item.duplicateScore * 100).toFixed(0)}%</Text>
-            </View>
-            <View style={[styles.newsScoreChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <Text style={[styles.metaText, { color: t.muted }]}>Rel {item.relevanceScore}</Text>
-            </View>
-            <View style={[styles.newsScoreChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <Text style={[styles.metaText, { color: t.muted }]}>Vir {item.viralityScore}</Text>
-            </View>
-          </View>
-        </TouchableOpacity>
-      ))}
+              <Text style={[styles.newsTitle, { color: t.text }]}>{item.title}</Text>
+
+              <Text style={[styles.newsSummary, { color: t.text }]}>{item.summary}</Text>
+
+              <TouchableOpacity
+                style={[styles.newsReadMoreButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                onPress={() => onOpenArticle(item.url)}
+              >
+                <Text style={[styles.newsReadMoreText, { color: t.primary }]}>Read more</Text>
+                <MaterialCommunityIcons name="arrow-right" size={14} color={t.primary} />
+              </TouchableOpacity>
+
+              <View style={styles.wrapRow}>
+                {item.tags.map((tag) => (
+                  <View key={`${item.id}-${tag}`} style={[styles.newsTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <Text style={[styles.newsTagText, { color: t.muted }]}>{tag}</Text>
+                  </View>
+                ))}
+              </View>
+
+              <View style={styles.newsScoreRow}>
+                <View style={[styles.newsScoreChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <Text style={[styles.metaText, { color: t.muted }]}>Dup {(item.duplicateScore * 100).toFixed(0)}%</Text>
+                </View>
+                <View style={[styles.newsScoreChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <Text style={[styles.metaText, { color: t.muted }]}>Rel {item.relevanceScore}</Text>
+                </View>
+                <View style={[styles.newsScoreChip, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <Text style={[styles.metaText, { color: t.muted }]}>Vir {item.viralityScore}</Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+          );
+        })
+      )}
     </View>
   );
 };
@@ -371,11 +578,17 @@ export const MyRidesTab = ({
 export const ChatsTab = ({
   theme,
   conversations,
+  syncError,
+  isSyncing,
+  onRetrySync,
   onOpenChatRoom,
   onViewProfile
 }: {
   theme: Theme;
   conversations: Conversation[];
+  syncError: string | null;
+  isSyncing: boolean;
+  onRetrySync: () => void;
   onOpenChatRoom: (conversation: Conversation) => void;
   onViewProfile: (userId: string) => void;
 }) => {
@@ -383,31 +596,49 @@ export const ChatsTab = ({
 
   return (
     <View style={styles.listWrap}>
-      {conversations.map((chat) => (
-        <TouchableOpacity
-          key={chat.id}
-          style={[styles.chatRow, { backgroundColor: t.card, borderColor: t.border }]}
-          onPress={() => onOpenChatRoom(chat)}
-        >
-          <TouchableOpacity onPress={() => onViewProfile(chat.participantId)}>
-            <View>
-              <Image source={{ uri: chat.participantAvatar || avatarFallback }} style={styles.avatarMedium} />
-              {chat.unreadCount > 0 && <View style={[styles.unreadDot, { backgroundColor: t.primary }]} />}
+      {syncError ? (
+        <SyncErrorBanner
+          theme={theme}
+          title="Chat Sync Failed"
+          message={syncError}
+          isSyncing={isSyncing}
+          onRetry={onRetrySync}
+        />
+      ) : null}
+
+      {conversations.length === 0 ? (
+        <View style={styles.emptyWrap}>
+          <MaterialCommunityIcons name="message-outline" size={48} color={t.muted} />
+          <Text style={[styles.emptyTitle, { color: t.text }]}>No chats yet.</Text>
+          <Text style={[styles.emptySubtitle, { color: t.muted }]}>Connect with riders to start messaging.</Text>
+        </View>
+      ) : (
+        conversations.map((chat) => (
+          <TouchableOpacity
+            key={chat.id}
+            style={[styles.chatRow, { backgroundColor: t.card, borderColor: t.border }]}
+            onPress={() => onOpenChatRoom(chat)}
+          >
+            <TouchableOpacity onPress={() => onViewProfile(chat.participantId)}>
+              <View>
+                <Image source={{ uri: chat.participantAvatar || avatarFallback }} style={styles.avatarMedium} />
+                {chat.unreadCount > 0 && <View style={[styles.unreadDot, { backgroundColor: t.primary }]} />}
+              </View>
+            </TouchableOpacity>
+            <View style={styles.chatInfo}>
+              <View style={styles.rowBetween}>
+                <Text style={[styles.boldText, { color: t.text }]} numberOfLines={1}>
+                  {chat.participantName}
+                </Text>
+                <Text style={[styles.metaText, { color: t.muted }]}>{chat.timestamp}</Text>
+              </View>
+              <Text style={[styles.chatPreview, { color: chat.unreadCount > 0 ? t.text : t.muted }]} numberOfLines={1}>
+                {chat.lastMessage}
+              </Text>
             </View>
           </TouchableOpacity>
-          <View style={styles.chatInfo}>
-            <View style={styles.rowBetween}>
-              <Text style={[styles.boldText, { color: t.text }]} numberOfLines={1}>
-                {chat.participantName}
-              </Text>
-              <Text style={[styles.metaText, { color: t.muted }]}>{chat.timestamp}</Text>
-            </View>
-            <Text style={[styles.chatPreview, { color: chat.unreadCount > 0 ? t.text : t.muted }]} numberOfLines={1}>
-              {chat.lastMessage}
-            </Text>
-          </View>
-        </TouchableOpacity>
-      ))}
+        ))
+      )}
     </View>
   );
 };
@@ -449,7 +680,6 @@ export const ProfileTab = ({
             <Image source={{ uri: currentUser.avatar || avatarFallback }} style={styles.avatarLarge} />
             <View>
               <Text style={[styles.profileName, { color: t.text }]}>{currentUser.name}</Text>
-              <Text style={[styles.metaText, { color: t.muted }]}>{currentUser.handle}</Text>
               <View style={styles.rowAligned}>
                 <Badge color="orange" theme={theme}>
                   {currentUser.experience}

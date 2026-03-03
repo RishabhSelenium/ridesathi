@@ -1,6 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   KeyboardAvoidingView,
@@ -10,6 +11,7 @@ import {
   Pressable,
   SafeAreaView,
   ScrollView,
+  Share,
   Text,
   TextInput,
   TouchableOpacity,
@@ -78,6 +80,19 @@ type RouteMapModule = {
   }>;
 };
 
+type NewsWebViewModule = {
+  WebView: React.ComponentType<{
+    key?: string;
+    source: { uri: string };
+    style?: unknown;
+    onLoadStart?: () => void;
+    onLoadEnd?: () => void;
+    onError?: () => void;
+    javaScriptEnabled?: boolean;
+    domStorageEnabled?: boolean;
+  }>;
+};
+
 const routeMapModule: RouteMapModule | null = (() => {
   try {
     const maps = require('react-native-maps') as {
@@ -91,6 +106,14 @@ const routeMapModule: RouteMapModule | null = (() => {
       Marker: maps.Marker,
       Polyline: maps.Polyline
     };
+  } catch {
+    return null;
+  }
+})();
+
+const newsWebViewModule: NewsWebViewModule | null = (() => {
+  try {
+    return require('react-native-webview') as NewsWebViewModule;
   } catch {
     return null;
   }
@@ -184,7 +207,7 @@ export const LocationSettingsModal = ({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={styles.modalBackdrop}>
         <Pressable style={styles.modalScrim} onPress={onClose} />
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <View style={[styles.bottomSheet, { backgroundColor: t.surface, borderTopColor: t.primary }]}>
             <View style={styles.rowBetween}>
               <Text style={[styles.modalTitle, { color: t.text }]}>Location Settings</Text>
@@ -344,6 +367,9 @@ export const ChatRoomScreen = ({
   visible,
   conversation,
   currentUserId,
+  syncError,
+  isSyncing,
+  onRetrySync,
   onClose,
   onSendMessage,
   theme
@@ -351,6 +377,9 @@ export const ChatRoomScreen = ({
   visible: boolean;
   conversation: Conversation | null;
   currentUserId: string;
+  syncError?: string | null;
+  isSyncing?: boolean;
+  onRetrySync?: () => void;
   onClose: () => void;
   onSendMessage: (conversationId: string, text: string) => void;
   theme: Theme;
@@ -375,6 +404,30 @@ export const ChatRoomScreen = ({
             </View>
           </View>
         </View>
+
+        {!!syncError && (
+          <View style={[styles.syncBanner, { margin: 14, borderColor: `${TOKENS[theme].red}66`, backgroundColor: t.subtle }]}>
+            <MaterialCommunityIcons name="cloud-alert-outline" size={18} color={TOKENS[theme].red} />
+            <View style={styles.syncBannerContent}>
+              <Text style={[styles.syncBannerTitle, { color: TOKENS[theme].red }]}>Chat Sync Failed</Text>
+              <Text style={[styles.syncBannerMessage, { color: t.muted }]}>{syncError}</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.syncBannerRetry, { borderColor: t.border, backgroundColor: t.card, opacity: isSyncing ? 0.7 : 1 }]}
+              onPress={onRetrySync}
+              disabled={!onRetrySync || isSyncing}
+            >
+              {isSyncing ? (
+                <MaterialCommunityIcons name="progress-clock" size={16} color={t.primary} />
+              ) : (
+                <>
+                  <MaterialCommunityIcons name="refresh" size={14} color={t.primary} />
+                  <Text style={[styles.syncBannerRetryText, { color: t.primary }]}>Retry</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
 
         <ScrollView contentContainerStyle={styles.chatMessagesWrap}>
           {conversation.messages.length === 0 ? (
@@ -406,7 +459,7 @@ export const ChatRoomScreen = ({
           )}
         </ScrollView>
 
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={[styles.messageComposer, { borderTopColor: t.border, backgroundColor: t.surface }]}>
             <TextInput
               style={[styles.input, styles.flex1, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
@@ -548,7 +601,7 @@ export const CreateRideModal = ({
       <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
         <SafeAreaView style={styles.modalBackdrop}>
           <Pressable style={styles.modalScrim} onPress={onClose} />
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
             <View style={[styles.bottomSheet, { backgroundColor: t.surface, borderTopColor: t.primary }]}>
               <View style={styles.rowBetween}>
                 <Text style={[styles.modalTitle, { color: t.text }]}>Create Ride</Text>
@@ -557,7 +610,7 @@ export const CreateRideModal = ({
                 </TouchableOpacity>
               </View>
 
-              <ScrollView contentContainerStyle={styles.formSection} showsVerticalScrollIndicator={false}>
+              <ScrollView contentContainerStyle={styles.formSection} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                 <LabeledInput label="Ride Title" value={title} onChangeText={setTitle} theme={theme} placeholder="Highway sunrise run" />
 
                 <SelectorRow
@@ -765,7 +818,6 @@ export const CreateHelpModal = ({
   const [category, setCategory] = useState<HelpPost['category']>('Mechanical');
   const [bikeModel, setBikeModel] = useState('');
   const [description, setDescription] = useState('');
-  const [hasPhoto, setHasPhoto] = useState(false);
 
   const submit = () => {
     if (!title || !description || !bikeModel) return;
@@ -774,22 +826,20 @@ export const CreateHelpModal = ({
       title,
       category,
       bikeModel,
-      description,
-      image: hasPhoto ? 'https://images.unsplash.com/photo-1558981403-c5f9899a28bc?auto=format&fit=crop&q=80&w=800' : undefined
+      description
     });
 
     setTitle('');
     setCategory('Mechanical');
     setBikeModel('');
     setDescription('');
-    setHasPhoto(false);
   };
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={styles.modalBackdrop}>
         <Pressable style={styles.modalScrim} onPress={onClose} />
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <View style={[styles.bottomSheet, { backgroundColor: t.surface, borderTopColor: TOKENS[theme].blue }]}>
             <View style={styles.rowBetween}>
               <Text style={[styles.modalTitle, { color: t.text }]}>Create Help Request</Text>
@@ -798,7 +848,7 @@ export const CreateHelpModal = ({
               </TouchableOpacity>
             </View>
 
-            <ScrollView contentContainerStyle={styles.formSection} showsVerticalScrollIndicator={false}>
+            <ScrollView contentContainerStyle={styles.formSection} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <LabeledInput label="Title" value={title} onChangeText={setTitle} theme={theme} placeholder="Strange clicking while shifting" />
 
               <SelectorRow
@@ -827,13 +877,12 @@ export const CreateHelpModal = ({
               />
 
               <TouchableOpacity
-                style={[styles.togglePhotoButton, { borderColor: hasPhoto ? t.primary : t.border, backgroundColor: t.subtle }]}
-                onPress={() => setHasPhoto((prev) => !prev)}
+                style={[styles.togglePhotoButton, { borderColor: t.border, backgroundColor: t.subtle, opacity: 0.7 }]}
+                disabled
+                activeOpacity={1}
               >
-                <MaterialCommunityIcons name={hasPhoto ? 'camera-plus-outline' : 'camera-outline'} size={18} color={hasPhoto ? t.primary : t.muted} />
-                <Text style={[styles.bodyText, { color: hasPhoto ? t.primary : t.muted }]}>
-                  {hasPhoto ? 'Photo attached' : 'Attach photo (optional)'}
-                </Text>
+                <MaterialCommunityIcons name="camera-off-outline" size={18} color={t.muted} />
+                <Text style={[styles.bodyText, { color: t.muted }]}>Photo upload coming soon</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={submit}>
@@ -863,7 +912,6 @@ export const EditProfileModal = ({
 }) => {
   const t = TOKENS[theme];
   const [name, setName] = useState(user.name);
-  const [handle, setHandle] = useState(user.handle);
   const [garage, setGarage] = useState<string[]>(user.garage || []);
   const [style, setStyle] = useState(user.style);
   const [typicalRideTime, setTypicalRideTime] = useState(user.typicalRideTime);
@@ -871,7 +919,6 @@ export const EditProfileModal = ({
   useEffect(() => {
     if (!visible) return;
     setName(user.name);
-    setHandle(user.handle);
     setGarage(user.garage || []);
     setStyle(user.style);
     setTypicalRideTime(user.typicalRideTime);
@@ -891,14 +938,14 @@ export const EditProfileModal = ({
 
   const submit = () => {
     const filteredGarage = garage.map((value) => value.trim()).filter(Boolean);
-    onSave({ name, handle, garage: filteredGarage, style, typicalRideTime });
+    onSave({ name, garage: filteredGarage, style, typicalRideTime });
   };
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={styles.modalBackdrop}>
         <Pressable style={styles.modalScrim} onPress={onClose} />
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <View style={[styles.bottomSheet, { backgroundColor: t.surface, borderTopColor: t.primary }]}>
             <View style={styles.rowBetween}>
               <Text style={[styles.modalTitle, { color: t.text }]}>Edit Profile</Text>
@@ -907,9 +954,8 @@ export const EditProfileModal = ({
               </TouchableOpacity>
             </View>
 
-            <ScrollView contentContainerStyle={styles.formSection} showsVerticalScrollIndicator={false}>
+            <ScrollView contentContainerStyle={styles.formSection} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               <LabeledInput label="Name" value={name} onChangeText={setName} theme={theme} />
-              <LabeledInput label="Handle" value={handle} onChangeText={setHandle} theme={theme} />
 
               <Text style={[styles.inputLabel, { color: t.muted }]}>Garage</Text>
               {garage.map((bike, idx) => (
@@ -957,6 +1003,8 @@ export const RideDetailScreen = ({
   onRejectRequest,
   onUpdateRide,
   onCancelRide,
+  onReportRide,
+  isCreatorBlocked = false,
   onHandleViewProfile,
   theme
 }: {
@@ -970,6 +1018,8 @@ export const RideDetailScreen = ({
   onRejectRequest: (rideId: string, userId: string) => void;
   onUpdateRide: (rideId: string, updates: Partial<RidePost>) => void;
   onCancelRide: (rideId: string) => void;
+  onReportRide?: (rideId: string) => void;
+  isCreatorBlocked?: boolean;
   onHandleViewProfile?: (userId: string) => void;
   theme: Theme;
 }) => {
@@ -1007,14 +1057,26 @@ export const RideDetailScreen = ({
               {ride.title}
             </Text>
           </View>
-          <TouchableOpacity
-            style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
-            onPress={() => {
-              void onUpdateRide(ride.id, ride);
-            }}
-          >
-            <MaterialCommunityIcons name="share-variant-outline" size={18} color={t.primary} />
-          </TouchableOpacity>
+          <View style={styles.rowAligned}>
+            {!isCreator && (
+              <TouchableOpacity
+                style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                onPress={() => onReportRide?.(ride.id)}
+              >
+                <MaterialCommunityIcons name="flag-outline" size={18} color={TOKENS[theme].red} />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+              onPress={() => {
+                void Share.share({
+                  message: `Join my ride "${ride.title}" on ThrottleUp!\nDate: ${ride.date}\nTime: ${ride.startTime}\nRoute: ${ride.route}`
+                });
+              }}
+            >
+              <MaterialCommunityIcons name="share-variant-outline" size={18} color={t.primary} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         <ScrollView contentContainerStyle={styles.listWrap}>
@@ -1182,6 +1244,11 @@ export const RideDetailScreen = ({
               <MaterialCommunityIcons name="account-check-outline" size={18} color={TOKENS[theme].green} />
               <Text style={[styles.statusStripText, { color: TOKENS[theme].green }]}>You are joined</Text>
             </View>
+          ) : isCreatorBlocked ? (
+            <View style={[styles.statusStrip, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}1f` }]}>
+              <MaterialCommunityIcons name="account-cancel-outline" size={18} color={TOKENS[theme].red} />
+              <Text style={[styles.statusStripText, { color: TOKENS[theme].red }]}>Creator blocked</Text>
+            </View>
           ) : isPending ? (
             <View style={[styles.statusStrip, { borderColor: t.border, backgroundColor: t.subtle }]}>
               <MaterialCommunityIcons name="clock-outline" size={18} color={t.muted} />
@@ -1207,6 +1274,8 @@ export const HelpDetailScreen = ({
   onResolve,
   onUpvote,
   onReply,
+  onReportPost,
+  isCreatorBlocked = false,
   onHandleViewProfile,
   theme
 }: {
@@ -1217,6 +1286,8 @@ export const HelpDetailScreen = ({
   onResolve: (id: string) => void;
   onUpvote: (id: string) => void;
   onReply: (postId: string, text: string) => void;
+  onReportPost?: (postId: string) => void;
+  isCreatorBlocked?: boolean;
   onHandleViewProfile?: (userId: string) => void;
   theme: Theme;
 }) => {
@@ -1243,10 +1314,24 @@ export const HelpDetailScreen = ({
             </TouchableOpacity>
             <Text style={[styles.modalTitle, { color: t.text }]}>SOS Intel</Text>
           </View>
-          <TouchableOpacity style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]} onPress={() => onUpvote(post.id)}>
-            <MaterialCommunityIcons name="arrow-up-bold" size={16} color={t.primary} />
-            <Text style={[styles.metaText, { color: t.text, marginLeft: 4 }]}>{post.upvotes}</Text>
-          </TouchableOpacity>
+          <View style={styles.rowAligned}>
+            {!isCreator && (
+              <TouchableOpacity
+                style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                onPress={() => onReportPost?.(post.id)}
+              >
+                <MaterialCommunityIcons name="flag-outline" size={16} color={TOKENS[theme].red} />
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              disabled={isCreatorBlocked}
+              style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle, opacity: isCreatorBlocked ? 0.55 : 1 }]}
+              onPress={() => onUpvote(post.id)}
+            >
+              <MaterialCommunityIcons name="arrow-up-bold" size={16} color={t.primary} />
+              <Text style={[styles.metaText, { color: t.text, marginLeft: 4 }]}>{post.upvotes}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         <ScrollView contentContainerStyle={styles.listWrap}>
@@ -1304,7 +1389,7 @@ export const HelpDetailScreen = ({
           </View>
         </ScrollView>
 
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={[styles.modalFooter, { borderTopColor: t.border, backgroundColor: t.surface }]}>
             {isCreator ? (
               <TouchableOpacity
@@ -1316,25 +1401,32 @@ export const HelpDetailScreen = ({
                 <Text style={styles.primaryButtonText}>{post.resolved ? 'Marked Resolved' : 'Mark Resolved'}</Text>
               </TouchableOpacity>
             ) : (
-              <View style={styles.rowAligned}>
-                <TextInput
-                  value={replyText}
-                  onChangeText={setReplyText}
-                  placeholder="Write reply..."
-                  placeholderTextColor={t.muted}
-                  style={[styles.input, styles.flex1, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
-                />
-                <TouchableOpacity
-                  style={[styles.iconRoundButton, { backgroundColor: TOKENS[theme].blue }]}
-                  onPress={() => {
-                    if (!replyText.trim()) return;
-                    onReply(post.id, replyText.trim());
-                    setReplyText('');
-                  }}
-                >
-                  <MaterialCommunityIcons name="send" size={18} color="#fff" />
-                </TouchableOpacity>
-              </View>
+              isCreatorBlocked ? (
+                <View style={[styles.statusStrip, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}1f` }]}>
+                  <MaterialCommunityIcons name="account-cancel-outline" size={18} color={TOKENS[theme].red} />
+                  <Text style={[styles.statusStripText, { color: TOKENS[theme].red }]}>Creator blocked</Text>
+                </View>
+              ) : (
+                <View style={styles.rowAligned}>
+                  <TextInput
+                    value={replyText}
+                    onChangeText={setReplyText}
+                    placeholder="Write reply..."
+                    placeholderTextColor={t.muted}
+                    style={[styles.input, styles.flex1, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
+                  />
+                  <TouchableOpacity
+                    style={[styles.iconRoundButton, { backgroundColor: TOKENS[theme].blue }]}
+                    onPress={() => {
+                      if (!replyText.trim()) return;
+                      onReply(post.id, replyText.trim());
+                      setReplyText('');
+                    }}
+                  >
+                    <MaterialCommunityIcons name="send" size={18} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              )
             )}
           </View>
         </KeyboardAvoidingView>
@@ -1348,18 +1440,24 @@ export const UserProfileModal = ({
   user,
   rides,
   friendStatus,
+  isBlocked,
   onClose,
   onMessage,
   onAddFriend,
+  onReportUser,
+  onBlockUser,
   theme
 }: {
   visible: boolean;
   user: User | null;
   rides: RidePost[];
   friendStatus: FriendStatus;
+  isBlocked: boolean;
   onClose: () => void;
   onMessage: (userId: string) => void;
   onAddFriend: (userId: string) => void;
+  onReportUser: (userId: string) => void;
+  onBlockUser: (userId: string) => void;
   theme: Theme;
 }) => {
   const t = TOKENS[theme];
@@ -1367,8 +1465,8 @@ export const UserProfileModal = ({
   if (!user) return null;
 
   const userRides = rides.filter((ride) => ride.creatorId === user.id || ride.currentParticipants.includes(user.id));
-  const canMessage = friendStatus !== 'self';
-  const canAddFriend = friendStatus === 'none';
+  const canMessage = friendStatus !== 'self' && !isBlocked;
+  const canAddFriend = friendStatus === 'none' && !isBlocked;
   const friendButtonLabel = friendStatus === 'friend' ? 'Connected' : friendStatus === 'requested' ? 'Pending' : friendStatus === 'self' ? 'You' : 'Add';
 
   return (
@@ -1397,6 +1495,23 @@ export const UserProfileModal = ({
                 >
                   <MaterialCommunityIcons name="message-outline" size={18} color={canMessage ? t.primary : t.muted} />
                 </TouchableOpacity>
+                {friendStatus !== 'self' && (
+                  <TouchableOpacity
+                    style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                    onPress={() => onReportUser(user.id)}
+                  >
+                    <MaterialCommunityIcons name="flag-outline" size={18} color={TOKENS[theme].red} />
+                  </TouchableOpacity>
+                )}
+                {friendStatus !== 'self' && (
+                  <TouchableOpacity
+                    style={[styles.iconButton, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}1f` }]}
+                    disabled={isBlocked}
+                    onPress={() => onBlockUser(user.id)}
+                  >
+                    <MaterialCommunityIcons name="account-cancel-outline" size={18} color={TOKENS[theme].red} />
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity
                   style={[styles.primaryCompactButton, { backgroundColor: canAddFriend ? t.primary : t.subtle, borderColor: t.border }]}
                   disabled={!canAddFriend}
@@ -1409,7 +1524,12 @@ export const UserProfileModal = ({
             </View>
 
             <Text style={[styles.profileName, { color: t.text }]}>{user.name}</Text>
-            <Text style={[styles.metaText, { color: t.muted }]}>{user.handle}</Text>
+
+            {isBlocked && (
+              <View style={[styles.newsScoreChip, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}1f` }]}>
+                <Text style={[styles.metaText, { color: TOKENS[theme].red }]}>Blocked</Text>
+              </View>
+            )}
 
             <View style={styles.rowAligned}>
               <Badge color="orange" theme={theme}>
@@ -1494,7 +1614,7 @@ export const CreateSquadModal = ({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={styles.modalBackdrop}>
         <Pressable style={styles.modalScrim} onPress={onClose} />
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <View style={[styles.bottomSheet, { backgroundColor: t.surface, borderTopColor: t.primary }]}>
             <View style={styles.rowBetween}>
               <Text style={[styles.modalTitle, { color: t.text }]}>Create Squad</Text>
@@ -1677,6 +1797,124 @@ export const SquadDetailModal = ({
           </View>
         </ScrollView>
       </SafeAreaView>
+    </Modal>
+  );
+};
+
+export const NewsArticleModal = ({
+  visible,
+  url,
+  onClose,
+  theme
+}: {
+  visible: boolean;
+  url: string | null;
+  onClose: () => void;
+  theme: Theme;
+}) => {
+  const t = TOKENS[theme];
+  const insets = useSafeAreaInsets();
+  const WebViewComponent = newsWebViewModule?.WebView ?? null;
+  const [reloadToken, setReloadToken] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    setIsLoading(true);
+    setHasError(false);
+  }, [visible, url, reloadToken]);
+
+  if (!url) return null;
+
+  const sourceLabel = (() => {
+    try {
+      return new URL(url).hostname.replace(/^www\./, '');
+    } catch {
+      return 'Article';
+    }
+  })();
+
+  const retryLoad = () => {
+    setHasError(false);
+    setReloadToken((prev) => prev + 1);
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+      <View
+        style={[
+          styles.fullScreen,
+          {
+            backgroundColor: t.bg,
+            paddingTop: Math.max(insets.top, 8),
+            paddingBottom: Math.max(insets.bottom, 8)
+          }
+        ]}
+      >
+        <View style={[styles.modalHeader, { borderBottomColor: t.border }]}>
+          <View style={styles.rowAligned}>
+            <TouchableOpacity onPress={onClose} style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
+              <MaterialCommunityIcons name="arrow-left" size={20} color={t.text} />
+            </TouchableOpacity>
+            <Text style={[styles.modalTitle, { color: t.text }]} numberOfLines={1}>
+              {sourceLabel}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+            onPress={retryLoad}
+          >
+            <MaterialCommunityIcons name="refresh" size={18} color={t.primary} />
+          </TouchableOpacity>
+        </View>
+
+        {!WebViewComponent ? (
+          <View style={styles.newsReaderErrorWrap}>
+            <MaterialCommunityIcons name="application-braces-outline" size={28} color={TOKENS[theme].red} />
+            <Text style={[styles.newsReaderErrorTitle, { color: t.text }]}>Reader needs rebuild</Text>
+            <Text style={[styles.newsReaderErrorText, { color: t.muted }]}>
+              This app build does not include WebView yet. Rebuild once to open articles inside the app.
+            </Text>
+          </View>
+        ) : hasError ? (
+          <View style={styles.newsReaderErrorWrap}>
+            <MaterialCommunityIcons name="alert-circle-outline" size={28} color={TOKENS[theme].red} />
+            <Text style={[styles.newsReaderErrorTitle, { color: t.text }]}>Unable to load article</Text>
+            <Text style={[styles.newsReaderErrorText, { color: t.muted }]}>
+              Check connectivity and try again. The article will open inside the app.
+            </Text>
+            <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={retryLoad}>
+              <MaterialCommunityIcons name="refresh" size={18} color="#fff" />
+              <Text style={styles.primaryButtonText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={styles.fullScreen}>
+            <WebViewComponent
+              key={`${url}-${reloadToken}`}
+              source={{ uri: url }}
+              style={styles.newsReaderWebView}
+              onLoadStart={() => {
+                setIsLoading(true);
+                setHasError(false);
+              }}
+              onLoadEnd={() => setIsLoading(false)}
+              onError={() => {
+                setIsLoading(false);
+                setHasError(true);
+              }}
+              javaScriptEnabled
+              domStorageEnabled
+            />
+            {isLoading ? (
+              <View style={[styles.newsReaderLoadingOverlay, { backgroundColor: `${t.bg}cc` }]}>
+                <ActivityIndicator size="small" color={t.primary} />
+              </View>
+            ) : null}
+          </View>
+        )}
+      </View>
     </Modal>
   );
 };

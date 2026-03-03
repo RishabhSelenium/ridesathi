@@ -7,11 +7,10 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import Constants from 'expo-constants';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import * as Location from 'expo-location';
-import React, { useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Image,
-  Linking,
   Platform,
   Pressable,
   SafeAreaView,
@@ -32,6 +31,7 @@ import {
   TOKENS,
   avatarFallback
 } from './src/app/ui';
+import { canUserViewRideInFeed } from './src/app/feed-visibility';
 import { TabButton } from './src/components/common';
 import {
   ChatRoomScreen,
@@ -41,6 +41,7 @@ import {
   EditProfileModal,
   HelpDetailScreen,
   LocationSettingsModal,
+  NewsArticleModal,
   NotificationsOverlay,
   RideDetailScreen,
   SquadDetailModal,
@@ -57,20 +58,38 @@ import {
   MOCK_SQUADS,
   MOCK_USERS
 } from './src/constants';
-import { ChatMessage, Conversation, HelpPost, HelpReply, NewsArticle, Notification, RidePost, RideVisibility, Squad, User } from './src/types';
+import {
+  ChatMessage,
+  Conversation,
+  HelpPost,
+  HelpReply,
+  ModerationReport,
+  NewsArticle,
+  Notification,
+  RidePost,
+  RideVisibility,
+  Squad,
+  User
+} from './src/types';
 import { signOutFirebase, subscribeToAuthState } from './src/firebase/auth';
 import { sendChatMessageToRealtime, subscribeChatMessages } from './src/firebase/chat';
-import { isFirebaseConfigured } from './src/firebase/client';
+import { getFirebaseServices, isFirebaseConfigured } from './src/firebase/client';
 import {
+  createModerationReportInFirestore,
   deleteRideInFirestore,
+  fetchUserByIdFromFirestore,
   fetchHelpPostsFromFirestore,
   fetchRidesFromFirestore,
+  fetchSquadsFromFirestore,
   fetchUsersFromFirestore,
   upsertHelpPostInFirestore,
   upsertRideInFirestore,
+  upsertSquadInFirestore,
   upsertUserInFirestore
 } from './src/firebase/firestore';
 import { triggerRideCancelledNotification, triggerRideCreatedNotification } from './src/firebase/functions';
+import { installCrashLogging, logAnalyticsEvent } from './src/firebase/telemetry';
+import { fetchLatestNewsArticles } from './src/news/live-news';
 import { AppStateProvider, useAppState } from './src/state/app-state-context';
 
 const STORAGE_KEYS = {
@@ -83,7 +102,8 @@ const STORAGE_KEYS = {
   conversations: 'ridesathi.conversations',
   news: 'ridesathi.news',
   squads: 'ridesathi.squads',
-  locationMode: 'ridesathi.locationMode'
+  locationMode: 'ridesathi.locationMode',
+  moderationReports: 'ridesathi.moderationReports'
 } as const;
 
 type RootStackParamList = {
@@ -94,10 +114,47 @@ type RootStackParamList = {
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
 const FIREBASE_ENABLED = isFirebaseConfigured();
+const NEWS_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+type SyncChannel = 'rides' | 'help' | 'chat' | 'news';
+type SyncChannelState = {
+  isSyncing: boolean;
+  error: string | null;
+  lastSuccessAt: string | null;
+};
+type SyncState = Record<SyncChannel, SyncChannelState>;
+
+const INITIAL_SYNC_STATE: SyncState = {
+  rides: { isSyncing: false, error: null, lastSuccessAt: null },
+  help: { isSyncing: false, error: null, lastSuccessAt: null },
+  chat: { isSyncing: false, error: null, lastSuccessAt: null },
+  news: { isSyncing: false, error: null, lastSuccessAt: null }
+};
 
 const uniqueStrings = (values: string[]) => Array.from(new Set(values));
 const RIDE_VISIBILITY_OPTIONS: RideVisibility[] = ['Nearby', 'City', 'Friends'];
 const isRideVisibility = (value: string): value is RideVisibility => RIDE_VISIBILITY_OPTIONS.includes(value as RideVisibility);
+const FRIEND_REQUEST_WINDOW_MS = 10 * 60 * 1000;
+const FRIEND_REQUEST_MAX_IN_WINDOW = 6;
+const FRIEND_REQUEST_TARGET_COOLDOWN_MS = 2 * 60 * 1000;
+const HELP_REPLY_WINDOW_MS = 5 * 60 * 1000;
+const HELP_REPLY_MAX_IN_WINDOW = 8;
+const HELP_REPLY_POST_COOLDOWN_MS = 20 * 1000;
+const HELP_REPLY_DUPLICATE_COOLDOWN_MS = 2 * 60 * 1000;
+const HELP_REPLY_MAX_LENGTH = 500;
+const CHAT_BURST_WINDOW_MS = 12 * 1000;
+const CHAT_BURST_MAX_MESSAGES = 6;
+const CHAT_MIN_INTERVAL_MS = 700;
+const CHAT_DUPLICATE_COOLDOWN_MS = 6 * 1000;
+const CHAT_MESSAGE_MAX_LENGTH = 500;
+
+const pruneTimestamps = (timestamps: number[], now: number, windowMs: number): number[] =>
+  timestamps.filter((timestamp) => now - timestamp < windowMs);
+
+const formatCooldown = (milliseconds: number): string => {
+  const seconds = Math.ceil(milliseconds / 1000);
+  if (seconds >= 60) return `${Math.ceil(seconds / 60)} min`;
+  return `${Math.max(1, seconds)}s`;
+};
 
 const normalizeRideVisibility = (value: unknown): RideVisibility[] => {
   if (Array.isArray(value)) {
@@ -128,6 +185,47 @@ const safeParse = <T,>(value: string | null, fallback: T): T => {
   }
 };
 
+type LoginPayload = {
+  uid?: string;
+  phoneNumber: string;
+};
+
+const fallbackSyncErrorByChannel: Record<SyncChannel, string> = {
+  rides: 'Unable to sync rides right now. Check your network and retry.',
+  help: 'Unable to sync help posts right now. Check your network and retry.',
+  chat: 'Chat sync is unavailable right now. Check your network and retry.',
+  news: 'Unable to refresh the news feed right now. Check your network and retry.'
+};
+
+const buildSyncErrorMessage = (channel: SyncChannel, error: unknown): string => {
+  const fallback = fallbackSyncErrorByChannel[channel];
+  if (!(error instanceof Error)) return fallback;
+  const message = error.message.trim();
+  if (!message) return fallback;
+  if (message.toLowerCase() === fallback.toLowerCase()) return fallback;
+  return `${fallback} (${message})`;
+};
+
+const buildAuthenticatedUser = (uid: string, phoneNumber: string | undefined, seed?: Partial<User>): User => {
+  const phoneDigits = (phoneNumber ?? '').replace(/\D/g, '');
+  const fallbackName = phoneDigits.length >= 4 ? `Rider ${phoneDigits.slice(-4)}` : `Rider ${uid.slice(0, 4).toUpperCase()}`;
+  const base = seed ?? {};
+
+  return {
+    ...MOCK_CURRENT_USER,
+    ...base,
+    id: uid,
+    phoneNumber: phoneNumber ?? base.phoneNumber,
+    name: base.name?.trim() ? base.name : fallbackName,
+    friends: Array.isArray(base.friends) ? base.friends : [],
+    friendRequests: {
+      sent: Array.isArray(base.friendRequests?.sent) ? base.friendRequests.sent : [],
+      received: Array.isArray(base.friendRequests?.received) ? base.friendRequests.received : []
+    },
+    blockedUserIds: Array.isArray(base.blockedUserIds) ? base.blockedUserIds : []
+  };
+};
+
 const getCurrentUserFromStorage = async () => {
   const raw = await AsyncStorage.getItem(STORAGE_KEYS.currentUser);
   const persisted = safeParse<Partial<User>>(raw, {});
@@ -138,7 +236,8 @@ const getCurrentUserFromStorage = async () => {
     friendRequests: {
       ...MOCK_CURRENT_USER.friendRequests,
       ...(persisted.friendRequests ?? {})
-    }
+    },
+    blockedUserIds: Array.isArray(persisted.blockedUserIds) ? persisted.blockedUserIds : MOCK_CURRENT_USER.blockedUserIds
   };
 };
 
@@ -232,7 +331,151 @@ const AppShell = () => {
 
   const t = TOKENS[theme];
   const androidTopInset = Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) : 0;
-  const unreadCount = notifications.filter((item) => !item.read).length;
+  const lastSyncedUsersRef = useRef<Map<string, string> | null>(null);
+  const friendRequestTimestampsRef = useRef<number[]>([]);
+  const friendRequestCooldownByUserRef = useRef<Map<string, number>>(new Map());
+  const helpReplyTimestampsRef = useRef<number[]>([]);
+  const helpReplyMetaByPostRef = useRef<Map<string, { sentAt: number; text: string }>>(new Map());
+  const chatTimestampsByConversationRef = useRef<Map<string, number[]>>(new Map());
+  const chatLastMessageByConversationRef = useRef<Map<string, { sentAt: number; text: string }>>(new Map());
+  const lastGuardrailNotificationRef = useRef<{ sentAt: number; message: string } | null>(null);
+  const hasLoggedAppOpenRef = useRef(false);
+  const [syncState, setSyncState] = useState<SyncState>(INITIAL_SYNC_STATE);
+  const [chatSyncRetryToken, setChatSyncRetryToken] = useState(0);
+  const [activeNewsArticleUrl, setActiveNewsArticleUrl] = useState<string | null>(null);
+
+  const startSync = useCallback((channel: SyncChannel) => {
+    setSyncState((prev) => ({
+      ...prev,
+      [channel]: {
+        ...prev[channel],
+        isSyncing: true
+      }
+    }));
+  }, []);
+
+  const markSyncSuccess = useCallback((channel: SyncChannel) => {
+    setSyncState((prev) => ({
+      ...prev,
+      [channel]: {
+        isSyncing: false,
+        error: null,
+        lastSuccessAt: new Date().toISOString()
+      }
+    }));
+  }, []);
+
+  const markSyncFailure = useCallback((channel: SyncChannel, error: unknown) => {
+    const message = buildSyncErrorMessage(channel, error);
+    setSyncState((prev) => ({
+      ...prev,
+      [channel]: {
+        ...prev[channel],
+        isSyncing: false,
+        error: message
+      }
+    }));
+  }, []);
+
+  const runRideMutationSync = useCallback(
+    (operation: () => Promise<void>) => {
+      if (!FIREBASE_ENABLED) return;
+      startSync('rides');
+      void operation().then(() => markSyncSuccess('rides')).catch((error) => markSyncFailure('rides', error));
+    },
+    [markSyncFailure, markSyncSuccess, startSync]
+  );
+
+  const runHelpMutationSync = useCallback(
+    (operation: () => Promise<void>) => {
+      if (!FIREBASE_ENABLED) return;
+      startSync('help');
+      void operation().then(() => markSyncSuccess('help')).catch((error) => markSyncFailure('help', error));
+    },
+    [markSyncFailure, markSyncSuccess, startSync]
+  );
+
+  const syncRidesFromCloud = useCallback(async () => {
+    if (!FIREBASE_ENABLED) return;
+    startSync('rides');
+
+    try {
+      const remoteRides = await fetchRidesFromFirestore();
+      setRides(normalizeRides(remoteRides));
+      markSyncSuccess('rides');
+    } catch (error) {
+      markSyncFailure('rides', error);
+    }
+  }, [markSyncFailure, markSyncSuccess, setRides, startSync]);
+
+  const syncHelpFromCloud = useCallback(async () => {
+    if (!FIREBASE_ENABLED) return;
+    startSync('help');
+
+    try {
+      const remoteHelpPosts = await fetchHelpPostsFromFirestore();
+      setHelpPosts(remoteHelpPosts);
+      markSyncSuccess('help');
+    } catch (error) {
+      markSyncFailure('help', error);
+    }
+  }, [markSyncFailure, markSyncSuccess, setHelpPosts, startSync]);
+
+  useEffect(() => {
+    const uninstall = installCrashLogging();
+    return uninstall;
+  }, []);
+
+  useEffect(() => {
+    if (hasLoggedAppOpenRef.current) return;
+    hasLoggedAppOpenRef.current = true;
+    void logAnalyticsEvent('app_open', {
+      firebase_enabled: FIREBASE_ENABLED,
+      expo_go: isExpoGo
+    });
+  }, [isExpoGo]);
+
+  const refreshNewsFeed = useCallback(async () => {
+    startSync('news');
+    try {
+      const latestNews = await fetchLatestNewsArticles();
+      setNewsArticles((previousNews) => {
+        const toSignature = (items: NewsArticle[]) =>
+          items
+            .map((item) => `${item.id}:${item.image ?? ''}:${item.summary}:${item.duplicateScore}:${item.relevanceScore}:${item.viralityScore}`)
+            .join('|');
+
+        const previousSignature = toSignature(previousNews);
+        const nextSignature = toSignature(latestNews);
+        return previousSignature === nextSignature ? previousNews : latestNews;
+      });
+      markSyncSuccess('news');
+    } catch (error) {
+      markSyncFailure('news', error);
+    }
+  }, [markSyncFailure, markSyncSuccess, setNewsArticles, startSync]);
+
+  const applyAuthenticatedSession = useCallback(
+    async (payload: { uid: string; phoneNumber?: string }) => {
+      let remoteUser: User | null = null;
+
+      if (FIREBASE_ENABLED) {
+        try {
+          remoteUser = await fetchUserByIdFromFirestore(payload.uid);
+        } catch {
+          remoteUser = null;
+        }
+      }
+
+      setCurrentUser((prev) => {
+        const seed = remoteUser ?? (prev.id === payload.uid ? prev : undefined);
+        return buildAuthenticatedUser(payload.uid, payload.phoneNumber, seed);
+      });
+      setUsers((prev) => prev.filter((user) => user.id !== payload.uid));
+      setIsLoggedIn(true);
+    },
+    [setCurrentUser, setUsers, setIsLoggedIn]
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -253,11 +496,22 @@ const AppShell = () => {
           ]);
 
         const nextCurrentUser = await getCurrentUserFromStorage();
+        const authUser = FIREBASE_ENABLED ? getFirebaseServices()?.auth.currentUser ?? null : null;
+        const effectiveCurrentUser = authUser
+          ? buildAuthenticatedUser(
+            authUser.uid,
+            authUser.phoneNumber ?? undefined,
+            nextCurrentUser.id === authUser.uid ? nextCurrentUser : undefined
+          )
+          : nextCurrentUser;
 
         if (!mounted) return;
 
         setTheme(safeParse<Theme>(savedTheme, 'dark'));
-        setCurrentUser(nextCurrentUser);
+        setCurrentUser(effectiveCurrentUser);
+        if (authUser) {
+          setIsLoggedIn(true);
+        }
         setUsers(safeParse<User[]>(savedUsers, MOCK_USERS));
         setNotifications(safeParse<Notification[]>(savedNotifications, MOCK_NOTIFICATIONS));
         setRides(normalizeRides(safeParse<RidePost[]>(savedRides, MOCK_RIDES)));
@@ -268,40 +522,50 @@ const AppShell = () => {
         setLocationMode(safeParse<LocationMode>(savedLocationMode, 'auto'));
 
         if (FIREBASE_ENABLED) {
-          try {
-            const [remoteUsers, remoteRides, remoteHelpPosts] = await Promise.all([
-              fetchUsersFromFirestore(),
-              fetchRidesFromFirestore(),
-              fetchHelpPostsFromFirestore()
-            ]);
+          startSync('rides');
+          startSync('help');
 
-            if (!mounted) return;
+          const [remoteUsersResult, remoteRidesResult, remoteHelpPostsResult, remoteSquadsResult] = await Promise.allSettled([
+            fetchUsersFromFirestore(),
+            fetchRidesFromFirestore(),
+            fetchHelpPostsFromFirestore(),
+            fetchSquadsFromFirestore()
+          ]);
 
-            if (remoteUsers.length > 0) {
-              const me = remoteUsers.find((user) => user.id === nextCurrentUser.id);
-              if (me) {
-                setCurrentUser((prev) => ({
-                  ...prev,
-                  ...me,
-                  friendRequests: {
-                    ...prev.friendRequests,
-                    ...me.friendRequests
-                  }
-                }));
-              }
+          if (!mounted) return;
 
-              setUsers(remoteUsers.filter((user) => user.id !== nextCurrentUser.id));
+          if (remoteUsersResult.status === 'fulfilled' && remoteUsersResult.value.length > 0) {
+            const me = remoteUsersResult.value.find((user) => user.id === effectiveCurrentUser.id);
+            if (me) {
+              setCurrentUser((prev) => ({
+                ...prev,
+                ...me,
+                friendRequests: {
+                  ...prev.friendRequests,
+                  ...me.friendRequests
+                }
+              }));
             }
 
-            if (remoteRides.length > 0) {
-              setRides(normalizeRides(remoteRides));
-            }
+            setUsers(remoteUsersResult.value.filter((user) => user.id !== effectiveCurrentUser.id));
+          }
 
-            if (remoteHelpPosts.length > 0) {
-              setHelpPosts(remoteHelpPosts);
-            }
-          } catch {
-            // ignore cloud load failures and keep local data
+          if (remoteRidesResult.status === 'fulfilled') {
+            setRides(normalizeRides(remoteRidesResult.value));
+            markSyncSuccess('rides');
+          } else {
+            markSyncFailure('rides', remoteRidesResult.reason);
+          }
+
+          if (remoteHelpPostsResult.status === 'fulfilled') {
+            setHelpPosts(remoteHelpPostsResult.value);
+            markSyncSuccess('help');
+          } else {
+            markSyncFailure('help', remoteHelpPostsResult.reason);
+          }
+
+          if (remoteSquadsResult.status === 'fulfilled' && remoteSquadsResult.value.length > 0) {
+            setSquads(remoteSquadsResult.value);
           }
         }
       } finally {
@@ -321,12 +585,18 @@ const AppShell = () => {
   useEffect(() => {
     if (!FIREBASE_ENABLED) return;
     const unsubscribe = subscribeToAuthState((user) => {
-      if (user) {
-        setIsLoggedIn(true);
+      if (!user) {
+        setIsLoggedIn(false);
+        return;
       }
+
+      void applyAuthenticatedSession({
+        uid: user.uid,
+        phoneNumber: user.phoneNumber ?? undefined
+      });
     });
     return unsubscribe;
-  }, []);
+  }, [applyAuthenticatedSession, setIsLoggedIn]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -350,9 +620,25 @@ const AppShell = () => {
 
   useEffect(() => {
     if (!hydrated || !FIREBASE_ENABLED) return;
+
+    const nextSignatures = new Map<string, string>();
     users.forEach((user) => {
-      void upsertUserInFirestore(user);
+      nextSignatures.set(user.id, JSON.stringify(user));
     });
+
+    if (!lastSyncedUsersRef.current) {
+      lastSyncedUsersRef.current = nextSignatures;
+      return;
+    }
+
+    const previousSignatures = lastSyncedUsersRef.current;
+    users.forEach((user) => {
+      if (previousSignatures.get(user.id) !== nextSignatures.get(user.id)) {
+        void upsertUserInFirestore(user);
+      }
+    });
+
+    lastSyncedUsersRef.current = nextSignatures;
   }, [hydrated, users]);
 
   useEffect(() => {
@@ -382,6 +668,31 @@ const AppShell = () => {
 
   useEffect(() => {
     if (!hydrated) return;
+
+    let disposed = false;
+    const runRefresh = async () => {
+      if (disposed) return;
+      await refreshNewsFeed();
+    };
+
+    void runRefresh();
+    const timer = setInterval(() => {
+      void runRefresh();
+    }, NEWS_REFRESH_INTERVAL_MS);
+
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [hydrated, refreshNewsFeed]);
+
+  useEffect(() => {
+    if (!hydrated || activeTab !== 'news') return;
+    void refreshNewsFeed();
+  }, [hydrated, activeTab, refreshNewsFeed]);
+
+  useEffect(() => {
+    if (!hydrated) return;
     saveToStorage(STORAGE_KEYS.squads, squads);
   }, [hydrated, squads]);
 
@@ -390,12 +701,32 @@ const AppShell = () => {
     saveToStorage(STORAGE_KEYS.locationMode, locationMode);
   }, [hydrated, locationMode]);
 
-  const allUsers = useMemo(() => {
+  const usersById = useMemo(() => {
     const byId = new Map<string, User>();
     byId.set(currentUser.id, currentUser);
     users.forEach((user) => byId.set(user.id, user));
-    return Array.from(byId.values());
+    return byId;
   }, [currentUser, users]);
+
+  const blockedUserIds = useMemo(() => new Set(currentUser.blockedUserIds), [currentUser.blockedUserIds]);
+  const visibleUsers = useMemo(() => users.filter((user) => !blockedUserIds.has(user.id)), [users, blockedUserIds]);
+  const allUsers = useMemo(() => Array.from(usersById.values()), [usersById]);
+  const visibleNotifications = useMemo(
+    () => notifications.filter((notification) => !blockedUserIds.has(notification.senderId)),
+    [notifications, blockedUserIds]
+  );
+  const unreadCount = useMemo(() => visibleNotifications.filter((item) => !item.read).length, [visibleNotifications]);
+  const visibleConversations = useMemo(
+    () => conversations.filter((conversation) => !blockedUserIds.has(conversation.participantId)),
+    [conversations, blockedUserIds]
+  );
+  const visibleRides = useMemo(() => rides.filter((ride) => !blockedUserIds.has(ride.creatorId)), [rides, blockedUserIds]);
+  const visibleHelpPosts = useMemo(() => helpPosts.filter((post) => !blockedUserIds.has(post.creatorId)), [helpPosts, blockedUserIds]);
+
+  const feedRides = useMemo(
+    () => visibleRides.filter((ride) => canUserViewRideInFeed({ ride, viewer: currentUser, usersById })),
+    [visibleRides, currentUser, usersById]
+  );
 
   const selectedRide = useMemo(() => {
     if (!selectedRideId) return null;
@@ -404,9 +735,10 @@ const AppShell = () => {
 
   const selectedUserProfile = useMemo(() => {
     if (!selectedUserId) return null;
+    if (blockedUserIds.has(selectedUserId)) return null;
     if (selectedUserId === currentUser.id) return currentUser;
     return users.find((user) => user.id === selectedUserId) ?? null;
-  }, [selectedUserId, currentUser, users]);
+  }, [selectedUserId, blockedUserIds, currentUser, users]);
 
   const selectedSquad = useMemo(() => {
     if (!selectedSquadId) return null;
@@ -429,38 +761,60 @@ const AppShell = () => {
   }, [isRideDetailOpen, selectedRideId, selectedRide]);
 
   useEffect(() => {
+    if (!selectedRide) return;
+    if (!blockedUserIds.has(selectedRide.creatorId)) return;
+    setIsRideDetailOpen(false);
+    setSelectedRideId(null);
+  }, [selectedRide, blockedUserIds]);
+
+  useEffect(() => {
+    if (!selectedHelpPost) return;
+    if (!blockedUserIds.has(selectedHelpPost.creatorId)) return;
+    setIsHelpDetailOpen(false);
+    setSelectedHelpPost(null);
+  }, [selectedHelpPost, blockedUserIds, setIsHelpDetailOpen, setSelectedHelpPost]);
+
+  useEffect(() => {
     if (!FIREBASE_ENABLED || !activeConversation) return;
     const conversationId = activeConversation.id;
+    startSync('chat');
 
-    return subscribeChatMessages(conversationId, (messages) => {
-      if (messages.length === 0) return;
-      const lastMessage = messages[messages.length - 1];
+    return subscribeChatMessages(
+      conversationId,
+      (messages) => {
+        markSyncSuccess('chat');
+        if (messages.length === 0) return;
+        const lastMessage = messages[messages.length - 1];
 
-      setConversations((prev) =>
-        prev.map((conversation) =>
-          conversation.id === conversationId
+        setConversations((prev) =>
+          prev.map((conversation) =>
+            conversation.id === conversationId
+              ? {
+                ...conversation,
+                messages,
+                lastMessage: lastMessage.text,
+                timestamp: lastMessage.timestamp
+              }
+              : conversation
+          )
+        );
+
+        setActiveConversation((prev) =>
+          prev && prev.id === conversationId
             ? {
-              ...conversation,
+              ...prev,
               messages,
               lastMessage: lastMessage.text,
               timestamp: lastMessage.timestamp
             }
-            : conversation
-        )
-      );
-
-      setActiveConversation((prev) =>
-        prev && prev.id === conversationId
-          ? {
-            ...prev,
-            messages,
-            lastMessage: lastMessage.text,
-            timestamp: lastMessage.timestamp
-          }
-          : prev
-      );
-    });
-  }, [activeConversation?.id]);
+            : prev
+        );
+      },
+      (error) => {
+        markSyncFailure('chat', error);
+      }
+    );
+  }, [activeConversation?.id, chatSyncRetryToken, markSyncFailure, markSyncSuccess, startSync]);
 
   const resolveCityFromGeocode = (address: Location.LocationGeocodedAddress | undefined) =>
     address?.city ?? address?.district ?? address?.subregion ?? address?.region ?? null;
@@ -591,8 +945,184 @@ const AppShell = () => {
     setNotifications((prev) => [notification, ...prev]);
   };
 
+  const showActionGuardrail = (message: string) => {
+    const now = Date.now();
+    if (
+      lastGuardrailNotificationRef.current &&
+      lastGuardrailNotificationRef.current.message === message &&
+      now - lastGuardrailNotificationRef.current.sentAt < 1500
+    ) {
+      return;
+    }
+
+    lastGuardrailNotificationRef.current = { sentAt: now, message };
+    pushSystemNotification(message);
+    setIsNotificationsOpen(true);
+  };
+
+  const persistModerationReport = async (report: ModerationReport) => {
+    try {
+      const existingRaw = await AsyncStorage.getItem(STORAGE_KEYS.moderationReports);
+      const existing = safeParse<ModerationReport[]>(existingRaw, []);
+      await saveToStorage(STORAGE_KEYS.moderationReports, [report, ...existing].slice(0, 200));
+    } catch {
+      // ignore persistence failures for local moderation queue
+    }
+  };
+
+  const submitModerationReport = (payload: { targetType: ModerationReport['targetType']; targetId: string; reason: string; details?: string }) => {
+    const report: ModerationReport = {
+      id: `report-${Date.now()}-${currentUser.id}`,
+      reporterId: currentUser.id,
+      targetType: payload.targetType,
+      targetId: payload.targetId,
+      reason: payload.reason,
+      details: payload.details,
+      createdAt: new Date().toISOString()
+    };
+
+    void persistModerationReport(report);
+    if (FIREBASE_ENABLED) {
+      void createModerationReportInFirestore(report);
+    }
+
+    pushSystemNotification('Report submitted. Our moderation team will review it.');
+    setIsNotificationsOpen(true);
+  };
+
+  const handleReportUser = (userId: string) => {
+    if (userId === currentUser.id) return;
+
+    const targetUser = usersById.get(userId);
+    if (!targetUser) return;
+
+    Alert.alert('Report rider?', `Report ${targetUser.name} for abusive or unsafe behavior?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Report',
+        style: 'destructive',
+        onPress: () => {
+          submitModerationReport({
+            targetType: 'user',
+            targetId: userId,
+            reason: 'Abusive or unsafe rider behavior'
+          });
+        }
+      }
+    ]);
+  };
+
+  const handleReportRide = (rideId: string) => {
+    const targetRide = rides.find((ride) => ride.id === rideId);
+    if (!targetRide) return;
+
+    Alert.alert('Report ride post?', `Report "${targetRide.title}" as spam or unsafe?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Report',
+        style: 'destructive',
+        onPress: () => {
+          submitModerationReport({
+            targetType: 'ride',
+            targetId: rideId,
+            reason: 'Unsafe or spam ride post'
+          });
+        }
+      }
+    ]);
+  };
+
+  const handleReportHelpPost = (postId: string) => {
+    const targetPost = helpPosts.find((post) => post.id === postId);
+    if (!targetPost) return;
+
+    Alert.alert('Report help post?', `Report "${targetPost.title}" for abuse, scam, or spam?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Report',
+        style: 'destructive',
+        onPress: () => {
+          submitModerationReport({
+            targetType: 'helpPost',
+            targetId: postId,
+            reason: 'Abusive or spam help post'
+          });
+        }
+      }
+    ]);
+  };
+
+  const handleBlockUser = (userId: string) => {
+    if (userId === currentUser.id) return;
+
+    const targetUser = usersById.get(userId);
+    if (!targetUser) return;
+
+    if (currentUser.blockedUserIds.includes(userId)) {
+      pushSystemNotification(`${targetUser.name} is already blocked.`);
+      setIsNotificationsOpen(true);
+      return;
+    }
+
+    Alert.alert('Block rider?', `Block ${targetUser.name}? You will no longer see their posts or chats.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Block',
+        style: 'destructive',
+        onPress: () => {
+          setCurrentUser((prev) => ({
+            ...prev,
+            blockedUserIds: uniqueStrings([...prev.blockedUserIds, userId]),
+            friends: prev.friends.filter((id) => id !== userId),
+            friendRequests: {
+              sent: prev.friendRequests.sent.filter((id) => id !== userId),
+              received: prev.friendRequests.received.filter((id) => id !== userId)
+            }
+          }));
+
+          setUsers((prev) =>
+            prev.map((user) => {
+              if (user.id !== userId) return user;
+              return {
+                ...user,
+                friends: user.friends.filter((id) => id !== currentUser.id),
+                friendRequests: {
+                  sent: user.friendRequests.sent.filter((id) => id !== currentUser.id),
+                  received: user.friendRequests.received.filter((id) => id !== currentUser.id)
+                }
+              };
+            })
+          );
+
+          setConversations((prev) => prev.filter((conversation) => conversation.participantId !== userId));
+          setActiveConversation((prev) => (prev?.participantId === userId ? null : prev));
+          setNotifications((prev) => prev.filter((notification) => notification.senderId !== userId));
+
+          if (selectedRide?.creatorId === userId) {
+            setIsRideDetailOpen(false);
+            setSelectedRideId(null);
+          }
+
+          if (selectedHelpPost?.creatorId === userId) {
+            setIsHelpDetailOpen(false);
+            setSelectedHelpPost(null);
+          }
+
+          setSelectedUserId(null);
+          pushSystemNotification(`${targetUser.name} has been blocked.`);
+          setIsNotificationsOpen(true);
+        }
+      }
+    ]);
+  };
+
   const openOrCreateConversation = (userId: string) => {
     if (userId === currentUser.id) return;
+    if (blockedUserIds.has(userId)) {
+      pushSystemNotification('This rider is blocked. Unblock them to start a chat.');
+      setIsNotificationsOpen(true);
+      return;
+    }
 
     const participant = users.find((user) => user.id === userId);
     if (!participant) return;
@@ -626,6 +1156,11 @@ const AppShell = () => {
   };
 
   const handleViewProfile = (userId: string) => {
+    if (blockedUserIds.has(userId)) {
+      pushSystemNotification('This rider is blocked.');
+      setIsNotificationsOpen(true);
+      return;
+    }
     if (!allUsers.some((user) => user.id === userId)) return;
     setSelectedUserId(userId);
   };
@@ -640,7 +1175,8 @@ const AppShell = () => {
       });
 
       if (updatedRide && FIREBASE_ENABLED) {
-        void upsertRideInFirestore(updatedRide);
+        const rideToSync = updatedRide;
+        runRideMutationSync(() => upsertRideInFirestore(rideToSync));
       }
 
       return next;
@@ -670,7 +1206,7 @@ const AppShell = () => {
 
     setRides((prev) => prev.filter((ride) => ride.id !== rideId));
     if (FIREBASE_ENABLED) {
-      void deleteRideInFirestore(rideId);
+      runRideMutationSync(() => deleteRideInFirestore(rideId));
       void triggerRideCancelledNotification(rideId, rideToCancel.title, currentUser.id).catch(() => undefined);
     }
     setIsRideDetailOpen(false);
@@ -680,15 +1216,25 @@ const AppShell = () => {
   const handleRequestToJoinRide = (rideId: string) => {
     setRides((prev) => {
       let updatedRide: RidePost | null = null;
+      let didRequestJoin = false;
       const next = prev.map((ride) => {
         if (ride.id !== rideId) return ride;
+        if (blockedUserIds.has(ride.creatorId)) return ride;
         if (ride.currentParticipants.includes(currentUser.id) || ride.requests.includes(currentUser.id)) return ride;
         updatedRide = { ...ride, requests: [...ride.requests, currentUser.id] };
+        didRequestJoin = true;
         return updatedRide;
       });
 
       if (updatedRide && FIREBASE_ENABLED) {
-        void upsertRideInFirestore(updatedRide);
+        const rideToSync = updatedRide;
+        runRideMutationSync(() => upsertRideInFirestore(rideToSync));
+      }
+
+      if (didRequestJoin) {
+        void logAnalyticsEvent('join_ride', {
+          ride_id: rideId
+        });
       }
 
       return next;
@@ -719,7 +1265,8 @@ const AppShell = () => {
       });
 
       if (updatedRide && FIREBASE_ENABLED) {
-        void upsertRideInFirestore(updatedRide);
+        const rideToSync = updatedRide;
+        runRideMutationSync(() => upsertRideInFirestore(rideToSync));
       }
 
       return next;
@@ -736,7 +1283,8 @@ const AppShell = () => {
       });
 
       if (updatedRide && FIREBASE_ENABLED) {
-        void upsertRideInFirestore(updatedRide);
+        const rideToSync = updatedRide;
+        runRideMutationSync(() => upsertRideInFirestore(rideToSync));
       }
 
       return next;
@@ -744,11 +1292,21 @@ const AppShell = () => {
   };
 
   const handleOpenRideDetail = (ride: RidePost) => {
+    if (blockedUserIds.has(ride.creatorId)) {
+      pushSystemNotification('This ride is from a blocked rider.');
+      setIsNotificationsOpen(true);
+      return;
+    }
     setSelectedRideId(ride.id);
     setIsRideDetailOpen(true);
   };
 
   const handleOpenHelpDetail = (post: HelpPost) => {
+    if (blockedUserIds.has(post.creatorId)) {
+      pushSystemNotification('This help post is from a blocked rider.');
+      setIsNotificationsOpen(true);
+      return;
+    }
     setSelectedHelpPost(post);
     setIsHelpDetailOpen(true);
   };
@@ -775,8 +1333,12 @@ const AppShell = () => {
     };
 
     setHelpPosts((prev) => [newHelp, ...prev]);
+    void logAnalyticsEvent('post_help', {
+      help_id: newHelp.id,
+      category: newHelp.category
+    });
     if (FIREBASE_ENABLED) {
-      void upsertHelpPostInFirestore(newHelp);
+      runHelpMutationSync(() => upsertHelpPostInFirestore(newHelp));
     }
     setIsCreateHelpModalOpen(false);
     setIsCreateMenuOpen(false);
@@ -800,8 +1362,12 @@ const AppShell = () => {
     };
 
     setRides((prev) => [newRide, ...prev]);
+    void logAnalyticsEvent('create_ride', {
+      ride_id: newRide.id,
+      visibility: newRide.visibility.join('|')
+    });
     if (FIREBASE_ENABLED) {
-      void upsertRideInFirestore(newRide);
+      runRideMutationSync(() => upsertRideInFirestore(newRide));
       void triggerRideCreatedNotification(newRide).catch(() => undefined);
     }
     setIsCreateRideModalOpen(false);
@@ -828,27 +1394,47 @@ const AppShell = () => {
       createdAt: new Date().toISOString()
     };
     setSquads((prev) => [newSquad, ...prev]);
+    if (FIREBASE_ENABLED) {
+      void upsertSquadInFirestore(newSquad);
+    }
     setIsCreateSquadModalOpen(false);
   };
 
   const handleJoinSquad = (squadId: string) => {
-    setSquads((prev) =>
-      prev.map((s) => {
+    setSquads((prev) => {
+      let updatedSquad: Squad | null = null;
+      const next = prev.map((s) => {
         if (s.id !== squadId) return s;
         if (s.members.includes(currentUser.id)) return s;
-        return { ...s, members: [...s.members, currentUser.id] };
-      })
-    );
+        updatedSquad = { ...s, members: [...s.members, currentUser.id] };
+        return updatedSquad;
+      });
+
+      if (updatedSquad && FIREBASE_ENABLED) {
+        void upsertSquadInFirestore(updatedSquad);
+      }
+
+      return next;
+    });
   };
 
   const handleLeaveSquad = (squadId: string) => {
-    setSquads((prev) =>
-      prev.map((s) => {
+    setSquads((prev) => {
+      let updatedSquad: Squad | null = null;
+      const next = prev.map((s) => {
         if (s.id !== squadId) return s;
         if (s.creatorId === currentUser.id) return s;
-        return { ...s, members: s.members.filter((id) => id !== currentUser.id) };
-      })
-    );
+        if (!s.members.includes(currentUser.id)) return s;
+        updatedSquad = { ...s, members: s.members.filter((id) => id !== currentUser.id) };
+        return updatedSquad;
+      });
+
+      if (updatedSquad && FIREBASE_ENABLED) {
+        void upsertSquadInFirestore(updatedSquad);
+      }
+
+      return next;
+    });
   };
 
   const handleOpenSquadDetail = (squadId: string) => {
@@ -865,7 +1451,8 @@ const AppShell = () => {
       });
 
       if (updatedPost && FIREBASE_ENABLED) {
-        void upsertHelpPostInFirestore(updatedPost);
+        const postToSync = updatedPost;
+        runHelpMutationSync(() => upsertHelpPostInFirestore(postToSync));
       }
 
       return next;
@@ -876,6 +1463,9 @@ const AppShell = () => {
   };
 
   const handleUpvoteHelp = (id: string) => {
+    const targetPost = helpPosts.find((post) => post.id === id);
+    if (targetPost && blockedUserIds.has(targetPost.creatorId)) return;
+
     setHelpPosts((prev) => {
       let updatedPost: HelpPost | null = null;
       const next = prev.map((post) => {
@@ -885,7 +1475,8 @@ const AppShell = () => {
       });
 
       if (updatedPost && FIREBASE_ENABLED) {
-        void upsertHelpPostInFirestore(updatedPost);
+        const postToSync = updatedPost;
+        runHelpMutationSync(() => upsertHelpPostInFirestore(postToSync));
       }
 
       return next;
@@ -896,12 +1487,46 @@ const AppShell = () => {
   };
 
   const handleReplyHelp = (postId: string, text: string) => {
+    const targetPost = helpPosts.find((post) => post.id === postId);
+    if (targetPost && blockedUserIds.has(targetPost.creatorId)) return;
+
+    const normalizedText = text.trim();
+    if (!normalizedText) return;
+
+    if (normalizedText.length > HELP_REPLY_MAX_LENGTH) {
+      showActionGuardrail(`Reply is too long. Keep it under ${HELP_REPLY_MAX_LENGTH} characters.`);
+      return;
+    }
+
+    const now = Date.now();
+    const recentReplies = pruneTimestamps(helpReplyTimestampsRef.current, now, HELP_REPLY_WINDOW_MS);
+    if (recentReplies.length >= HELP_REPLY_MAX_IN_WINDOW) {
+      showActionGuardrail('Too many help replies in a short time. Please slow down.');
+      return;
+    }
+
+    const lastReplyForPost = helpReplyMetaByPostRef.current.get(postId);
+    if (lastReplyForPost && now - lastReplyForPost.sentAt < HELP_REPLY_POST_COOLDOWN_MS) {
+      showActionGuardrail(
+        `Please wait ${formatCooldown(HELP_REPLY_POST_COOLDOWN_MS - (now - lastReplyForPost.sentAt))} before replying again on this post.`
+      );
+      return;
+    }
+
+    if (lastReplyForPost && lastReplyForPost.text === normalizedText && now - lastReplyForPost.sentAt < HELP_REPLY_DUPLICATE_COOLDOWN_MS) {
+      showActionGuardrail('Duplicate reply detected. Please avoid repeating the same message.');
+      return;
+    }
+
+    helpReplyTimestampsRef.current = [...recentReplies, now];
+    helpReplyMetaByPostRef.current.set(postId, { sentAt: now, text: normalizedText });
+
     const reply: HelpReply = {
       id: `rep-${Date.now()}`,
       creatorId: currentUser.id,
       creatorName: currentUser.name,
       creatorAvatar: currentUser.avatar,
-      text,
+      text: normalizedText,
       isHelpful: false,
       createdAt: new Date().toISOString()
     };
@@ -915,7 +1540,8 @@ const AppShell = () => {
       });
 
       if (updatedPost && FIREBASE_ENABLED) {
-        void upsertHelpPostInFirestore(updatedPost);
+        const postToSync = updatedPost;
+        runHelpMutationSync(() => upsertHelpPostInFirestore(postToSync));
       }
 
       return next;
@@ -928,6 +1554,10 @@ const AppShell = () => {
   const handleAcceptFriendRequest = (senderId: string, notificationId: string) => {
     const friend = users.find((user) => user.id === senderId);
     if (!friend) return;
+    if (blockedUserIds.has(senderId)) {
+      handleMarkNotificationRead(notificationId);
+      return;
+    }
 
     setCurrentUser((prev) => ({
       ...prev,
@@ -990,23 +1620,44 @@ const AppShell = () => {
 
   const handleSendFriendRequest = (userId: string) => {
     if (userId === currentUser.id) return;
+    if (blockedUserIds.has(userId)) {
+      setSelectedUserId(null);
+      showActionGuardrail('Unblock this rider before sending a friend request.');
+      return;
+    }
 
     const targetUser = users.find((user) => user.id === userId);
     if (!targetUser) return;
 
     if (currentUser.friends.includes(userId)) {
       setSelectedUserId(null);
-      pushSystemNotification(`${targetUser.name} is already in your riding squad.`);
-      setIsNotificationsOpen(true);
+      showActionGuardrail(`${targetUser.name} is already in your riding squad.`);
       return;
     }
 
     if (currentUser.friendRequests.sent.includes(userId)) {
       setSelectedUserId(null);
-      pushSystemNotification(`Friend request already pending with ${targetUser.name}.`);
-      setIsNotificationsOpen(true);
+      showActionGuardrail(`Friend request already pending with ${targetUser.name}.`);
       return;
     }
+
+    const now = Date.now();
+    const recentRequests = pruneTimestamps(friendRequestTimestampsRef.current, now, FRIEND_REQUEST_WINDOW_MS);
+    if (recentRequests.length >= FRIEND_REQUEST_MAX_IN_WINDOW) {
+      showActionGuardrail('Too many friend requests sent recently. Please try again later.');
+      return;
+    }
+
+    const lastRequestForUser = friendRequestCooldownByUserRef.current.get(userId);
+    if (lastRequestForUser && now - lastRequestForUser < FRIEND_REQUEST_TARGET_COOLDOWN_MS) {
+      showActionGuardrail(
+        `Please wait ${formatCooldown(FRIEND_REQUEST_TARGET_COOLDOWN_MS - (now - lastRequestForUser))} before requesting ${targetUser.name} again.`
+      );
+      return;
+    }
+
+    friendRequestTimestampsRef.current = [...recentRequests, now];
+    friendRequestCooldownByUserRef.current.set(userId, now);
 
     setCurrentUser((prev) => ({
       ...prev,
@@ -1030,16 +1681,76 @@ const AppShell = () => {
       })
     );
 
-    pushSystemNotification(`Friend request sent to ${targetUser.name}.`);
-    setIsNotificationsOpen(true);
+    showActionGuardrail(`Friend request sent to ${targetUser.name}.`);
     setSelectedUserId(null);
   };
 
+  const handleRetryRidesSync = () => {
+    void syncRidesFromCloud();
+  };
+
+  const handleRetryHelpSync = () => {
+    void syncHelpFromCloud();
+  };
+
+  const handleRetryNewsSync = () => {
+    void refreshNewsFeed();
+  };
+
+  const handleRetryChatSync = () => {
+    if (!activeConversation) {
+      markSyncFailure('chat', new Error('Open a chat room to retry chat sync.'));
+      return;
+    }
+
+    setChatSyncRetryToken((prev) => prev + 1);
+  };
+
   const handleSendMessage = (conversationId: string, text: string) => {
+    const targetConversation = conversations.find((conversation) => conversation.id === conversationId);
+    if (targetConversation && blockedUserIds.has(targetConversation.participantId)) return;
+
+    const normalizedText = text.trim();
+    if (!normalizedText) return;
+
+    if (normalizedText.length > CHAT_MESSAGE_MAX_LENGTH) {
+      showActionGuardrail(`Message is too long. Keep it under ${CHAT_MESSAGE_MAX_LENGTH} characters.`);
+      return;
+    }
+
+    const now = Date.now();
+    const previousTimestamps = chatTimestampsByConversationRef.current.get(conversationId) ?? [];
+    const recentMessages = pruneTimestamps(previousTimestamps, now, CHAT_BURST_WINDOW_MS);
+    const lastSentAt = recentMessages[recentMessages.length - 1];
+    if (lastSentAt && now - lastSentAt < CHAT_MIN_INTERVAL_MS) {
+      showActionGuardrail(
+        `You're sending too fast. Wait ${formatCooldown(CHAT_MIN_INTERVAL_MS - (now - lastSentAt))} before the next message.`
+      );
+      return;
+    }
+
+    if (recentMessages.length >= CHAT_BURST_MAX_MESSAGES) {
+      showActionGuardrail('Chat burst limit reached. Please pause for a few seconds.');
+      return;
+    }
+
+    const lastMessageForConversation = chatLastMessageByConversationRef.current.get(conversationId);
+    if (
+      lastMessageForConversation &&
+      lastMessageForConversation.text === normalizedText &&
+      now - lastMessageForConversation.sentAt < CHAT_DUPLICATE_COOLDOWN_MS
+    ) {
+      showActionGuardrail('Duplicate message blocked. Please send a different message.');
+      return;
+    }
+
+    chatTimestampsByConversationRef.current.set(conversationId, [...recentMessages, now]);
+    chatLastMessageByConversationRef.current.set(conversationId, { sentAt: now, text: normalizedText });
+
     const newMsg: ChatMessage = {
       id: `m-${Date.now()}`,
       senderId: currentUser.id,
-      text,
+      text: normalizedText,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
@@ -1050,7 +1761,7 @@ const AppShell = () => {
         const updatedConversation = {
           ...conversation,
           messages: [...conversation.messages, newMsg],
-          lastMessage: text,
+          lastMessage: normalizedText,
           timestamp: 'Just now'
         };
 
@@ -1063,8 +1774,20 @@ const AppShell = () => {
     );
 
     if (FIREBASE_ENABLED) {
-      void sendChatMessageToRealtime(conversationId, newMsg);
+      startSync('chat');
+      void sendChatMessageToRealtime(conversationId, newMsg)
+        .then(() => {
+          markSyncSuccess('chat');
+        })
+        .catch((error) => {
+          markSyncFailure('chat', error);
+        });
     }
+
+    void logAnalyticsEvent('send_message', {
+      conversation_id: conversationId,
+      message_length: normalizedText.length
+    });
   };
 
   const handleOpenChatRoom = (conversation: Conversation) => {
@@ -1147,10 +1870,13 @@ const AppShell = () => {
         <View style={[styles.header, { borderBottomColor: t.border, backgroundColor: t.surface }]}>
           <View style={styles.headerTopRow}>
             <View style={styles.brandRow}>
-              <View style={[styles.brandIconWrap, { backgroundColor: t.primary }]}>
-                <MaterialCommunityIcons name="flash" size={18} color="#fff" />
-              </View>
-              <Text style={[styles.brandTitle, { color: t.text }]}>ThrottleUp</Text>
+              <TouchableOpacity
+                onPress={() => setActiveTab('profile')}
+                style={[styles.headerProfileButton, { marginRight: 10, borderColor: activeTab === 'profile' ? t.primary : t.border }]}
+              >
+                <Image source={{ uri: currentUser.avatar || avatarFallback }} style={styles.headerProfileImage} />
+              </TouchableOpacity>
+              <Text style={[styles.brandTitle, { marginLeft: 0, color: t.text }]}>ThrottleUp</Text>
             </View>
             <View style={styles.headerActions}>
               <TouchableOpacity
@@ -1174,12 +1900,6 @@ const AppShell = () => {
               >
                 <MaterialCommunityIcons name={locationMode === 'auto' ? 'crosshairs-gps' : 'map-marker-outline'} size={12} color={t.primary} />
                 <Text style={[styles.cityChipText, { color: t.muted }]}>{currentUser.city}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => setActiveTab('profile')}
-                style={[styles.headerProfileButton, { borderColor: activeTab === 'profile' ? t.primary : t.border }]}
-              >
-                <Image source={{ uri: currentUser.avatar || avatarFallback }} style={styles.headerProfileImage} />
               </TouchableOpacity>
             </View>
           </View>
@@ -1221,8 +1941,14 @@ const AppShell = () => {
             <FeedTab
               theme={theme}
               feedFilter={feedFilter}
-              rides={rides}
-              helpPosts={helpPosts}
+              rides={feedRides}
+              helpPosts={visibleHelpPosts}
+              ridesSyncError={syncState.rides.error}
+              helpSyncError={syncState.help.error}
+              isSyncingRides={syncState.rides.isSyncing}
+              isSyncingHelp={syncState.help.isSyncing}
+              onRetryRidesSync={handleRetryRidesSync}
+              onRetryHelpSync={handleRetryHelpSync}
               currentUser={currentUser}
               onOpenRideDetail={handleOpenRideDetail}
               onOpenHelpDetail={handleOpenHelpDetail}
@@ -1234,8 +1960,11 @@ const AppShell = () => {
             <NewsTab
               theme={theme}
               newsArticles={newsArticles}
+              syncError={syncState.news.error}
+              isSyncing={syncState.news.isSyncing}
+              onRetrySync={handleRetryNewsSync}
               onOpenArticle={(url) => {
-                void Linking.openURL(url);
+                setActiveNewsArticleUrl(url);
               }}
             />
           )}
@@ -1243,7 +1972,7 @@ const AppShell = () => {
           {activeTab === 'my-rides' && (
             <MyRidesTab
               theme={theme}
-              rides={rides}
+              rides={visibleRides}
               currentUser={currentUser}
               onOpenRideDetail={handleOpenRideDetail}
               onViewProfile={handleViewProfile}
@@ -1253,7 +1982,10 @@ const AppShell = () => {
           {activeTab === 'chats' && (
             <ChatsTab
               theme={theme}
-              conversations={conversations}
+              conversations={visibleConversations}
+              syncError={syncState.chat.error}
+              isSyncing={syncState.chat.isSyncing}
+              onRetrySync={handleRetryChatSync}
               onOpenChatRoom={handleOpenChatRoom}
               onViewProfile={handleViewProfile}
             />
@@ -1264,7 +1996,7 @@ const AppShell = () => {
               theme={theme}
               squads={squads}
               currentUser={currentUser}
-              users={users}
+              users={visibleUsers}
               searchQuery={squadSearchQuery}
               onSearchChange={setSquadSearchQuery}
               onCreateSquad={() => setIsCreateSquadModalOpen(true)}
@@ -1278,9 +2010,9 @@ const AppShell = () => {
             <ProfileTab
               theme={theme}
               currentUser={currentUser}
-              users={users}
-              rides={rides}
-              conversations={conversations}
+              users={visibleUsers}
+              rides={visibleRides}
+              conversations={visibleConversations}
               onEditProfile={() => setIsEditProfileOpen(true)}
               onViewProfile={handleViewProfile}
               onOpenConversation={handleOpenChatRoom}
@@ -1352,7 +2084,7 @@ const AppShell = () => {
       <NotificationsOverlay
         visible={isNotificationsOpen}
         theme={theme}
-        notifications={notifications}
+        notifications={visibleNotifications}
         onClose={() => setIsNotificationsOpen(false)}
         onClear={handleClearNotifications}
         onMarkRead={handleMarkNotificationRead}
@@ -1360,10 +2092,20 @@ const AppShell = () => {
         onRejectFriend={handleRejectFriendRequest}
       />
 
+      <NewsArticleModal
+        visible={Boolean(activeNewsArticleUrl)}
+        url={activeNewsArticleUrl}
+        theme={theme}
+        onClose={() => setActiveNewsArticleUrl(null)}
+      />
+
       <ChatRoomScreen
         visible={Boolean(activeConversation)}
         conversation={activeConversation}
         currentUserId={currentUser.id}
+        syncError={syncState.chat.error}
+        isSyncing={syncState.chat.isSyncing}
+        onRetrySync={handleRetryChatSync}
         onClose={() => setActiveConversation(null)}
         onSendMessage={handleSendMessage}
         theme={theme}
@@ -1394,7 +2136,7 @@ const AppShell = () => {
       <RideDetailScreen
         visible={isRideDetailOpen && Boolean(selectedRide)}
         ride={selectedRide}
-        users={allUsers}
+        users={allUsers.filter((user) => !blockedUserIds.has(user.id))}
         currentUser={currentUser}
         theme={theme}
         onClose={() => setIsRideDetailOpen(false)}
@@ -1403,6 +2145,8 @@ const AppShell = () => {
         onRejectRequest={handleRejectRideRequest}
         onUpdateRide={handleUpdateRide}
         onCancelRide={handleCancelRide}
+        onReportRide={handleReportRide}
+        isCreatorBlocked={Boolean(selectedRide && blockedUserIds.has(selectedRide.creatorId))}
         onHandleViewProfile={handleViewProfile}
       />
 
@@ -1415,18 +2159,23 @@ const AppShell = () => {
         onResolve={handleResolveHelp}
         onUpvote={handleUpvoteHelp}
         onReply={handleReplyHelp}
+        onReportPost={handleReportHelpPost}
+        isCreatorBlocked={Boolean(selectedHelpPost && blockedUserIds.has(selectedHelpPost.creatorId))}
         onHandleViewProfile={handleViewProfile}
       />
 
       <UserProfileModal
         visible={Boolean(selectedUserProfile)}
         user={selectedUserProfile}
-        rides={rides}
+        rides={visibleRides}
         theme={theme}
         friendStatus={selectedFriendStatus}
         onClose={() => setSelectedUserId(null)}
         onMessage={openOrCreateConversation}
         onAddFriend={handleSendFriendRequest}
+        onReportUser={handleReportUser}
+        onBlockUser={handleBlockUser}
+        isBlocked={Boolean(selectedUserProfile && blockedUserIds.has(selectedUserProfile.id))}
       />
 
       <CreateSquadModal
@@ -1440,7 +2189,7 @@ const AppShell = () => {
         visible={Boolean(selectedSquad)}
         squad={selectedSquad}
         currentUser={currentUser}
-        users={users}
+        users={visibleUsers}
         theme={theme}
         onClose={() => setSelectedSquadId(null)}
         onJoinSquad={handleJoinSquad}
@@ -1461,12 +2210,21 @@ const AppShell = () => {
         <RootStack.Screen name="Login">
           {({ navigation }) => (
             <LoginScreen
-              onLogin={() => {
-                setIsLoggedIn(true);
+              onLogin={async (payload: LoginPayload) => {
+                if (payload.uid) {
+                  await applyAuthenticatedSession({
+                    uid: payload.uid,
+                    phoneNumber: payload.phoneNumber
+                  });
+                } else {
+                  setCurrentUser((prev) => ({ ...prev, phoneNumber: payload.phoneNumber || prev.phoneNumber }));
+                  setIsLoggedIn(true);
+                }
                 navigation.replace('Main');
               }}
               theme={theme}
               onToggleTheme={setTheme}
+              firebaseEnabled={FIREBASE_ENABLED}
             />
           )}
         </RootStack.Screen>

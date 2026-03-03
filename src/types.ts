@@ -4,8 +4,8 @@ export type RideVisibility = 'Nearby' | 'City' | 'Friends';
 
 export interface User {
   id: string;
+  phoneNumber?: string;
   name: string;
-  handle: string;
   garage: string[];
   bikeType: string;
   city: string;
@@ -21,6 +21,7 @@ export interface User {
     sent: string[];
     received: string[];
   };
+  blockedUserIds: string[];
 }
 
 export interface MapPoint {
@@ -127,5 +128,17 @@ export interface Squad {
   avatar: string;
   city: string;
   rideStyle: string;
+  createdAt: string;
+}
+
+export type ModerationTargetType = 'user' | 'ride' | 'helpPost';
+
+export interface ModerationReport {
+  id: string;
+  reporterId: string;
+  targetType: ModerationTargetType;
+  targetId: string;
+  reason: string;
+  details?: string;
   createdAt: string;
 }

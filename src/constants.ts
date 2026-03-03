@@ -2,8 +2,8 @@ import { Conversation, HelpPost, NewsArticle, Notification, RidePost, Squad, Use
 
 export const MOCK_CURRENT_USER: User = {
   id: 'me-123',
+  phoneNumber: '+910000000000',
   name: 'Aarav Sharma',
-  handle: '@aarav_rides_delhi',
   garage: ['Royal Enfield Himalayan 450', 'KTM Duke 390'],
   bikeType: 'Adventure',
   city: 'New Delhi',
@@ -18,14 +18,14 @@ export const MOCK_CURRENT_USER: User = {
   friendRequests: {
     sent: [],
     received: ['u2']
-  }
+  },
+  blockedUserIds: []
 };
 
 export const MOCK_USERS: User[] = [
   {
     id: 'u1',
     name: 'Ishani Kapur',
-    handle: '@ishani_z900',
     garage: ['Kawasaki Z900', 'Triumph Trident 660'],
     bikeType: 'Sport',
     city: 'Gurugram',
@@ -37,12 +37,12 @@ export const MOCK_USERS: User[] = [
     verified: true,
     typicalRideTime: 'Saturday Mornings',
     friends: ['me-123'],
-    friendRequests: { sent: [], received: [] }
+    friendRequests: { sent: [], received: [] },
+    blockedUserIds: []
   },
   {
     id: 'u2',
     name: 'Rahul Verma',
-    handle: '@rahul_gs_noida',
     garage: ['BMW R1250GS'],
     bikeType: 'Adventure',
     city: 'Noida',
@@ -54,12 +54,12 @@ export const MOCK_USERS: User[] = [
     verified: true,
     typicalRideTime: 'Early Mornings',
     friends: [],
-    friendRequests: { sent: ['me-123'], received: [] }
+    friendRequests: { sent: ['me-123'], received: [] },
+    blockedUserIds: []
   },
   {
     id: 'u3',
     name: 'Sameer Khan',
-    handle: '@sam_interceptor',
     garage: ['Royal Enfield Interceptor 650'],
     bikeType: 'Classic',
     city: 'Faridabad',
@@ -71,7 +71,8 @@ export const MOCK_USERS: User[] = [
     verified: false,
     typicalRideTime: 'Evening Cruising',
     friends: [],
-    friendRequests: { sent: [], received: [] }
+    friendRequests: { sent: [], received: [] },
+    blockedUserIds: []
   }
 ];
 

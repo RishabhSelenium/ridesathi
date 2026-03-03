@@ -1,0 +1,316 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isNumber(value) {
+      return value is int || value is float;
+    }
+
+    function validUser(data, userId) {
+      return data.keys().hasAll([
+          'id',
+          'name',
+          'handle',
+          'garage',
+          'bikeType',
+          'city',
+          'style',
+          'experience',
+          'distance',
+          'isPro',
+          'avatar',
+          'verified',
+          'typicalRideTime',
+          'friends',
+          'friendRequests'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'phoneNumber',
+          'name',
+          'handle',
+          'garage',
+          'bikeType',
+          'city',
+          'style',
+          'experience',
+          'distance',
+          'isPro',
+          'avatar',
+          'verified',
+          'typicalRideTime',
+          'friends',
+          'friendRequests',
+          'blockedUserIds'
+        ]) &&
+        data.id == userId &&
+        (data.phoneNumber == null || data.phoneNumber is string) &&
+        data.name is string &&
+        data.handle is string &&
+        data.garage is list &&
+        data.bikeType is string &&
+        data.city is string &&
+        data.style is string &&
+        data.experience is string &&
+        data.distance is string &&
+        data.isPro is bool &&
+        data.avatar is string &&
+        data.verified is bool &&
+        data.typicalRideTime is string &&
+        data.friends is list &&
+        data.friendRequests is map &&
+        data.friendRequests.keys().hasAll(['sent', 'received']) &&
+        data.friendRequests.sent is list &&
+        data.friendRequests.received is list &&
+        (data.blockedUserIds == null || data.blockedUserIds is list);
+    }
+
+    function validRide(data, rideId) {
+      return data.keys().hasAll([
+          'id',
+          'creatorId',
+          'creatorName',
+          'creatorAvatar',
+          'type',
+          'title',
+          'route',
+          'date',
+          'startTime',
+          'maxParticipants',
+          'currentParticipants',
+          'requests',
+          'city',
+          'visibility',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'creatorId',
+          'creatorName',
+          'creatorAvatar',
+          'type',
+          'title',
+          'route',
+          'routePoints',
+          'date',
+          'startTime',
+          'maxParticipants',
+          'currentParticipants',
+          'requests',
+          'city',
+          'visibility',
+          'createdAt'
+        ]) &&
+        data.id == rideId &&
+        data.creatorId is string &&
+        data.creatorName is string &&
+        data.creatorAvatar is string &&
+        data.type is string &&
+        data.title is string &&
+        data.route is string &&
+        (data.routePoints == null || data.routePoints is list) &&
+        data.date is string &&
+        data.startTime is string &&
+        isNumber(data.maxParticipants) &&
+        data.currentParticipants is list &&
+        data.requests is list &&
+        data.city is string &&
+        data.visibility is list &&
+        data.createdAt is string;
+    }
+
+    function validHelpPost(data, postId) {
+      return data.keys().hasAll([
+          'id',
+          'creatorId',
+          'creatorName',
+          'creatorAvatar',
+          'title',
+          'description',
+          'bikeModel',
+          'category',
+          'resolved',
+          'upvotes',
+          'replies',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'creatorId',
+          'creatorName',
+          'creatorAvatar',
+          'title',
+          'description',
+          'bikeModel',
+          'category',
+          'resolved',
+          'upvotes',
+          'image',
+          'replies',
+          'createdAt'
+        ]) &&
+        data.id == postId &&
+        data.creatorId is string &&
+        data.creatorName is string &&
+        data.creatorAvatar is string &&
+        data.title is string &&
+        data.description is string &&
+        data.bikeModel is string &&
+        data.category is string &&
+        data.resolved is bool &&
+        isNumber(data.upvotes) &&
+        (data.image == null || data.image is string) &&
+        data.replies is list &&
+        data.createdAt is string;
+    }
+
+    function validSquad(data, squadId) {
+      return data.keys().hasAll([
+          'id',
+          'name',
+          'description',
+          'creatorId',
+          'members',
+          'avatar',
+          'city',
+          'rideStyle',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'name',
+          'description',
+          'creatorId',
+          'members',
+          'avatar',
+          'city',
+          'rideStyle',
+          'createdAt'
+        ]) &&
+        data.id == squadId &&
+        data.name is string &&
+        data.description is string &&
+        data.creatorId is string &&
+        data.members is list &&
+        data.avatar is string &&
+        data.city is string &&
+        data.rideStyle is string &&
+        data.createdAt is string;
+    }
+
+    function validModerationReport(data, reportId) {
+      return data.keys().hasAll([
+          'id',
+          'reporterId',
+          'targetType',
+          'targetId',
+          'reason',
+          'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id',
+          'reporterId',
+          'targetType',
+          'targetId',
+          'reason',
+          'details',
+          'createdAt'
+        ]) &&
+        data.id == reportId &&
+        data.reporterId is string &&
+        (data.targetType == 'user' || data.targetType == 'ride' || data.targetType == 'helpPost') &&
+        data.targetId is string &&
+        data.reason is string &&
+        (data.details == null || data.details is string) &&
+        data.createdAt is string;
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+        request.auth.uid == userId &&
+        validUser(request.resource.data, userId);
+
+      allow update: if isSignedIn() &&
+        validUser(request.resource.data, userId) &&
+        (
+          request.auth.uid == userId ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friends', 'friendRequests'])
+        );
+
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /rides/{rideId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+        validRide(request.resource.data, rideId) &&
+        request.resource.data.creatorId == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+        validRide(request.resource.data, rideId) &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.creatorId == resource.data.creatorId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        (
+          request.auth.uid == resource.data.creatorId ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['requests'])
+        );
+
+      allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;
+    }
+
+    match /helpPosts/{postId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+        validHelpPost(request.resource.data, postId) &&
+        request.resource.data.creatorId == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+        validHelpPost(request.resource.data, postId) &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.creatorId == resource.data.creatorId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        (
+          request.auth.uid == resource.data.creatorId ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['upvotes', 'replies'])
+        );
+
+      allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;
+    }
+
+    match /squads/{squadId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+        validSquad(request.resource.data, squadId) &&
+        request.resource.data.creatorId == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+        validSquad(request.resource.data, squadId) &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.creatorId == resource.data.creatorId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        (
+          request.auth.uid == resource.data.creatorId ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+        );
+
+      allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;
+    }
+
+    match /moderationReports/{reportId} {
+      allow create: if isSignedIn() &&
+        validModerationReport(request.resource.data, reportId) &&
+        request.resource.data.reporterId == request.auth.uid;
+
+      allow read, update, delete: if false;
+    }
+  }
+}

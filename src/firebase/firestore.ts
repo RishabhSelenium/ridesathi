@@ -2,6 +2,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   orderBy,
   query,
@@ -9,12 +10,14 @@ import {
   type DocumentData
 } from 'firebase/firestore';
 
-import { HelpPost, HelpReply, MapPoint, RidePost, RideVisibility, User } from '../types';
+import { HelpPost, HelpReply, MapPoint, ModerationReport, RidePost, RideVisibility, Squad, User } from '../types';
 import { getFirebaseServices } from './client';
 
 const USERS_COLLECTION = 'users';
 const RIDES_COLLECTION = 'rides';
 const HELP_COLLECTION = 'helpPosts';
+const SQUADS_COLLECTION = 'squads';
+const MODERATION_REPORTS_COLLECTION = 'moderationReports';
 const RIDE_VISIBILITY_OPTIONS: RideVisibility[] = ['Nearby', 'City', 'Friends'];
 
 const asString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
@@ -72,8 +75,8 @@ const normalizeReply = (item: unknown): HelpReply | null => {
 
 const normalizeUser = (id: string, raw: DocumentData): User => ({
   id,
+  phoneNumber: typeof raw.phoneNumber === 'string' ? raw.phoneNumber : undefined,
   name: asString(raw.name),
-  handle: asString(raw.handle),
   garage: asStringArray(raw.garage),
   bikeType: asString(raw.bikeType),
   city: asString(raw.city),
@@ -88,7 +91,8 @@ const normalizeUser = (id: string, raw: DocumentData): User => ({
   friendRequests: {
     sent: asStringArray(raw.friendRequests?.sent),
     received: asStringArray(raw.friendRequests?.received)
-  }
+  },
+  blockedUserIds: asStringArray(raw.blockedUserIds)
 });
 
 const normalizeRide = (id: string, raw: DocumentData): RidePost => ({
@@ -126,12 +130,33 @@ const normalizeHelpPost = (id: string, raw: DocumentData): HelpPost => ({
   createdAt: asString(raw.createdAt, new Date().toISOString())
 });
 
+const normalizeSquad = (id: string, raw: DocumentData): Squad => ({
+  id,
+  name: asString(raw.name),
+  description: asString(raw.description),
+  creatorId: asString(raw.creatorId),
+  members: asStringArray(raw.members),
+  avatar: asString(raw.avatar),
+  city: asString(raw.city),
+  rideStyle: asString(raw.rideStyle),
+  createdAt: asString(raw.createdAt, new Date().toISOString())
+});
+
 export const fetchUsersFromFirestore = async (): Promise<User[]> => {
   const services = getFirebaseServices();
   if (!services) return [];
 
   const snapshot = await getDocs(collection(services.firestore, USERS_COLLECTION));
   return snapshot.docs.map((item) => normalizeUser(item.id, item.data()));
+};
+
+export const fetchUserByIdFromFirestore = async (userId: string): Promise<User | null> => {
+  const services = getFirebaseServices();
+  if (!services) return null;
+
+  const snapshot = await getDoc(doc(services.firestore, USERS_COLLECTION, userId));
+  if (!snapshot.exists()) return null;
+  return normalizeUser(snapshot.id, snapshot.data());
 };
 
 export const fetchRidesFromFirestore = async (): Promise<RidePost[]> => {
@@ -162,6 +187,20 @@ export const fetchHelpPostsFromFirestore = async (): Promise<HelpPost[]> => {
   }
 };
 
+export const fetchSquadsFromFirestore = async (): Promise<Squad[]> => {
+  const services = getFirebaseServices();
+  if (!services) return [];
+
+  const squadsRef = collection(services.firestore, SQUADS_COLLECTION);
+  try {
+    const snapshot = await getDocs(query(squadsRef, orderBy('createdAt', 'desc')));
+    return snapshot.docs.map((item) => normalizeSquad(item.id, item.data()));
+  } catch {
+    const snapshot = await getDocs(squadsRef);
+    return snapshot.docs.map((item) => normalizeSquad(item.id, item.data()));
+  }
+};
+
 export const upsertUserInFirestore = async (user: User): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
@@ -188,4 +227,18 @@ export const upsertHelpPostInFirestore = async (helpPost: HelpPost): Promise<voi
   if (!services) return;
 
   await setDoc(doc(services.firestore, HELP_COLLECTION, helpPost.id), helpPost, { merge: true });
+};
+
+export const upsertSquadInFirestore = async (squad: Squad): Promise<void> => {
+  const services = getFirebaseServices();
+  if (!services) return;
+
+  await setDoc(doc(services.firestore, SQUADS_COLLECTION, squad.id), squad, { merge: true });
+};
+
+export const createModerationReportInFirestore = async (report: ModerationReport): Promise<void> => {
+  const services = getFirebaseServices();
+  if (!services) return;
+
+  await setDoc(doc(services.firestore, MODERATION_REPORTS_COLLECTION, report.id), report);
 };
