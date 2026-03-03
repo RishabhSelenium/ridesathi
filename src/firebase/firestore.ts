@@ -10,7 +10,18 @@ import {
   type DocumentData
 } from 'firebase/firestore';
 
-import { HelpPost, HelpReply, MapPoint, ModerationReport, RidePost, RideVisibility, Squad, User } from '../types';
+import {
+  HelpPost,
+  HelpReply,
+  MapPoint,
+  ModerationReport,
+  RideCostType,
+  RideInviteAudience,
+  RidePost,
+  RideVisibility,
+  Squad,
+  User
+} from '../types';
 import { getFirebaseServices } from './client';
 
 const USERS_COLLECTION = 'users';
@@ -95,24 +106,48 @@ const normalizeUser = (id: string, raw: DocumentData): User => ({
   blockedUserIds: asStringArray(raw.blockedUserIds)
 });
 
-const normalizeRide = (id: string, raw: DocumentData): RidePost => ({
-  id,
-  creatorId: asString(raw.creatorId),
-  creatorName: asString(raw.creatorName),
-  creatorAvatar: asString(raw.creatorAvatar),
-  type: asString(raw.type, 'Sunday Morning') as RidePost['type'],
-  title: asString(raw.title),
-  route: asString(raw.route),
-  routePoints: Array.isArray(raw.routePoints) ? raw.routePoints.map(normalizePoint).filter((item): item is MapPoint => item !== null) : [],
-  date: asString(raw.date),
-  startTime: asString(raw.startTime),
-  maxParticipants: asNumber(raw.maxParticipants, 5),
-  currentParticipants: asStringArray(raw.currentParticipants),
-  requests: asStringArray(raw.requests),
-  city: asString(raw.city),
-  visibility: normalizeVisibility(raw.visibility),
-  createdAt: asString(raw.createdAt, new Date().toISOString())
-});
+const normalizeRide = (id: string, raw: DocumentData): RidePost => {
+  const costTypeRaw = asString(raw.costType);
+  const inviteAudienceRaw = asString(raw.inviteAudience);
+  const costType: RideCostType | undefined = ['Paid', 'Split', 'Free'].includes(costTypeRaw as RideCostType)
+    ? (costTypeRaw as RideCostType)
+    : undefined;
+  const inviteAudience: RideInviteAudience | undefined = ['groups', 'riders'].includes(inviteAudienceRaw as RideInviteAudience)
+    ? (inviteAudienceRaw as RideInviteAudience)
+    : undefined;
+
+  return {
+    id,
+    creatorId: asString(raw.creatorId),
+    creatorName: asString(raw.creatorName),
+    creatorAvatar: asString(raw.creatorAvatar),
+    type: asString(raw.type, 'Sunday Morning') as RidePost['type'],
+    title: asString(raw.title),
+    route: asString(raw.route),
+    routePoints: Array.isArray(raw.routePoints) ? raw.routePoints.map(normalizePoint).filter((item): item is MapPoint => item !== null) : [],
+    date: asString(raw.date),
+    startTime: asString(raw.startTime),
+    maxParticipants: asNumber(raw.maxParticipants, 5),
+    currentParticipants: asStringArray(raw.currentParticipants),
+    requests: asStringArray(raw.requests),
+    city: asString(raw.city),
+    visibility: normalizeVisibility(raw.visibility),
+    createdAt: asString(raw.createdAt, new Date().toISOString()),
+    primaryDestination: asString(raw.primaryDestination) || undefined,
+    dayPlan: raw.dayPlan === 'multi' || raw.dayPlan === 'single' ? raw.dayPlan : undefined,
+    startLocation: asString(raw.startLocation) || undefined,
+    endLocation: asString(raw.endLocation) || undefined,
+    assemblyTime: asString(raw.assemblyTime) || undefined,
+    flagOffTime: asString(raw.flagOffTime) || undefined,
+    rideDuration: asString(raw.rideDuration) || undefined,
+    costType,
+    pricePerPerson: typeof raw.pricePerPerson === 'number' && Number.isFinite(raw.pricePerPerson) ? raw.pricePerPerson : undefined,
+    inclusions: asStringArray(raw.inclusions),
+    rideNote: asString(raw.rideNote) || undefined,
+    inviteAudience,
+    isPrivate: typeof raw.isPrivate === 'boolean' ? raw.isPrivate : undefined
+  };
+};
 
 const normalizeHelpPost = (id: string, raw: DocumentData): HelpPost => ({
   id,

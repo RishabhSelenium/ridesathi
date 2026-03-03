@@ -2,6 +2,7 @@
   "expo": {
     "name": "ThrottleUp",
     "slug": "throttleup",
+    "scheme": "throttleup",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./src/assets/logo2.png",

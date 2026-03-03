@@ -1,6 +1,8 @@
 export type RideType = 'Coffee Ride' | 'Night Ride' | 'Long Tour' | 'Track Day' | 'Sunday Morning';
 export type ExperienceLevel = 'Beginner' | 'Intermediate' | 'Advanced' | 'Pro';
 export type RideVisibility = 'Nearby' | 'City' | 'Friends';
+export type RideCostType = 'Paid' | 'Split' | 'Free';
+export type RideInviteAudience = 'groups' | 'riders';
 
 export interface User {
   id: string;
@@ -47,6 +49,19 @@ export interface RidePost {
   city: string;
   visibility: RideVisibility[];
   createdAt: string;
+  primaryDestination?: string;
+  dayPlan?: 'single' | 'multi';
+  startLocation?: string;
+  endLocation?: string;
+  assemblyTime?: string;
+  flagOffTime?: string;
+  rideDuration?: string;
+  costType?: RideCostType;
+  pricePerPerson?: number;
+  inclusions?: string[];
+  rideNote?: string;
+  inviteAudience?: RideInviteAudience;
+  isPrivate?: boolean;
 }
 
 export interface HelpPost {

@@ -330,6 +330,7 @@ const AppShell = () => {
   } = useAppState();
 
   const t = TOKENS[theme];
+  const createMenuButtonTextStyle = [styles.createMenuButtonText, { color: t.text }];
   const androidTopInset = Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) : 0;
   const lastSyncedUsersRef = useRef<Map<string, string> | null>(null);
   const friendRequestTimestampsRef = useRef<number[]>([]);
@@ -2033,14 +2034,14 @@ const AppShell = () => {
                   onPress={() => setIsCreateHelpModalOpen(true)}
                 >
                   <MaterialCommunityIcons name="wrench" size={16} color={TOKENS[theme].blue} />
-                  <Text style={[styles.createMenuButtonText, { color: t.text }]}>Post Help Request</Text>
+                  <Text style={createMenuButtonTextStyle}>Post Help Request</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.createMenuButton, { backgroundColor: t.surface, borderColor: t.border }]}
                   onPress={() => setIsCreateRideModalOpen(true)}
                 >
                   <MaterialCommunityIcons name="bike-fast" size={16} color={t.primary} />
-                  <Text style={[styles.createMenuButtonText, { color: t.text }]}>Create Ride</Text>
+                  <Text style={createMenuButtonTextStyle}>Create Ride</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -2121,6 +2122,7 @@ const AppShell = () => {
       <CreateRideModal
         visible={isCreateRideModalOpen}
         theme={theme}
+        currentCity={currentUser.city}
         onClose={() => setIsCreateRideModalOpen(false)}
         onSubmit={handleCreateRide}
       />
