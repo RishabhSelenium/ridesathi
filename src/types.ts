@@ -2,7 +2,21 @@ export type RideType = 'Coffee Ride' | 'Night Ride' | 'Long Tour' | 'Track Day' 
 export type ExperienceLevel = 'Beginner' | 'Intermediate' | 'Advanced' | 'Pro';
 export type RideVisibility = 'Nearby' | 'City' | 'Friends';
 export type RideCostType = 'Paid' | 'Split' | 'Free';
+export type RidePaymentMethod = 'UPI_LINK';
+export type RidePaymentState = 'pending' | 'paid';
 export type RideInviteAudience = 'groups' | 'riders';
+export type SquadJoinPermission = 'anyone' | 'request_to_join';
+export type SquadRole = 'owner' | 'admin' | 'member';
+
+export interface RidePaymentStatus {
+  userId: string;
+  amount: number;
+  status: RidePaymentState;
+  updatedAt: string;
+  paidAt?: string;
+  method?: RidePaymentMethod;
+  transactionRef?: string;
+}
 
 export interface User {
   id: string;
@@ -24,12 +38,57 @@ export interface User {
     received: string[];
   };
   blockedUserIds: string[];
+  firstName?: string;
+  lastName?: string;
+  fullName?: string;
+  sosNumber?: string;
+  sosContacts?: string[];
+  dob?: string;
+  bloodGroup?: string;
+  profileComplete?: boolean;
 }
 
 export interface MapPoint {
   lat: number;
   lng: number;
   label?: string;
+}
+
+export interface LiveRideLocation {
+  lat: number;
+  lng: number;
+  accuracy?: number;
+  speed?: number;
+  heading?: number;
+  updatedAt: string;
+}
+
+export interface LiveRideParticipantState {
+  userId: string;
+  checkedIn: boolean;
+  checkedInAt?: string;
+  lastLocation?: LiveRideLocation;
+  updatedAt: string;
+}
+
+export interface RideSosSignal {
+  id: string;
+  userId: string;
+  message: string;
+  createdAt: string;
+  location?: LiveRideLocation;
+}
+
+export interface RideTrackingSession {
+  rideId: string;
+  isActive: boolean;
+  startedAt: string;
+  startedByUserId: string;
+  endedAt?: string;
+  endedByUserId?: string;
+  updatedAt: string;
+  participants: Record<string, LiveRideParticipantState>;
+  lastSos?: RideSosSignal;
 }
 
 export interface RidePost {
@@ -56,8 +115,15 @@ export interface RidePost {
   assemblyTime?: string;
   flagOffTime?: string;
   rideDuration?: string;
+  routeDistanceKm?: number;
+  routeEtaMinutes?: number;
+  tollEstimateInr?: number;
   costType?: RideCostType;
   pricePerPerson?: number;
+  splitTotalAmount?: number;
+  paymentMethod?: RidePaymentMethod;
+  upiPaymentLink?: string;
+  paymentStatusByUserId?: Record<string, RidePaymentStatus>;
   inclusions?: string[];
   rideNote?: string;
   inviteAudience?: RideInviteAudience;
@@ -140,9 +206,12 @@ export interface Squad {
   description: string;
   creatorId: string;
   members: string[];
+  adminIds: string[];
   avatar: string;
   city: string;
-  rideStyle: string;
+  rideStyles: string[];
+  joinPermission: SquadJoinPermission;
+  joinRequests: string[];
   createdAt: string;
 }
 

@@ -2,9 +2,31 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React from 'react';
 import { Image, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
-import { colorForBadge, TOKENS, Theme, avatarFallback } from '../app/ui';
+import { colorForBadge, formatInrAmount, formatRideDistance, formatRideEta, TOKENS, Theme, avatarFallback } from '../app/ui';
 import { styles } from '../app/styles';
 import { RidePost } from '../types';
+
+const formatInrCurrency = (amount: number): string => `₹${Math.max(0, Math.round(amount)).toLocaleString('en-IN')}`;
+
+const getRidePaymentSummary = (ride: RidePost): string | null => {
+  if (ride.costType === 'Paid' && typeof ride.pricePerPerson === 'number' && ride.pricePerPerson > 0) {
+    return `Paid • ${formatInrCurrency(ride.pricePerPerson)}/rider`;
+  }
+
+  if (ride.costType === 'Split') {
+    if (typeof ride.splitTotalAmount === 'number' && ride.splitTotalAmount > 0) {
+      const payingCount = Math.max(1, ride.currentParticipants.filter((participantId) => participantId !== ride.creatorId).length);
+      const perRider = ride.splitTotalAmount / payingCount;
+      return `Split • ${formatInrCurrency(perRider)}/rider`;
+    }
+
+    if (typeof ride.pricePerPerson === 'number' && ride.pricePerPerson > 0) {
+      return `Split • ${formatInrCurrency(ride.pricePerPerson)}/rider`;
+    }
+  }
+
+  return null;
+};
 
 export const RideCard = ({
   ride,
@@ -22,6 +44,9 @@ export const RideCard = ({
   const t = TOKENS[theme];
   const isCreator = ride.creatorId === currentUserId;
   const isJoined = ride.currentParticipants.includes(currentUserId);
+  const hasRouteStats =
+    typeof ride.routeEtaMinutes === 'number' || typeof ride.routeDistanceKm === 'number' || typeof ride.tollEstimateInr === 'number';
+  const paymentSummary = getRidePaymentSummary(ride);
 
   return (
     <TouchableOpacity style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]} onPress={() => onOpenDetail(ride)}>
@@ -67,6 +92,32 @@ export const RideCard = ({
           </Text>
         </View>
       </View>
+
+      {hasRouteStats && (
+        <View style={styles.wrapRow}>
+          {typeof ride.routeEtaMinutes === 'number' && (
+            <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
+              <Text style={[styles.pillTagText, { color: t.text }]}>ETA {formatRideEta(ride.routeEtaMinutes)}</Text>
+            </View>
+          )}
+          {typeof ride.routeDistanceKm === 'number' && (
+            <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
+              <Text style={[styles.pillTagText, { color: t.text }]}>{formatRideDistance(ride.routeDistanceKm)}</Text>
+            </View>
+          )}
+          {typeof ride.tollEstimateInr === 'number' && (
+            <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
+              <Text style={[styles.pillTagText, { color: t.text }]}>Toll {formatInrAmount(ride.tollEstimateInr)}</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {paymentSummary && (
+        <View style={[styles.pillTag, { alignSelf: 'flex-start', borderColor: t.border, backgroundColor: t.subtle }]}>
+          <Text style={[styles.pillTagText, { color: t.text }]}>{paymentSummary}</Text>
+        </View>
+      )}
 
       <View style={[styles.routePreview, { borderColor: t.border, backgroundColor: t.subtle }]}> 
         <Text style={[styles.inputLabel, { color: t.muted }]}>Route</Text>
@@ -197,4 +248,3 @@ export const SelectorRow = ({
     </View>
   );
 };
-

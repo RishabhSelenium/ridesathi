@@ -1,5 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import React, { useEffect, useMemo, useState } from 'react';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -29,11 +30,29 @@ import {
   Theme,
   TOKENS,
   avatarFallback,
+  colorForBadge,
   formatClock,
-  formatDay
+  formatDay,
+  formatInrAmount,
+  formatRideDistance,
+  formatRideEta
 } from '../app/ui';
 import { Badge, LabeledInput, SelectorRow } from './common';
-import { Conversation, HelpPost, MapPoint, Notification, RidePost, RideType, RideVisibility, Squad, User } from '../types';
+import {
+  ChatMessage,
+  Conversation,
+  HelpPost,
+  MapPoint,
+  Notification,
+  RidePost,
+  RideTrackingSession,
+  RideType,
+  RideVisibility,
+  Squad,
+  SquadJoinPermission,
+  SquadRole,
+  User
+} from '../types';
 
 type RouteCoordinate = {
   latitude: number;
@@ -73,6 +92,7 @@ type RouteMapModule = {
   Marker: React.ComponentType<{
     coordinate: RouteCoordinate;
     title?: string;
+    description?: string;
     pinColor?: string;
   }>;
   Polyline: React.ComponentType<{
@@ -80,6 +100,74 @@ type RouteMapModule = {
     strokeWidth?: number;
     strokeColor?: string;
   }>;
+};
+
+type GooglePlacesAutocompletePrediction = {
+  description?: string;
+  place_id?: string;
+  structured_formatting?: {
+    main_text?: string;
+    secondary_text?: string;
+  };
+};
+
+type GooglePlacesAutocompleteResponse = {
+  status?: string;
+  predictions?: GooglePlacesAutocompletePrediction[];
+  error_message?: string;
+};
+
+type GooglePlaceDetailsResponse = {
+  status?: string;
+  result?: {
+    formatted_address?: string;
+    name?: string;
+    geometry?: {
+      location?: {
+        lat?: number;
+        lng?: number;
+      };
+    };
+  };
+  error_message?: string;
+};
+
+type GooglePlaceSuggestion = {
+  placeId: string;
+  description: string;
+  primaryText: string;
+  secondaryText?: string;
+};
+
+type GoogleDirectionsRoute = {
+  summary?: string;
+  warnings?: string[];
+  legs?: Array<{
+    distance?: { value?: number };
+    duration?: { value?: number };
+    duration_in_traffic?: { value?: number };
+    steps?: Array<{ html_instructions?: string }>;
+  }>;
+};
+
+type GoogleDirectionsResponse = {
+  status?: string;
+  routes?: GoogleDirectionsRoute[];
+  error_message?: string;
+};
+
+type RouteEstimate = {
+  distanceKm: number;
+  etaMinutes: number;
+  tollEstimateInr: number;
+  source: 'google' | 'fallback';
+};
+
+type LiveParticipantStatus = {
+  label: string;
+  badgeColor: 'orange' | 'blue' | 'green' | 'slate';
+  markerColor: string;
+  icon: keyof typeof MaterialCommunityIcons.glyphMap;
 };
 
 type NewsWebViewModule = {
@@ -182,11 +270,93 @@ const buildRouteTextFromPoints = (points: MapPoint[]): string =>
 
 const getAndroidTopInset = (insets: { top: number }): number => (Platform.OS === 'android' ? Math.max(insets.top, 8) : 0);
 
+const formatInrCurrency = (amount: number): string => `₹${Math.max(0, Math.round(amount)).toLocaleString('en-IN')}`;
+
+const sanitizeCurrencyInput = (value: string): string => value.replace(/[^\d]/g, '').slice(0, 6);
+
+const isValidUpiId = (value: string): boolean => /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/.test(value);
+
+const resolveUpiDestination = (value: string): string | null => {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  if (/^upi:\/\/pay/i.test(normalized) || /^https?:\/\//i.test(normalized)) return normalized;
+  if (isValidUpiId(normalized)) {
+    return `upi://pay?pa=${encodeURIComponent(normalized)}`;
+  }
+  return null;
+};
+
+const buildUpiCheckoutUrl = (baseLink: string, amount: number, note: string): string => {
+  if (!/^upi:\/\/pay/i.test(baseLink)) return baseLink;
+
+  const params: string[] = [];
+  if (!/(?:\?|&)am=/.test(baseLink) && Number.isFinite(amount) && amount > 0) {
+    params.push(`am=${encodeURIComponent(amount.toFixed(2))}`);
+  }
+  if (!/(?:\?|&)cu=/.test(baseLink)) {
+    params.push('cu=INR');
+  }
+  if (!/(?:\?|&)tn=/.test(baseLink) && note.trim().length > 0) {
+    params.push(`tn=${encodeURIComponent(note.trim().slice(0, 80))}`);
+  }
+  if (params.length === 0) return baseLink;
+
+  const separator = baseLink.includes('?') ? '&' : '?';
+  return `${baseLink}${separator}${params.join('&')}`;
+};
+
+const getLiveParticipantStatus = ({
+  checkedIn,
+  hasLocation,
+  theme
+}: {
+  checkedIn: boolean;
+  hasLocation: boolean;
+  theme: Theme;
+}): LiveParticipantStatus => {
+  const t = TOKENS[theme];
+
+  if (checkedIn && hasLocation) {
+    return {
+      label: 'Checked in + GPS',
+      badgeColor: 'green',
+      markerColor: t.green,
+      icon: 'shield-check-outline'
+    };
+  }
+
+  if (checkedIn) {
+    return {
+      label: 'Checked in',
+      badgeColor: 'blue',
+      markerColor: t.blue,
+      icon: 'shield-check-outline'
+    };
+  }
+
+  if (hasLocation) {
+    return {
+      label: 'GPS only',
+      badgeColor: 'orange',
+      markerColor: t.primary,
+      icon: 'crosshairs-gps'
+    };
+  }
+
+  return {
+    label: 'Awaiting check-in',
+    badgeColor: 'slate',
+    markerColor: t.red,
+    icon: 'clock-outline'
+  };
+};
+
 type RideCostOption = 'Paid' | 'Split' | 'Free';
 type InviteAudience = 'groups' | 'riders';
 type RideInclusion = 'Dinner' | 'Drinks' | 'Breakfast' | 'Lunch';
 type RideStep = 1 | 2 | 3 | 4 | 5;
 type LocationPickerContext = 'primaryDestination' | 'rideStarts' | 'rideEnds';
+type TimePickerField = 'assembly' | 'flagOff';
 
 const TRENDING_DESTINATIONS_FALLBACK = [
   'United Coffee House Rewind',
@@ -251,6 +421,215 @@ const DEFAULT_RIDE_NOTE = [
   '• Ride in a staggered formation and maintain your position.',
   '• Follow traffic rules, keep a safe distance, and look out for fellow riders.'
 ].join('\n');
+
+const DATE_PICKER_WINDOW_DAYS = 180;
+const TIME_PICKER_INTERVAL_MINUTES = 15;
+const PLACE_AUTOCOMPLETE_MIN_QUERY_LENGTH = 2;
+const PLACE_AUTOCOMPLETE_DEBOUNCE_MS = 250;
+const GOOGLE_PLACES_KEY =
+  (process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY ?? process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? '').trim();
+
+const formatRideDateLabel = (value: Date): string => {
+  const formatted = value.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric'
+  });
+  return formatted.replace(',', ' |');
+};
+
+const formatRideTimeLabel = (value: Date): string =>
+  value.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+
+const stripHtmlTags = (value: string): string => value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+const containsTollKeyword = (value: string): boolean => /\btolls?\b/i.test(value);
+
+const clampPositiveNumber = (value: number): number => (Number.isFinite(value) && value > 0 ? value : 0);
+
+const toRadians = (value: number): number => (value * Math.PI) / 180;
+
+const calculateDistanceBetweenPointsKm = (from: MapPoint, to: MapPoint): number => {
+  const earthRadiusKm = 6371;
+  const dLat = toRadians(to.lat - from.lat);
+  const dLng = toRadians(to.lng - from.lng);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(from.lat)) * Math.cos(toRadians(to.lat)) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusKm * c;
+};
+
+const calculatePolylineDistanceKm = (points: MapPoint[]): number => {
+  if (points.length < 2) return 0;
+  let total = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    total += calculateDistanceBetweenPointsKm(points[index - 1], points[index]);
+  }
+  return total;
+};
+
+const estimateTollFromDistance = (distanceKm: number, likelyHasTolls: boolean): number => {
+  const safeDistanceKm = clampPositiveNumber(distanceKm);
+  if (safeDistanceKm < 30) return 0;
+
+  const baseCharge = likelyHasTolls ? 40 : 0;
+  const perKmCharge = likelyHasTolls ? 1.55 : safeDistanceKm >= 90 ? 0.6 : 0;
+  const rawEstimate = baseCharge + safeDistanceKm * perKmCharge;
+  return Math.max(0, Math.round(rawEstimate / 10) * 10);
+};
+
+const toDirectionsLocationToken = (label: string, point: MapPoint | null): string | null => {
+  if (point && isFiniteNumber(point.lat) && isFiniteNumber(point.lng)) {
+    return `${point.lat},${point.lng}`;
+  }
+  const normalizedLabel = label.trim();
+  return normalizedLabel.length > 0 ? normalizedLabel : null;
+};
+
+const parseGoogleDirectionsEstimate = (route: GoogleDirectionsRoute): RouteEstimate | null => {
+  const legs = route.legs ?? [];
+  if (legs.length === 0) return null;
+
+  const distanceMeters = legs.reduce((sum, leg) => {
+    const distanceValue = leg.distance?.value;
+    if (!Number.isFinite(distanceValue ?? NaN)) return sum;
+    return sum + Number(distanceValue);
+  }, 0);
+
+  const durationSeconds = legs.reduce((sum, leg) => {
+    const durationInTrafficValue = leg.duration_in_traffic?.value;
+    const durationValue = leg.duration?.value;
+    if (Number.isFinite(durationInTrafficValue ?? NaN)) return sum + Number(durationInTrafficValue);
+    if (Number.isFinite(durationValue ?? NaN)) return sum + Number(durationValue);
+    return sum;
+  }, 0);
+
+  if (distanceMeters <= 0 || durationSeconds <= 0) return null;
+
+  const legInstructionText = legs
+    .flatMap((leg) => leg.steps ?? [])
+    .map((step) => stripHtmlTags(step.html_instructions ?? ''))
+    .filter(Boolean);
+  const tollContext = [route.summary ?? '', ...(route.warnings ?? []), ...legInstructionText].join(' ');
+  const hasTollHint = containsTollKeyword(tollContext);
+  const distanceKm = distanceMeters / 1000;
+  const etaMinutes = durationSeconds / 60;
+
+  return {
+    distanceKm,
+    etaMinutes,
+    tollEstimateInr: estimateTollFromDistance(distanceKm, hasTollHint),
+    source: 'google'
+  };
+};
+
+const buildFallbackRouteEstimate = (startPoint: MapPoint | null, endPoint: MapPoint | null, intermediatePoints: MapPoint[]): RouteEstimate | null => {
+  const coordinatePoints = [startPoint, ...intermediatePoints, endPoint].filter((point): point is MapPoint => point !== null);
+  if (coordinatePoints.length < 2) return null;
+
+  const distanceKm = calculatePolylineDistanceKm(coordinatePoints);
+  if (!Number.isFinite(distanceKm) || distanceKm <= 0) return null;
+
+  const averageSpeedKmph = distanceKm >= 180 ? 62 : distanceKm >= 90 ? 54 : 42;
+  const etaMinutes = Math.max(8, (distanceKm / averageSpeedKmph) * 60);
+
+  return {
+    distanceKm,
+    etaMinutes,
+    tollEstimateInr: estimateTollFromDistance(distanceKm, distanceKm >= 60),
+    source: 'fallback'
+  };
+};
+
+const fetchGoogleDirectionsEstimate = async ({
+  startLabel,
+  endLabel,
+  startPoint,
+  endPoint,
+  intermediatePoints,
+  apiKey
+}: {
+  startLabel: string;
+  endLabel: string;
+  startPoint: MapPoint | null;
+  endPoint: MapPoint | null;
+  intermediatePoints: MapPoint[];
+  apiKey: string;
+}): Promise<RouteEstimate | null> => {
+  if (!apiKey.trim()) return null;
+
+  const origin = toDirectionsLocationToken(startLabel, startPoint);
+  const destination = toDirectionsLocationToken(endLabel, endPoint);
+  if (!origin || !destination) return null;
+
+  const params = new URLSearchParams({
+    origin,
+    destination,
+    mode: 'driving',
+    departure_time: 'now',
+    traffic_model: 'best_guess',
+    units: 'metric',
+    key: apiKey
+  });
+  if (intermediatePoints.length > 0) {
+    const waypoints = intermediatePoints.map((point) => `${point.lat},${point.lng}`).join('|');
+    params.set('waypoints', waypoints);
+  }
+
+  const response = await fetch(`https://maps.googleapis.com/maps/api/directions/json?${params.toString()}`);
+  if (!response.ok) {
+    throw new Error(`Directions request failed (${response.status})`);
+  }
+
+  const payload = (await response.json()) as GoogleDirectionsResponse;
+  const status = payload.status ?? 'UNKNOWN_ERROR';
+  if (status !== 'OK') {
+    throw new Error(payload.error_message ?? status);
+  }
+
+  const route = payload.routes?.[0];
+  if (!route) return null;
+  return parseGoogleDirectionsEstimate(route);
+};
+
+const resolveRouteEstimate = async ({
+  startLabel,
+  endLabel,
+  startPoint,
+  endPoint,
+  intermediatePoints,
+  apiKey
+}: {
+  startLabel: string;
+  endLabel: string;
+  startPoint: MapPoint | null;
+  endPoint: MapPoint | null;
+  intermediatePoints: MapPoint[];
+  apiKey: string;
+}): Promise<RouteEstimate | null> => {
+  try {
+    const fromGoogle = await fetchGoogleDirectionsEstimate({
+      startLabel,
+      endLabel,
+      startPoint,
+      endPoint,
+      intermediatePoints,
+      apiKey
+    });
+    if (fromGoogle) {
+      return fromGoogle;
+    }
+  } catch {
+    // Fall through to coordinate-based estimate below.
+  }
+
+  return buildFallbackRouteEstimate(startPoint, endPoint, intermediatePoints);
+};
 
 export const LocationSettingsModal = ({
   visible,
@@ -561,6 +940,143 @@ export const ChatRoomScreen = ({
   );
 };
 
+export const SquadChatRoomScreen = ({
+  visible,
+  squad,
+  messages,
+  currentUserId,
+  users,
+  syncError,
+  isSyncing,
+  onRetrySync,
+  onClose,
+  onSendMessage,
+  theme
+}: {
+  visible: boolean;
+  squad: Squad | null;
+  messages: ChatMessage[];
+  currentUserId: string;
+  users: User[];
+  syncError?: string | null;
+  isSyncing?: boolean;
+  onRetrySync?: () => void;
+  onClose: () => void;
+  onSendMessage: (squadId: string, text: string) => void;
+  theme: Theme;
+}) => {
+  const t = TOKENS[theme];
+  const insets = useSafeAreaInsets();
+  const topInset = getAndroidTopInset(insets);
+  const [inputText, setInputText] = useState('');
+
+  const usersById = useMemo(() => {
+    const map = new Map<string, User>();
+    users.forEach((user) => map.set(user.id, user));
+    return map;
+  }, [users]);
+
+  if (!squad) return null;
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg, paddingTop: topInset }]}>
+        <View style={[styles.modalHeader, { borderBottomColor: t.border }]}>
+          <View style={styles.rowAligned}>
+            <TouchableOpacity onPress={onClose} style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
+              <MaterialCommunityIcons name="arrow-left" size={20} color={t.text} />
+            </TouchableOpacity>
+            <Image source={{ uri: squad.avatar || avatarFallback }} style={styles.avatarSmall} />
+            <View>
+              <Text style={[styles.modalTitle, { color: t.text }]}>{squad.name}</Text>
+              <Text style={[styles.metaText, { color: t.muted }]}>{squad.members.length} members</Text>
+            </View>
+          </View>
+        </View>
+
+        {!!syncError && (
+          <View style={[styles.syncBanner, { margin: 14, borderColor: `${TOKENS[theme].red}66`, backgroundColor: t.subtle }]}>
+            <MaterialCommunityIcons name="cloud-alert-outline" size={18} color={TOKENS[theme].red} />
+            <View style={styles.syncBannerContent}>
+              <Text style={[styles.syncBannerTitle, { color: TOKENS[theme].red }]}>Squad Chat Sync Failed</Text>
+              <Text style={[styles.syncBannerMessage, { color: t.muted }]}>{syncError}</Text>
+            </View>
+            <TouchableOpacity
+              style={[styles.syncBannerRetry, { borderColor: t.border, backgroundColor: t.card, opacity: isSyncing ? 0.7 : 1 }]}
+              onPress={onRetrySync}
+              disabled={!onRetrySync || isSyncing}
+            >
+              {isSyncing ? (
+                <MaterialCommunityIcons name="progress-clock" size={16} color={t.primary} />
+              ) : (
+                <>
+                  <MaterialCommunityIcons name="refresh" size={14} color={t.primary} />
+                  <Text style={[styles.syncBannerRetryText, { color: t.primary }]}>Retry</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
+
+        <ScrollView contentContainerStyle={styles.chatMessagesWrap}>
+          {messages.length === 0 ? (
+            <View style={styles.emptyWrap}>
+              <MaterialCommunityIcons name="account-group-outline" size={40} color={t.muted} />
+              <Text style={[styles.emptyTitle, { color: t.text }]}>Squad channel is quiet.</Text>
+              <Text style={[styles.emptySubtitle, { color: t.muted }]}>Start planning your next ride.</Text>
+            </View>
+          ) : (
+            messages.map((msg) => {
+              const isMe = msg.senderId === currentUserId;
+              const senderName = usersById.get(msg.senderId)?.name ?? 'Rider';
+
+              return (
+                <View key={msg.id} style={[styles.messageRow, isMe ? styles.messageRight : styles.messageLeft]}>
+                  <View
+                    style={[
+                      styles.messageBubble,
+                      {
+                        backgroundColor: isMe ? t.primary : t.card,
+                        borderColor: isMe ? t.primary : t.border
+                      }
+                    ]}
+                  >
+                    {!isMe && <Text style={[styles.metaText, { marginBottom: 4, color: t.primary }]}>{senderName}</Text>}
+                    <Text style={[styles.bodyText, { color: isMe ? '#fff' : t.text }]}>{msg.text}</Text>
+                    <Text style={[styles.metaText, { color: isMe ? '#fff' : t.muted }]}>{msg.timestamp}</Text>
+                  </View>
+                </View>
+              );
+            })
+          )}
+        </ScrollView>
+
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <View style={[styles.messageComposer, { borderTopColor: t.border, backgroundColor: t.surface }]}>
+            <TextInput
+              style={[styles.input, styles.flex1, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
+              placeholder="Message squad..."
+              placeholderTextColor={t.muted}
+              value={inputText}
+              onChangeText={setInputText}
+            />
+            <TouchableOpacity
+              style={[styles.iconRoundButton, { backgroundColor: t.primary }]}
+              onPress={() => {
+                if (!inputText.trim()) return;
+                onSendMessage(squad.id, inputText.trim());
+                setInputText('');
+              }}
+            >
+              <MaterialCommunityIcons name="send" size={20} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </Modal>
+  );
+};
+
 export const CreateRideModal = ({
   visible,
   onClose,
@@ -597,6 +1113,8 @@ export const CreateRideModal = ({
   const [rideDuration, setRideDuration] = useState('');
   const [costOption, setCostOption] = useState<RideCostOption>('Free');
   const [pricePerPerson, setPricePerPerson] = useState('');
+  const [splitTotalAmount, setSplitTotalAmount] = useState('');
+  const [upiPaymentInput, setUpiPaymentInput] = useState('');
   const [inclusions, setInclusions] = useState<RideInclusion[]>([]);
   const [rideNote, setRideNote] = useState(DEFAULT_RIDE_NOTE);
   const [inviteAudience, setInviteAudience] = useState<InviteAudience>('groups');
@@ -609,12 +1127,33 @@ export const CreateRideModal = ({
   const [savedDestinations, setSavedDestinations] = useState<string[]>([]);
   const [isDestinationPickerOpen, setIsDestinationPickerOpen] = useState(false);
   const [locationPickerContext, setLocationPickerContext] = useState<LocationPickerContext>('primaryDestination');
+  const [googleDestinationSuggestions, setGoogleDestinationSuggestions] = useState<GooglePlaceSuggestion[]>([]);
+  const [isGoogleDestinationLoading, setIsGoogleDestinationLoading] = useState(false);
+  const [googleDestinationError, setGoogleDestinationError] = useState<string | null>(null);
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
+  const [isTimePickerOpen, setIsTimePickerOpen] = useState(false);
+  const [timePickerField, setTimePickerField] = useState<TimePickerField>('assembly');
+  const [pickerDraftValue, setPickerDraftValue] = useState<Date>(() => {
+    const now = new Date();
+    now.setSeconds(0, 0);
+    return now;
+  });
+  const [dateValue, setDateValue] = useState<Date | null>(null);
+  const [assemblyTimeValue, setAssemblyTimeValue] = useState<Date | null>(null);
+  const [flagOffTimeValue, setFlagOffTimeValue] = useState<Date | null>(null);
   const [isRidePointPickerOpen, setIsRidePointPickerOpen] = useState(false);
   const [draftRidePoint, setDraftRidePoint] = useState<MapPoint | null>(null);
   const [isStopPickerOpen, setIsStopPickerOpen] = useState(false);
+  const [routeEstimate, setRouteEstimate] = useState<RouteEstimate | null>(null);
+  const [isRouteEstimateLoading, setIsRouteEstimateLoading] = useState(false);
+  const [routeEstimateError, setRouteEstimateError] = useState<string | null>(null);
+  const rideNoteInputRef = useRef<TextInput | null>(null);
+  const googleAutocompleteRequestRef = useRef(0);
+  const routeEstimateRequestRef = useRef(0);
   const inclusionOptions: RideInclusion[] = ['Dinner', 'Drinks', 'Breakfast', 'Lunch'];
   const trendingDestinations = useMemo(() => getTrendingDestinationsForCity(currentCity), [currentCity]);
   const normalizedCurrentCity = currentCity.trim();
+  const hasGooglePlacesKey = GOOGLE_PLACES_KEY.length > 0;
   const destinationSuggestions = useMemo(() => {
     const pool = [normalizedCurrentCity, ...savedDestinations, ...trendingDestinations].filter((item) => item.trim().length > 0);
     const seen = new Set<string>();
@@ -636,6 +1175,22 @@ export const CreateRideModal = ({
     if (!query) return destinationSuggestions;
     return destinationSuggestions.filter((item) => item.toLowerCase().includes(query));
   }, [destinationQuery, destinationSuggestions]);
+  const dedupedLocalDestinationSuggestions = useMemo(() => {
+    if (googleDestinationSuggestions.length === 0) return filteredDestinationSuggestions;
+
+    const remoteLabels = new Set(googleDestinationSuggestions.map((item) => item.description.trim().toLowerCase()));
+    return filteredDestinationSuggestions.filter((item) => !remoteLabels.has(item.trim().toLowerCase()));
+  }, [filteredDestinationSuggestions, googleDestinationSuggestions]);
+  const minimumRideDate = useMemo(() => {
+    const currentDate = new Date();
+    currentDate.setHours(0, 0, 0, 0);
+    return currentDate;
+  }, []);
+  const maximumRideDate = useMemo(() => {
+    const currentDate = new Date(minimumRideDate);
+    currentDate.setDate(currentDate.getDate() + DATE_PICKER_WINDOW_DAYS - 1);
+    return currentDate;
+  }, [minimumRideDate]);
 
   const resetForm = () => {
     setPrimaryDestination('');
@@ -652,6 +1207,8 @@ export const CreateRideModal = ({
     setRideDuration('');
     setCostOption('Free');
     setPricePerPerson('');
+    setSplitTotalAmount('');
+    setUpiPaymentInput('');
     setInclusions([]);
     setRideNote(DEFAULT_RIDE_NOTE);
     setInviteAudience('groups');
@@ -659,12 +1216,26 @@ export const CreateRideModal = ({
     setHasRiderLimit(false);
     setMaxParticipants('5');
     setDestinationQuery('');
+    setGoogleDestinationSuggestions([]);
+    setIsGoogleDestinationLoading(false);
+    setGoogleDestinationError(null);
     setIsDestinationPickerOpen(false);
+    setIsDatePickerOpen(false);
+    setIsTimePickerOpen(false);
+    setTimePickerField('assembly');
+    setDateValue(null);
+    setAssemblyTimeValue(null);
+    setFlagOffTimeValue(null);
+    setPickerDraftValue(new Date());
     setIsRidePointPickerOpen(false);
     setDraftRidePoint(null);
     setRoutePoints([]);
     setDraftRoutePoints([]);
     setIsStopPickerOpen(false);
+    setRouteEstimate(null);
+    setIsRouteEstimateLoading(false);
+    setRouteEstimateError(null);
+    routeEstimateRequestRef.current += 1;
   };
 
   useEffect(() => {
@@ -673,9 +1244,161 @@ export const CreateRideModal = ({
     }
   }, [visible]);
 
+  useEffect(() => {
+    if (!isDestinationPickerOpen) {
+      setGoogleDestinationSuggestions([]);
+      setIsGoogleDestinationLoading(false);
+      setGoogleDestinationError(null);
+      return;
+    }
+
+    const query = destinationQuery.trim();
+    if (!hasGooglePlacesKey || query.length < PLACE_AUTOCOMPLETE_MIN_QUERY_LENGTH) {
+      setGoogleDestinationSuggestions([]);
+      setIsGoogleDestinationLoading(false);
+      setGoogleDestinationError(null);
+      return;
+    }
+
+    const requestId = googleAutocompleteRequestRef.current + 1;
+    googleAutocompleteRequestRef.current = requestId;
+    let isCanceled = false;
+
+    setIsGoogleDestinationLoading(true);
+    setGoogleDestinationError(null);
+
+    const timeoutId = setTimeout(() => {
+      (async () => {
+        try {
+          const params = new URLSearchParams({
+            input: query,
+            language: 'en',
+            components: 'country:in',
+            key: GOOGLE_PLACES_KEY
+          });
+
+          const response = await fetch(`https://maps.googleapis.com/maps/api/place/autocomplete/json?${params.toString()}`);
+          if (!response.ok) {
+            throw new Error(`Autocomplete request failed (${response.status})`);
+          }
+
+          const payload = (await response.json()) as GooglePlacesAutocompleteResponse;
+          if (isCanceled || requestId !== googleAutocompleteRequestRef.current) return;
+          const status = payload.status ?? 'UNKNOWN_ERROR';
+          if (status !== 'OK' && status !== 'ZERO_RESULTS') {
+            throw new Error(payload.error_message ?? status);
+          }
+
+          const suggestions = (payload.predictions ?? [])
+            .map((prediction): GooglePlaceSuggestion | null => {
+              const description = prediction.description?.trim();
+              const placeId = prediction.place_id?.trim();
+              if (!description || !placeId) return null;
+
+              return {
+                placeId,
+                description,
+                primaryText: prediction.structured_formatting?.main_text?.trim() || description,
+                secondaryText: prediction.structured_formatting?.secondary_text?.trim() || undefined
+              };
+            })
+            .filter((item): item is GooglePlaceSuggestion => item !== null)
+            .slice(0, 6);
+
+          setGoogleDestinationSuggestions(suggestions);
+          setGoogleDestinationError(null);
+        } catch (error) {
+          if (isCanceled || requestId !== googleAutocompleteRequestRef.current) return;
+          setGoogleDestinationSuggestions([]);
+          setGoogleDestinationError(error instanceof Error ? error.message : 'Unable to fetch location suggestions.');
+        } finally {
+          if (!isCanceled && requestId === googleAutocompleteRequestRef.current) {
+            setIsGoogleDestinationLoading(false);
+          }
+        }
+      })();
+    }, PLACE_AUTOCOMPLETE_DEBOUNCE_MS);
+
+    return () => {
+      isCanceled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [destinationQuery, hasGooglePlacesKey, isDestinationPickerOpen]);
+
+  useEffect(() => {
+    const startLabel = rideStartsAt.trim();
+    const endLabel = rideEndsAt.trim();
+    if (!startLabel || !endLabel) {
+      setRouteEstimate(null);
+      setRouteEstimateError(null);
+      setIsRouteEstimateLoading(false);
+      return;
+    }
+
+    const requestId = routeEstimateRequestRef.current + 1;
+    routeEstimateRequestRef.current = requestId;
+    let isCanceled = false;
+    setIsRouteEstimateLoading(true);
+    setRouteEstimateError(null);
+
+    (async () => {
+      try {
+        const estimate = await resolveRouteEstimate({
+          startLabel,
+          endLabel,
+          startPoint: rideStartPoint,
+          endPoint: rideEndPoint,
+          intermediatePoints: routePoints,
+          apiKey: GOOGLE_PLACES_KEY
+        });
+
+        if (isCanceled || requestId !== routeEstimateRequestRef.current) return;
+        if (!estimate) {
+          setRouteEstimate(null);
+          setRouteEstimateError(null);
+          return;
+        }
+
+        setRouteEstimate(estimate);
+        setRouteEstimateError(null);
+      } catch {
+        if (isCanceled || requestId !== routeEstimateRequestRef.current) return;
+        setRouteEstimate(null);
+        setRouteEstimateError('Unable to estimate route right now. Try again in a moment.');
+      } finally {
+        if (!isCanceled && requestId === routeEstimateRequestRef.current) {
+          setIsRouteEstimateLoading(false);
+        }
+      }
+    })();
+
+    return () => {
+      isCanceled = true;
+    };
+  }, [rideEndPoint, rideEndsAt, rideStartPoint, rideStartsAt, routePoints]);
+
   const riderLimit = Math.max(2, Math.min(20, Number(maxParticipants) || 5));
   const routeSummary = [rideStartsAt.trim(), ridingTo.trim(), rideEndsAt.trim()].filter(Boolean).join(' -> ');
   const summaryDestination = primaryDestination.trim() || ridingTo.trim() || 'Pending destination';
+  const routeCoordinatePointCount = (rideStartPoint ? 1 : 0) + routePoints.length + (rideEndPoint ? 1 : 0);
+  const hasEnoughRouteCoordinatePoints = routeCoordinatePointCount >= 2;
+  const hasStartEndLabels = rideStartsAt.trim().length > 0 && rideEndsAt.trim().length > 0;
+  const routeEstimateHintText = !hasStartEndLabels
+    ? 'Select ride start and end to get ETA, distance, and toll estimate.'
+    : hasEnoughRouteCoordinatePoints
+      ? 'Unable to fetch live map estimate right now. Route points are ready, so retry in a moment.'
+      : hasGooglePlacesKey
+        ? 'Set start/end points on map for a reliable estimate when live map lookup is unavailable.'
+        : 'Add start/end points on map to estimate ETA, distance, and toll without Google Maps API.';
+  const routeEstimateMeta = routeEstimate?.source === 'google' ? 'Live map estimate' : routeEstimate?.source === 'fallback' ? 'Map-point estimate' : null;
+  const numericPrice = Number(pricePerPerson);
+  const numericSplitTotal = Number(splitTotalAmount);
+  const resolvedUpiPaymentLink = resolveUpiDestination(upiPaymentInput);
+  const isPaidRide = costOption !== 'Free';
+  const hasPaidPrice = costOption !== 'Paid' || (Number.isFinite(numericPrice) && numericPrice > 0);
+  const hasSplitPrice = costOption !== 'Split' || (Number.isFinite(numericSplitTotal) && numericSplitTotal > 0);
+  const hasUpiDestination = !isPaidRide || resolvedUpiPaymentLink !== null;
+  const isUpiDestinationInvalid = upiPaymentInput.trim().length > 0 && resolvedUpiPaymentLink === null;
 
   const canSubmit =
     primaryDestination.trim().length > 0 &&
@@ -686,7 +1409,9 @@ export const CreateRideModal = ({
     rideEndsAt.trim().length > 0 &&
     assemblyTime.trim().length > 0 &&
     flagOffTime.trim().length > 0 &&
-    (costOption !== 'Paid' || pricePerPerson.trim().length > 0) &&
+    hasPaidPrice &&
+    hasSplitPrice &&
+    hasUpiDestination &&
     (!hasRiderLimit || Number(maxParticipants) >= 2);
 
   const submit = () => {
@@ -702,7 +1427,6 @@ export const CreateRideModal = ({
     ];
     const finalRoutePoints = mappedRoutePoints.length > 0 ? mappedRoutePoints : routePoints;
     const finalRoute = finalRoutePoints.length > 0 ? buildRouteTextFromPoints(finalRoutePoints) : baseRoute;
-    const numericPrice = Number(pricePerPerson);
 
     onSubmit({
       title: rideName.trim(),
@@ -720,8 +1444,14 @@ export const CreateRideModal = ({
       assemblyTime: assemblyTime.trim(),
       flagOffTime: flagOffTime.trim(),
       rideDuration: rideDuration.trim() || undefined,
+      routeDistanceKm: routeEstimate ? clampPositiveNumber(routeEstimate.distanceKm) : undefined,
+      routeEtaMinutes: routeEstimate ? clampPositiveNumber(routeEstimate.etaMinutes) : undefined,
+      tollEstimateInr: routeEstimate ? Math.max(0, Math.round(routeEstimate.tollEstimateInr)) : undefined,
       costType: costOption,
       pricePerPerson: costOption === 'Paid' && Number.isFinite(numericPrice) ? numericPrice : undefined,
+      splitTotalAmount: costOption === 'Split' && Number.isFinite(numericSplitTotal) ? numericSplitTotal : undefined,
+      paymentMethod: isPaidRide ? 'UPI_LINK' : undefined,
+      upiPaymentLink: isPaidRide ? resolvedUpiPaymentLink ?? undefined : undefined,
       inclusions: costOption === 'Paid' ? inclusions : [],
       rideNote: rideNote.trim(),
       inviteAudience,
@@ -774,7 +1504,39 @@ export const CreateRideModal = ({
     return null;
   };
 
-  const handleApplyLocationSelection = (value: string, context: LocationPickerContext) => {
+  const fetchGooglePlacePoint = async (placeId: string): Promise<MapPoint | null> => {
+    if (!hasGooglePlacesKey) return null;
+
+    try {
+      const params = new URLSearchParams({
+        place_id: placeId,
+        fields: 'formatted_address,name,geometry/location',
+        language: 'en',
+        key: GOOGLE_PLACES_KEY
+      });
+
+      const response = await fetch(`https://maps.googleapis.com/maps/api/place/details/json?${params.toString()}`);
+      if (!response.ok) return null;
+
+      const payload = (await response.json()) as GooglePlaceDetailsResponse;
+      if (payload.status !== 'OK') return null;
+
+      const lat = payload.result?.geometry?.location?.lat;
+      const lng = payload.result?.geometry?.location?.lng;
+      if (!isFiniteNumber(lat ?? NaN) || !isFiniteNumber(lng ?? NaN)) return null;
+
+      const label = payload.result?.formatted_address?.trim() || payload.result?.name?.trim();
+      return {
+        lat: lat as number,
+        lng: lng as number,
+        label
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const applyLocationByContext = (value: string, context: LocationPickerContext, point: MapPoint | null = null) => {
     const normalized = value.trim();
     if (!normalized) return;
 
@@ -785,13 +1547,25 @@ export const CreateRideModal = ({
 
     if (context === 'rideStarts') {
       setRideStartsAt(normalized);
+      setRideStartPoint(point ? { ...point, label: 'Ride starts' } : null);
     } else {
       setRideEndsAt(normalized);
+      setRideEndPoint(point ? { ...point, label: 'Ride ends' } : null);
     }
 
     setDestinationQuery(normalized);
     saveDestination(normalized);
     setIsDestinationPickerOpen(false);
+  };
+
+  const handleApplyLocationSelection = (value: string, context: LocationPickerContext) => {
+    applyLocationByContext(value, context, null);
+  };
+
+  const handleApplyGoogleSuggestion = async (suggestion: GooglePlaceSuggestion, context: LocationPickerContext) => {
+    const point = await fetchGooglePlacePoint(suggestion.placeId);
+    const resolvedLabel = point?.label?.trim() || suggestion.description;
+    applyLocationByContext(resolvedLabel, context, point);
   };
 
   const openRidePointPicker = (context: 'rideStarts' | 'rideEnds') => {
@@ -833,10 +1607,8 @@ export const CreateRideModal = ({
 
   const openDestinationPicker = (context: LocationPickerContext = 'primaryDestination') => {
     setLocationPickerContext(context);
-    if (context === 'rideStarts' || context === 'rideEnds') {
-      openRidePointPicker(context);
-      return;
-    }
+    setGoogleDestinationSuggestions([]);
+    setGoogleDestinationError(null);
     setDestinationQuery(getLocationValueByContext(context));
     setIsDestinationPickerOpen(true);
   };
@@ -845,12 +1617,90 @@ export const CreateRideModal = ({
     handleApplyLocationSelection(destinationQuery, locationPickerContext);
   };
 
+  const openMapPickerFromDestination = () => {
+    if (locationPickerContext === 'primaryDestination') return;
+    setIsDestinationPickerOpen(false);
+    openRidePointPicker(locationPickerContext);
+  };
+
+  const applyDateSelection = (selectedDate: Date) => {
+    setDateValue(selectedDate);
+    setDate(formatRideDateLabel(selectedDate));
+  };
+
+  const applyTimeSelection = (selectedDate: Date) => {
+    const normalizedTime = new Date(selectedDate);
+    normalizedTime.setSeconds(0, 0);
+    const formattedTime = formatRideTimeLabel(normalizedTime);
+
+    if (timePickerField === 'assembly') {
+      setAssemblyTimeValue(normalizedTime);
+      setAssemblyTime(formattedTime);
+      return;
+    }
+
+    setFlagOffTimeValue(normalizedTime);
+    setFlagOffTime(formattedTime);
+  };
+
+  const openDatePicker = () => {
+    setPickerDraftValue(dateValue ?? minimumRideDate);
+    setIsDatePickerOpen(true);
+  };
+
+  const openTimePicker = (field: TimePickerField) => {
+    const referenceTime = field === 'assembly' ? assemblyTimeValue : flagOffTimeValue;
+    const fallbackTime = new Date();
+    fallbackTime.setSeconds(0, 0);
+
+    setTimePickerField(field);
+    setPickerDraftValue(referenceTime ?? fallbackTime);
+    setIsTimePickerOpen(true);
+  };
+
+  const handleIOSPickerValueChange = (_event: DateTimePickerEvent, selectedValue?: Date) => {
+    if (!selectedValue) return;
+    setPickerDraftValue(selectedValue);
+  };
+
+  const closeIOSNativePicker = () => {
+    setIsDatePickerOpen(false);
+    setIsTimePickerOpen(false);
+  };
+
+  const applyIOSNativePicker = () => {
+    if (isDatePickerOpen) {
+      applyDateSelection(pickerDraftValue);
+    } else if (isTimePickerOpen) {
+      applyTimeSelection(pickerDraftValue);
+    }
+    closeIOSNativePicker();
+  };
+
+  const handleAndroidDatePickerChange = (event: DateTimePickerEvent, selectedValue?: Date) => {
+    setIsDatePickerOpen(false);
+    if (event.type !== 'set' || !selectedValue) return;
+    applyDateSelection(selectedValue);
+  };
+
+  const handleAndroidTimePickerChange = (event: DateTimePickerEvent, selectedValue?: Date) => {
+    setIsTimePickerOpen(false);
+    if (event.type !== 'set' || !selectedValue) return;
+    applyTimeSelection(selectedValue);
+  };
+
+  const isIOSNativePickerVisible = Platform.OS === 'ios' && (isDatePickerOpen || isTimePickerOpen);
+  const iosNativePickerTitle = isDatePickerOpen ? 'Select Date' : timePickerField === 'assembly' ? 'Select Assembly Time' : 'Select Flag Off Time';
+
   const destinationPlaceholder =
     locationPickerContext === 'primaryDestination'
       ? 'Primary Destination'
       : locationPickerContext === 'rideStarts'
         ? 'Ride starts'
         : 'Ride ends';
+  const destinationQueryValue = destinationQuery.trim();
+  const shouldSearchGoogleSuggestions = destinationQueryValue.length >= PLACE_AUTOCOMPLETE_MIN_QUERY_LENGTH;
+  const showMapPickerAction = locationPickerContext !== 'primaryDestination';
 
   const handleOpenStopPicker = () => {
     setDraftRoutePoints(routePoints.map((point) => ({ ...point })));
@@ -910,7 +1760,7 @@ export const CreateRideModal = ({
         <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg, paddingTop: topInset }]}>
           <KeyboardAvoidingView style={styles.fullScreen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <View style={[styles.modalHeader, { borderBottomColor: t.border, paddingHorizontal: 16 }]}>
-              <View style={styles.rowAligned}>
+              <View style={[styles.rowAligned, createRideWizardStyles.headerRowUp]}>
                 <TouchableOpacity onPress={onClose} style={createRideWizardStyles.headerBackButton}>
                   <MaterialCommunityIcons name="arrow-left" size={30} color={t.text} />
                 </TouchableOpacity>
@@ -1023,19 +1873,22 @@ export const CreateRideModal = ({
 
                 <View style={createRideWizardStyles.fieldBlock}>
                   <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Date*</Text>
-                  <TextInput
-                    style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, color: t.text }]}
-                    value={date}
-                    onChangeText={setDate}
-                    placeholder="Wed | Mar 4"
-                    placeholderTextColor={`${t.muted}99`}
-                  />
+                  <TouchableOpacity
+                    style={[createRideWizardStyles.filledInput, createRideWizardStyles.locationPickerInput, { backgroundColor: t.surface, borderColor: t.border }]}
+                    onPress={openDatePicker}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[createRideWizardStyles.locationPickerInputText, { color: date ? t.text : `${t.muted}99` }]}>
+                      {date || 'Wed | Mar 4'}
+                    </Text>
+                    <MaterialCommunityIcons name="calendar-month-outline" size={18} color={t.muted} />
+                  </TouchableOpacity>
                 </View>
 
                 <View style={createRideWizardStyles.fieldBlock}>
                   <TouchableOpacity
-                    style={[createRideWizardStyles.filledInput, createRideWizardStyles.locationPickerInput, { backgroundColor: t.surface }]}
-                    onPress={() => openRidePointPicker('rideStarts')}
+                    style={[createRideWizardStyles.filledInput, createRideWizardStyles.locationPickerInput, { backgroundColor: t.surface, borderColor: t.border }]}
+                    onPress={() => openDestinationPicker('rideStarts')}
                   >
                     <Text style={[createRideWizardStyles.locationPickerInputText, { color: rideStartsAt ? t.text : `${t.muted}99` }]}>
                       {rideStartsAt || 'Ride starts*'}
@@ -1044,7 +1897,7 @@ export const CreateRideModal = ({
                   </TouchableOpacity>
 
                   <TextInput
-                    style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, color: t.text }]}
+                    style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, borderColor: t.border, color: t.text }]}
                     value={ridingTo}
                     onChangeText={setRidingTo}
                     placeholder="Riding to*"
@@ -1052,8 +1905,8 @@ export const CreateRideModal = ({
                   />
 
                   <TouchableOpacity
-                    style={[createRideWizardStyles.filledInput, createRideWizardStyles.locationPickerInput, { backgroundColor: t.surface }]}
-                    onPress={() => openRidePointPicker('rideEnds')}
+                    style={[createRideWizardStyles.filledInput, createRideWizardStyles.locationPickerInput, { backgroundColor: t.surface, borderColor: t.border }]}
+                    onPress={() => openDestinationPicker('rideEnds')}
                   >
                     <Text style={[createRideWizardStyles.locationPickerInputText, { color: rideEndsAt ? t.text : `${t.muted}99` }]}>
                       {rideEndsAt || 'Ride ends*'}
@@ -1072,21 +1925,69 @@ export const CreateRideModal = ({
                   </Text>
                 </TouchableOpacity>
 
+                <View style={[createRideWizardStyles.routeEstimateCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <View style={createRideWizardStyles.routeEstimateHeader}>
+                    <View style={styles.rowAligned}>
+                      <MaterialCommunityIcons name="map-clock-outline" size={16} color={accent} />
+                      <Text style={[createRideWizardStyles.routeEstimateTitle, { color: t.text }]}>Route estimate</Text>
+                    </View>
+                    {isRouteEstimateLoading ? <ActivityIndicator size="small" color={accent} /> : null}
+                  </View>
+
+                  {routeEstimate ? (
+                    <View style={createRideWizardStyles.routeEstimateChipRow}>
+                      <View style={[createRideWizardStyles.routeEstimateChip, { borderColor: t.border, backgroundColor: t.surface }]}>
+                        <Text style={[createRideWizardStyles.routeEstimateChipLabel, { color: t.muted }]}>ETA</Text>
+                        <Text style={[createRideWizardStyles.routeEstimateChipValue, { color: t.text }]}>
+                          {formatRideEta(routeEstimate.etaMinutes)}
+                        </Text>
+                      </View>
+                      <View style={[createRideWizardStyles.routeEstimateChip, { borderColor: t.border, backgroundColor: t.surface }]}>
+                        <Text style={[createRideWizardStyles.routeEstimateChipLabel, { color: t.muted }]}>Distance</Text>
+                        <Text style={[createRideWizardStyles.routeEstimateChipValue, { color: t.text }]}>
+                          {formatRideDistance(routeEstimate.distanceKm)}
+                        </Text>
+                      </View>
+                      <View style={[createRideWizardStyles.routeEstimateChip, { borderColor: t.border, backgroundColor: t.surface }]}>
+                        <Text style={[createRideWizardStyles.routeEstimateChipLabel, { color: t.muted }]}>Toll</Text>
+                        <Text style={[createRideWizardStyles.routeEstimateChipValue, { color: t.text }]}>
+                          {formatInrAmount(routeEstimate.tollEstimateInr)}
+                        </Text>
+                      </View>
+                    </View>
+                  ) : (
+                    <Text style={[createRideWizardStyles.routeEstimateHint, { color: t.muted }]}>
+                      {routeEstimateHintText}
+                    </Text>
+                  )}
+
+                  {!!routeEstimateMeta && !routeEstimateError && (
+                    <Text style={[createRideWizardStyles.routeEstimateMeta, { color: t.muted }]}>{routeEstimateMeta}</Text>
+                  )}
+                  {!!routeEstimateError && <Text style={[createRideWizardStyles.routeEstimateError, { color: TOKENS[theme].red }]}>{routeEstimateError}</Text>}
+                </View>
+
                 <View style={createRideWizardStyles.timelineGrid}>
-                  <TextInput
-                    style={[createRideWizardStyles.timeTileInput, { backgroundColor: t.surface, color: t.text }]}
-                    value={assemblyTime}
-                    onChangeText={setAssemblyTime}
-                    placeholder="Assembly*"
-                    placeholderTextColor={`${t.muted}99`}
-                  />
-                  <TextInput
-                    style={[createRideWizardStyles.timeTileInput, { backgroundColor: t.surface, color: t.text }]}
-                    value={flagOffTime}
-                    onChangeText={setFlagOffTime}
-                    placeholder="Flag off*"
-                    placeholderTextColor={`${t.muted}99`}
-                  />
+                  <TouchableOpacity
+                    style={[createRideWizardStyles.timeTileInput, createRideWizardStyles.timeTileButton, { backgroundColor: t.surface }]}
+                    onPress={() => openTimePicker('assembly')}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[createRideWizardStyles.timeTileText, { color: assemblyTime ? t.text : `${t.muted}99` }]}>
+                      {assemblyTime || 'Assembly*'}
+                    </Text>
+                    <MaterialCommunityIcons name="clock-time-four-outline" size={16} color={t.muted} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[createRideWizardStyles.timeTileInput, createRideWizardStyles.timeTileButton, { backgroundColor: t.surface }]}
+                    onPress={() => openTimePicker('flagOff')}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={[createRideWizardStyles.timeTileText, { color: flagOffTime ? t.text : `${t.muted}99` }]}>
+                      {flagOffTime || 'Flag off*'}
+                    </Text>
+                    <MaterialCommunityIcons name="clock-time-four-outline" size={16} color={t.muted} />
+                  </TouchableOpacity>
                   <TextInput
                     style={[createRideWizardStyles.timeTileInput, { backgroundColor: t.surface, color: t.text }]}
                     value={rideDuration}
@@ -1130,12 +2031,12 @@ export const CreateRideModal = ({
 
                 {costOption === 'Paid' && (
                   <View style={createRideWizardStyles.fieldBlock}>
-                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>How much per person:</Text>
+                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>How much per rider:</Text>
                     <TextInput
                       style={[createRideWizardStyles.lineInput, { borderBottomColor: t.muted, color: t.text }]}
                       value={pricePerPerson}
-                      onChangeText={(value) => setPricePerPerson(value.replace(/[^\d]/g, '').slice(0, 5))}
-                      placeholder="Enter amount"
+                      onChangeText={(value) => setPricePerPerson(sanitizeCurrencyInput(value))}
+                      placeholder="Enter amount in INR"
                       placeholderTextColor={`${t.muted}99`}
                       keyboardType="number-pad"
                     />
@@ -1169,16 +2070,66 @@ export const CreateRideModal = ({
                   </View>
                 )}
 
+                {costOption === 'Split' && (
+                  <View style={createRideWizardStyles.fieldBlock}>
+                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Total amount to split:</Text>
+                    <TextInput
+                      style={[createRideWizardStyles.lineInput, { borderBottomColor: t.muted, color: t.text }]}
+                      value={splitTotalAmount}
+                      onChangeText={(value) => setSplitTotalAmount(sanitizeCurrencyInput(value))}
+                      placeholder="Enter total shared amount"
+                      placeholderTextColor={`${t.muted}99`}
+                      keyboardType="number-pad"
+                    />
+                    <Text style={[styles.metaText, { color: t.muted }]}>
+                      Amount will be split evenly across joined riders.
+                    </Text>
+                  </View>
+                )}
+
+                {costOption !== 'Free' && (
+                  <View style={createRideWizardStyles.fieldBlock}>
+                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>UPI ID or UPI payment link*</Text>
+                    <TextInput
+                      style={[createRideWizardStyles.lineInput, { borderBottomColor: t.muted, color: t.text }]}
+                      value={upiPaymentInput}
+                      onChangeText={setUpiPaymentInput}
+                      placeholder="e.g. rider@upi or upi://pay?pa=..."
+                      placeholderTextColor={`${t.muted}99`}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <Text style={[styles.metaText, { color: t.muted }]}>
+                      Riders can open this link in-app to pay and mark payment complete.
+                    </Text>
+                    {isUpiDestinationInvalid && (
+                      <Text style={[styles.metaText, { color: TOKENS[theme].red }]}>
+                        Enter a valid UPI ID (`name@bank`) or UPI payment URL.
+                      </Text>
+                    )}
+                  </View>
+                )}
+
                 <View style={createRideWizardStyles.fieldBlock}>
                   <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Ride Note</Text>
-                  <TextInput
-                    style={[createRideWizardStyles.rideNoteInput, { borderColor: t.muted, color: t.text }]}
-                    value={rideNote}
-                    onChangeText={(value) => setRideNote(value.slice(0, 700))}
-                    placeholder="Add ride rules and safety notes"
-                    placeholderTextColor={`${t.muted}99`}
-                    multiline
-                  />
+                  <View style={createRideWizardStyles.rideNoteInputWrap}>
+                    <TextInput
+                      ref={rideNoteInputRef}
+                      style={[createRideWizardStyles.rideNoteInput, { borderColor: t.muted, color: t.text }]}
+                      value={rideNote}
+                      onChangeText={(value) => setRideNote(value.slice(0, 700))}
+                      placeholder="Add ride rules and safety notes"
+                      placeholderTextColor={`${t.muted}99`}
+                      multiline
+                    />
+                    <TouchableOpacity
+                      style={[createRideWizardStyles.rideNoteEditIcon, { backgroundColor: t.surface }]}
+                      onPress={() => rideNoteInputRef.current?.focus()}
+                      activeOpacity={0.85}
+                    >
+                      <MaterialCommunityIcons name="pencil-outline" size={16} color={t.muted} />
+                    </TouchableOpacity>
+                  </View>
                   <Text style={[createRideWizardStyles.charCount, { color: t.muted }]}>({rideNote.length})</Text>
                 </View>
               </View>
@@ -1252,7 +2203,7 @@ export const CreateRideModal = ({
                     <View style={createRideWizardStyles.fieldBlock}>
                       <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Maximum riders</Text>
                       <TextInput
-                        style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, color: t.text }]}
+                        style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, borderColor: t.border, color: t.text }]}
                         value={maxParticipants}
                         onChangeText={(value) => setMaxParticipants(value.replace(/[^\d]/g, '').slice(0, 2))}
                         placeholder="5"
@@ -1322,9 +2273,81 @@ export const CreateRideModal = ({
               style={[createRideWizardStyles.destinationActionRow, { borderBottomColor: t.border, backgroundColor: t.surface }]}
               onPress={addLocationFromQuery}
             >
-              <MaterialCommunityIcons name="map-marker-plus-outline" size={24} color={accent} />
-              <Text style={[createRideWizardStyles.destinationActionText, { color: t.text }]}>Add Location</Text>
+              <MaterialCommunityIcons name="map-marker-check-outline" size={24} color={accent} />
+              <Text style={[createRideWizardStyles.destinationActionText, { color: t.text }]}>
+                {locationPickerContext === 'primaryDestination' ? 'Use This Destination' : 'Use This Location'}
+              </Text>
             </TouchableOpacity>
+
+            {showMapPickerAction && (
+              <TouchableOpacity
+                style={[createRideWizardStyles.destinationActionRow, { borderBottomColor: t.border, backgroundColor: t.surface }]}
+                onPress={openMapPickerFromDestination}
+              >
+                <MaterialCommunityIcons name="map-search-outline" size={24} color={accent} />
+                <Text style={[createRideWizardStyles.destinationActionText, { color: t.text }]}>Pick On Map</Text>
+              </TouchableOpacity>
+            )}
+
+            {shouldSearchGoogleSuggestions && !hasGooglePlacesKey && (
+              <View
+                style={[
+                  createRideWizardStyles.destinationSection,
+                  { borderBottomColor: t.border, backgroundColor: t.subtle, borderBottomWidth: 1 }
+                ]}
+              >
+                <Text style={[createRideWizardStyles.destinationSectionTitle, { color: t.text }]}>Map Suggestions Disabled</Text>
+                <Text style={[createRideWizardStyles.destinationEmptyText, { color: t.muted }]}>
+                  Add `EXPO_PUBLIC_GOOGLE_PLACES_API_KEY` (or `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`) in `.env`.
+                </Text>
+              </View>
+            )}
+
+            {hasGooglePlacesKey && shouldSearchGoogleSuggestions && (
+              <View
+                style={[
+                  createRideWizardStyles.destinationSection,
+                  { borderBottomColor: t.border, backgroundColor: t.subtle, borderBottomWidth: 1 }
+                ]}
+              >
+                <Text style={[createRideWizardStyles.destinationSectionTitle, { color: t.text }]}>Google Maps</Text>
+
+                {isGoogleDestinationLoading ? (
+                  <View style={[createRideWizardStyles.destinationListRow, { borderBottomColor: t.border }]}>
+                    <View style={styles.rowAligned}>
+                      <ActivityIndicator size="small" color={accent} />
+                      <Text style={[createRideWizardStyles.destinationListText, { color: t.text }]}>Searching locations...</Text>
+                    </View>
+                  </View>
+                ) : googleDestinationError ? (
+                  <Text style={[createRideWizardStyles.destinationEmptyText, { color: TOKENS[theme].red }]}>{googleDestinationError}</Text>
+                ) : googleDestinationSuggestions.length === 0 ? (
+                  <Text style={[createRideWizardStyles.destinationEmptyText, { color: t.muted }]}>No map suggestions found.</Text>
+                ) : (
+                  <View style={createRideWizardStyles.destinationList}>
+                    {googleDestinationSuggestions.map((item) => (
+                      <TouchableOpacity
+                        key={`google-${item.placeId}`}
+                        style={[createRideWizardStyles.destinationListRow, { borderBottomColor: t.border }]}
+                        onPress={() => {
+                          void handleApplyGoogleSuggestion(item, locationPickerContext);
+                        }}
+                      >
+                        <View style={styles.rowAligned}>
+                          <MaterialCommunityIcons name="map-marker-radius-outline" size={20} color={accent} />
+                          <View style={styles.flex1}>
+                            <Text style={[createRideWizardStyles.destinationListText, { color: t.text }]}>{item.primaryText}</Text>
+                            {!!item.secondaryText && (
+                              <Text style={[createRideWizardStyles.destinationListSubText, { color: t.muted }]}>{item.secondaryText}</Text>
+                            )}
+                          </View>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+            )}
 
             <View style={[createRideWizardStyles.destinationSection, { borderBottomColor: t.border, backgroundColor: t.subtle }]}>
               <Text style={[createRideWizardStyles.destinationSectionTitle, { color: t.text }]}>Your Saved Locations</Text>
@@ -1349,7 +2372,7 @@ export const CreateRideModal = ({
             </View>
 
             <View style={[createRideWizardStyles.destinationSection, { backgroundColor: t.bg }]}>
-              {filteredDestinationSuggestions
+              {dedupedLocalDestinationSuggestions
                 .filter((item) => item.toLowerCase() !== normalizedCurrentCity.toLowerCase())
                 .slice(0, 6)
                 .map((item) => (
@@ -1386,6 +2409,67 @@ export const CreateRideModal = ({
           </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      {isIOSNativePickerVisible && (
+        <Modal visible={isIOSNativePickerVisible} animationType="slide" onRequestClose={closeIOSNativePicker}>
+          <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg, paddingTop: topInset }]}>
+            <View style={[createRideWizardStyles.selectorHeader, { borderBottomColor: t.border }]}>
+              <TouchableOpacity onPress={closeIOSNativePicker} style={createRideWizardStyles.selectorBackButton}>
+                <MaterialCommunityIcons name="close" size={26} color={t.text} />
+              </TouchableOpacity>
+              <Text style={[createRideWizardStyles.selectorTitle, { color: t.text }]}>{iosNativePickerTitle}</Text>
+            </View>
+
+            <View style={createRideWizardStyles.nativePickerBody}>
+              <DateTimePicker
+                value={pickerDraftValue}
+                mode={isDatePickerOpen ? 'date' : 'time'}
+                display="spinner"
+                onChange={handleIOSPickerValueChange}
+                minimumDate={isDatePickerOpen ? minimumRideDate : undefined}
+                maximumDate={isDatePickerOpen ? maximumRideDate : undefined}
+                minuteInterval={isTimePickerOpen ? TIME_PICKER_INTERVAL_MINUTES : undefined}
+              />
+            </View>
+
+            <View style={[createRideWizardStyles.nativePickerFooter, { borderTopColor: t.border }]}>
+              <TouchableOpacity
+                style={[createRideWizardStyles.nativePickerSecondaryButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                onPress={closeIOSNativePicker}
+              >
+                <Text style={[createRideWizardStyles.nativePickerSecondaryButtonText, { color: t.text }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[createRideWizardStyles.nativePickerPrimaryButton, { backgroundColor: accent }]}
+                onPress={applyIOSNativePicker}
+              >
+                <Text style={createRideWizardStyles.nativePickerPrimaryButtonText}>Done</Text>
+              </TouchableOpacity>
+            </View>
+          </SafeAreaView>
+        </Modal>
+      )}
+
+      {Platform.OS === 'android' && isDatePickerOpen && (
+        <DateTimePicker
+          value={pickerDraftValue}
+          mode="date"
+          display="default"
+          minimumDate={minimumRideDate}
+          maximumDate={maximumRideDate}
+          onChange={handleAndroidDatePickerChange}
+        />
+      )}
+
+      {Platform.OS === 'android' && isTimePickerOpen && (
+        <DateTimePicker
+          value={pickerDraftValue}
+          mode="time"
+          display="default"
+          is24Hour={false}
+          onChange={handleAndroidTimePickerChange}
+        />
+      )}
 
       <Modal visible={isRidePointPickerOpen} animationType="slide" onRequestClose={() => setIsRidePointPickerOpen(false)}>
         <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg, paddingTop: topInset }]}>
@@ -1569,6 +2653,9 @@ const createRideWizardStyles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center'
   },
+  headerRowUp: {
+    marginTop: -4
+  },
   headerTitle: {
     fontSize: 11,
     fontWeight: '800',
@@ -1639,35 +2726,41 @@ const createRideWizardStyles = StyleSheet.create({
     gap: 8
   },
   stepMeta: {
-    fontSize: 50 / 2,
-    fontWeight: '600'
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 1.7
   },
   stepTitle: {
-    fontSize: 74 / 2,
-    lineHeight: 1.15 * (74 / 2),
-    fontWeight: '600'
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 2
   },
   stepDescription: {
-    fontSize: 20,
-    lineHeight: 28
+    fontSize: 14,
+    lineHeight: 20
   },
   fieldBlock: {
     gap: 10,
     marginTop: 16
   },
   fieldLabel: {
-    fontSize: 20,
-    lineHeight: 28,
-    fontWeight: '500'
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 1.7,
+    fontWeight: '800',
+    marginBottom: 6
   },
   lineInput: {
-    borderBottomWidth: 2,
-    minHeight: 48,
-    fontSize: 20
+    borderBottomWidth: 1,
+    minHeight: 46,
+    fontSize: 14,
+    fontWeight: '600'
   },
   destinationPickerField: {
-    borderBottomWidth: 2,
-    minHeight: 48,
+    borderBottomWidth: 1,
+    minHeight: 46,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -1675,32 +2768,35 @@ const createRideWizardStyles = StyleSheet.create({
   },
   destinationPickerValue: {
     flex: 1,
-    fontSize: 20
+    fontSize: 14,
+    fontWeight: '600'
   },
   lineInputLarge: {
-    borderBottomWidth: 2,
-    minHeight: 58,
-    fontSize: 52 / 2,
-    fontWeight: '500'
+    borderBottomWidth: 1,
+    minHeight: 46,
+    fontSize: 14,
+    fontWeight: '600'
   },
   charCount: {
     alignSelf: 'flex-end',
-    fontSize: 20 / 2,
+    fontSize: 10,
     fontWeight: '500'
   },
   trendingLabel: {
-    fontSize: 50 / 2,
-    fontWeight: '700'
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 1.7,
+    fontWeight: '800'
   },
   trendingChip: {
-    borderWidth: 2,
+    borderWidth: 1,
     borderRadius: 999,
-    paddingVertical: 8,
-    paddingHorizontal: 14
+    paddingVertical: 7,
+    paddingHorizontal: 12
   },
   trendingChipText: {
-    fontSize: 22 / 2,
-    fontWeight: '500'
+    fontSize: 11,
+    fontWeight: '700'
   },
   dayModeRow: {
     flexDirection: 'row',
@@ -1709,22 +2805,24 @@ const createRideWizardStyles = StyleSheet.create({
   },
   dayModeButton: {
     minWidth: 100,
-    borderWidth: 2,
+    borderWidth: 1,
     borderRadius: 999,
-    minHeight: 54,
+    minHeight: 40,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 18
+    paddingHorizontal: 14
   },
   dayModeText: {
-    fontSize: 22 / 2,
-    fontWeight: '500'
+    fontSize: 11,
+    fontWeight: '700'
   },
   filledInput: {
-    minHeight: 74 / 2,
-    borderRadius: 10,
-    fontSize: 18 / 2,
-    paddingHorizontal: 12
+    minHeight: 46,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    fontWeight: '600'
   },
   locationPickerInput: {
     flexDirection: 'row',
@@ -1734,12 +2832,13 @@ const createRideWizardStyles = StyleSheet.create({
   },
   locationPickerInputText: {
     flex: 1,
-    fontSize: 18 / 2
+    fontSize: 14,
+    fontWeight: '600'
   },
   routeMapButton: {
     marginTop: 6,
-    minHeight: 48,
-    borderRadius: 10,
+    minHeight: 46,
+    borderRadius: 12,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1747,7 +2846,63 @@ const createRideWizardStyles = StyleSheet.create({
     gap: 8
   },
   routeMapButtonText: {
-    fontSize: 18 / 2,
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3
+  },
+  routeEstimateCard: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+    gap: 8
+  },
+  routeEstimateHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8
+  },
+  routeEstimateTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3
+  },
+  routeEstimateChipRow: {
+    flexDirection: 'row',
+    gap: 8
+  },
+  routeEstimateChip: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    gap: 2
+  },
+  routeEstimateChipLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3
+  },
+  routeEstimateChipValue: {
+    fontSize: 12,
+    fontWeight: '800'
+  },
+  routeEstimateHint: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600'
+  },
+  routeEstimateMeta: {
+    fontSize: 10,
+    fontWeight: '700'
+  },
+  routeEstimateError: {
+    fontSize: 11,
     fontWeight: '700'
   },
   timelineGrid: {
@@ -1757,10 +2912,22 @@ const createRideWizardStyles = StyleSheet.create({
   },
   timeTileInput: {
     flex: 1,
-    minHeight: 74 / 2,
-    borderRadius: 10,
+    minHeight: 46,
+    borderRadius: 12,
     paddingHorizontal: 12,
-    fontSize: 17 / 2
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  timeTileButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6
+  },
+  timeTileText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600'
   },
   costRow: {
     flexDirection: 'row',
@@ -1768,44 +2935,62 @@ const createRideWizardStyles = StyleSheet.create({
   },
   costButton: {
     flex: 1,
-    borderWidth: 2,
+    borderWidth: 1,
     borderRadius: 999,
-    minHeight: 62 / 2,
+    minHeight: 38,
     alignItems: 'center',
     justifyContent: 'center'
   },
   costButtonText: {
-    fontSize: 21 / 2,
-    fontWeight: '500'
+    fontSize: 11,
+    fontWeight: '700'
   },
   inclusionHeader: {
-    fontSize: 45 / 2,
-    fontWeight: '500',
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 1.7,
+    fontWeight: '800',
     marginTop: 10
   },
   inclusionChip: {
-    borderWidth: 2,
+    borderWidth: 1,
     borderRadius: 999,
-    minHeight: 46,
-    paddingHorizontal: 16,
+    minHeight: 38,
+    paddingHorizontal: 14,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 6
   },
   inclusionChipText: {
-    fontSize: 20 / 2,
-    fontWeight: '500'
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  rideNoteInputWrap: {
+    position: 'relative'
   },
   rideNoteInput: {
-    minHeight: 220,
+    minHeight: 170,
     borderWidth: 1,
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 12,
+    paddingBottom: 40,
+    paddingRight: 40,
     textAlignVertical: 'top',
-    fontSize: 19 / 2,
-    lineHeight: 26
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600'
+  },
+  rideNoteEditIcon: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   inviteModeRow: {
     flexDirection: 'row',
@@ -1815,16 +3000,16 @@ const createRideWizardStyles = StyleSheet.create({
   },
   inviteModeButton: {
     minWidth: 170 / 2,
-    borderWidth: 2,
+    borderWidth: 1,
     borderRadius: 999,
-    minHeight: 62 / 2,
+    minHeight: 38,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 20
+    paddingHorizontal: 16
   },
   inviteModeText: {
-    fontSize: 23 / 2,
-    fontWeight: '500'
+    fontSize: 11,
+    fontWeight: '700'
   },
   emptyInviteState: {
     marginTop: 20,
@@ -1844,13 +3029,13 @@ const createRideWizardStyles = StyleSheet.create({
     alignItems: 'flex-start'
   },
   preferenceTitle: {
-    fontSize: 50 / 2,
+    fontSize: 14,
     fontWeight: '600',
     marginBottom: 3
   },
   preferenceText: {
-    fontSize: 20,
-    lineHeight: 30
+    fontSize: 14,
+    lineHeight: 20
   },
   footer: {
     borderTopWidth: 1,
@@ -1882,8 +3067,9 @@ const createRideWizardStyles = StyleSheet.create({
   },
   destinationSearchInput: {
     flex: 1,
-    fontSize: 19,
-    paddingVertical: 0
+    fontSize: 14,
+    paddingVertical: 0,
+    fontWeight: '600'
   },
   destinationActionRow: {
     minHeight: 72,
@@ -1894,20 +3080,24 @@ const createRideWizardStyles = StyleSheet.create({
     borderBottomWidth: 1
   },
   destinationActionText: {
-    fontSize: 22 / 2,
-    fontWeight: '700'
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3
   },
   destinationSection: {
     paddingHorizontal: 16,
     paddingVertical: 14
   },
   destinationSectionTitle: {
-    fontSize: 28 / 2,
-    fontWeight: '700'
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 1.7
   },
   destinationEmptyText: {
     marginTop: 4,
-    fontSize: 26 / 2,
+    fontSize: 13,
     fontWeight: '600'
   },
   destinationList: {
@@ -1919,24 +3109,101 @@ const createRideWizardStyles = StyleSheet.create({
     justifyContent: 'center'
   },
   destinationListText: {
-    fontSize: 22 / 2,
-    fontWeight: '500'
+    fontSize: 14,
+    fontWeight: '600'
   },
   destinationListSubText: {
     marginTop: 2,
-    fontSize: 18 / 2,
+    fontSize: 11,
     fontWeight: '500'
   },
+  selectorHeader: {
+    borderBottomWidth: 1,
+    minHeight: 56,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10
+  },
+  selectorBackButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  selectorTitle: {
+    fontSize: 14,
+    fontWeight: '800'
+  },
+  selectorList: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 8
+  },
+  nativePickerBody: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16
+  },
+  nativePickerFooter: {
+    borderTopWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    gap: 10
+  },
+  nativePickerSecondaryButton: {
+    flex: 1,
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  nativePickerSecondaryButtonText: {
+    fontSize: 13,
+    fontWeight: '700'
+  },
+  nativePickerPrimaryButton: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  nativePickerPrimaryButtonText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.3
+  },
+  selectorOption: {
+    minHeight: 50,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  selectorOptionText: {
+    fontSize: 14,
+    fontWeight: '600'
+  },
   nextButton: {
-    minHeight: 70 / 2,
+    minHeight: 46,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center'
   },
   nextButtonText: {
     color: '#fff',
-    fontSize: 58 / 2,
-    fontWeight: '700'
+    fontSize: 14,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4
   }
 });
 
@@ -2186,18 +3453,46 @@ export const EditProfileModal = ({
   onSave: (updates: Partial<User>) => void;
   theme: Theme;
 }) => {
+  const sanitizeEmergencyInput = (value: string): string => value.replace(/\D/g, '').slice(0, 15);
+  const normalizeEmergencyContacts = (values: string[]): string[] => {
+    const seen = new Set<string>();
+    const normalized: string[] = [];
+    values
+      .map((value) => sanitizeEmergencyInput(value))
+      .filter((value) => value.length >= 10)
+      .forEach((value) => {
+        if (seen.has(value)) return;
+        seen.add(value);
+        normalized.push(value);
+      });
+    return normalized;
+  };
+
+  const initialEmergencyContacts = normalizeEmergencyContacts([
+    ...(user.sosContacts ?? []),
+    user.sosNumber ?? ''
+  ]);
   const t = TOKENS[theme];
   const [name, setName] = useState(user.name);
   const [garage, setGarage] = useState<string[]>(user.garage || []);
   const [style, setStyle] = useState(user.style);
   const [typicalRideTime, setTypicalRideTime] = useState(user.typicalRideTime);
+  const [primarySosContact, setPrimarySosContact] = useState(initialEmergencyContacts[0] ?? '');
+  const [secondarySosContact, setSecondarySosContact] = useState(initialEmergencyContacts[1] ?? '');
+  const [thirdSosContact, setThirdSosContact] = useState(initialEmergencyContacts[2] ?? '');
+  const [error, setError] = useState('');
 
   useEffect(() => {
     if (!visible) return;
+    const contacts = normalizeEmergencyContacts([...(user.sosContacts ?? []), user.sosNumber ?? '']);
     setName(user.name);
     setGarage(user.garage || []);
     setStyle(user.style);
     setTypicalRideTime(user.typicalRideTime);
+    setPrimarySosContact(contacts[0] ?? '');
+    setSecondarySosContact(contacts[1] ?? '');
+    setThirdSosContact(contacts[2] ?? '');
+    setError('');
   }, [visible, user]);
 
   const updateBike = (index: number, value: string) => {
@@ -2214,7 +3509,22 @@ export const EditProfileModal = ({
 
   const submit = () => {
     const filteredGarage = garage.map((value) => value.trim()).filter(Boolean);
-    onSave({ name, garage: filteredGarage, style, typicalRideTime });
+    const emergencyContacts = normalizeEmergencyContacts([primarySosContact, secondarySosContact, thirdSosContact]);
+
+    if (emergencyContacts.length === 0) {
+      setError('Add at least one emergency contact (minimum 10 digits).');
+      return;
+    }
+
+    setError('');
+    onSave({
+      name,
+      garage: filteredGarage,
+      style,
+      typicalRideTime,
+      sosNumber: emergencyContacts[0],
+      sosContacts: emergencyContacts
+    });
   };
 
   return (
@@ -2256,6 +3566,50 @@ export const EditProfileModal = ({
               <LabeledInput label="Riding Style" value={style} onChangeText={setStyle} theme={theme} />
               <LabeledInput label="Typical Ride Time" value={typicalRideTime} onChangeText={setTypicalRideTime} theme={theme} />
 
+              <Text style={[styles.inputLabel, { color: t.muted }]}>Primary Emergency Contact</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
+                value={primarySosContact}
+                placeholder="Primary emergency number"
+                placeholderTextColor={t.muted}
+                keyboardType="number-pad"
+                maxLength={15}
+                onChangeText={(value) => {
+                  setPrimarySosContact(sanitizeEmergencyInput(value));
+                  setError('');
+                }}
+              />
+
+              <Text style={[styles.inputLabel, { color: t.muted }]}>Secondary Contact (Optional)</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
+                value={secondarySosContact}
+                placeholder="Secondary emergency number"
+                placeholderTextColor={t.muted}
+                keyboardType="number-pad"
+                maxLength={15}
+                onChangeText={(value) => {
+                  setSecondarySosContact(sanitizeEmergencyInput(value));
+                  setError('');
+                }}
+              />
+
+              <Text style={[styles.inputLabel, { color: t.muted }]}>Third Contact (Optional)</Text>
+              <TextInput
+                style={[styles.input, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
+                value={thirdSosContact}
+                placeholder="Third emergency number"
+                placeholderTextColor={t.muted}
+                keyboardType="number-pad"
+                maxLength={15}
+                onChangeText={(value) => {
+                  setThirdSosContact(sanitizeEmergencyInput(value));
+                  setError('');
+                }}
+              />
+
+              {!!error && <Text style={[styles.errorText, { color: TOKENS[theme].red }]}>{error}</Text>}
+
               <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={submit}>
                 <MaterialCommunityIcons name="content-save-outline" size={18} color="#fff" />
                 <Text style={styles.primaryButtonText}>Save Profile</Text>
@@ -2280,6 +3634,19 @@ export const RideDetailScreen = ({
   onUpdateRide,
   onCancelRide,
   onReportRide,
+  rideTrackingSession,
+  isLiveTrackingSyncing = false,
+  liveTrackingSyncError,
+  isStartingRideTracking = false,
+  isStoppingRideTracking = false,
+  isUpdatingRideCheckIn = false,
+  isSendingRideSos = false,
+  rideCheckInGeofenceRadiusMeters = 250,
+  onRetryRideTrackingSync,
+  onStartRideTracking,
+  onStopRideTracking,
+  onToggleRideCheckIn,
+  onSendRideSos,
   isCreatorBlocked = false,
   onHandleViewProfile,
   theme
@@ -2295,6 +3662,19 @@ export const RideDetailScreen = ({
   onUpdateRide: (rideId: string, updates: Partial<RidePost>) => void;
   onCancelRide: (rideId: string) => void;
   onReportRide?: (rideId: string) => void;
+  rideTrackingSession?: RideTrackingSession | null;
+  isLiveTrackingSyncing?: boolean;
+  liveTrackingSyncError?: string | null;
+  isStartingRideTracking?: boolean;
+  isStoppingRideTracking?: boolean;
+  isUpdatingRideCheckIn?: boolean;
+  isSendingRideSos?: boolean;
+  rideCheckInGeofenceRadiusMeters?: number;
+  onRetryRideTrackingSync?: () => void;
+  onStartRideTracking?: (rideId: string) => void;
+  onStopRideTracking?: (rideId: string) => void;
+  onToggleRideCheckIn?: (rideId: string, checkedIn: boolean) => void;
+  onSendRideSos?: (rideId: string) => void;
   isCreatorBlocked?: boolean;
   onHandleViewProfile?: (userId: string) => void;
   theme: Theme;
@@ -2310,9 +3690,111 @@ export const RideDetailScreen = ({
   const isJoined = ride.currentParticipants.includes(currentUser.id);
   const participants = users.filter((u) => ride.currentParticipants.includes(u.id));
   const requestUsers = users.filter((u) => ride.requests.includes(u.id));
+  const usersById = new Map(users.map((user) => [user.id, user]));
+  const isRideParticipant = isJoined;
+  const isLiveTrackingActive = Boolean(rideTrackingSession?.isActive);
+  const myTrackingState = rideTrackingSession?.participants[currentUser.id];
+  const isCheckedIn = Boolean(myTrackingState?.checkedIn);
+  const liveParticipantStates = participants.map((participant) => {
+    const state = rideTrackingSession?.participants[participant.id];
+    const checkedIn = Boolean(state?.checkedIn);
+    const hasLocation = Boolean(state?.lastLocation);
+    const status = getLiveParticipantStatus({
+      checkedIn,
+      hasLocation,
+      theme
+    });
+
+    return {
+      user: participant,
+      state,
+      checkedIn,
+      hasLocation,
+      status
+    };
+  });
+  const liveParticipantCoordinates = liveParticipantStates
+    .map((entry) => {
+      const location = entry.state?.lastLocation;
+      if (!location) return null;
+      return {
+        id: entry.user.id,
+        name: entry.user.name,
+        checkedIn: entry.checkedIn,
+        statusLabel: entry.status.label,
+        markerColor: entry.status.markerColor,
+        updatedAt: location.updatedAt,
+        coordinate: {
+          latitude: location.lat,
+          longitude: location.lng
+        }
+      };
+    })
+    .filter(
+      (
+        item
+      ): item is {
+        id: string;
+        name: string;
+        checkedIn: boolean;
+        statusLabel: string;
+        markerColor: string;
+        updatedAt: string;
+        coordinate: { latitude: number; longitude: number };
+      } => item !== null
+    );
+  const liveTrackingRegion = buildRouteRegion(liveParticipantCoordinates.map((item) => item.coordinate));
+  const lastSos = rideTrackingSession?.lastSos;
+  const lastSosUser = lastSos ? usersById.get(lastSos.userId) : null;
   const routePoints = normalizeRoutePoints(ride.routePoints);
+  const startCheckpoint = routePoints[0] ?? null;
   const routeCoordinates = toRouteCoordinates(routePoints);
   const routeRegion = buildRouteRegion(routeCoordinates);
+  const hasRouteStats =
+    typeof ride.routeEtaMinutes === 'number' || typeof ride.routeDistanceKm === 'number' || typeof ride.tollEstimateInr === 'number';
+  const paymentParticipantIds = Array.from(new Set(ride.currentParticipants.filter((participantId) => participantId !== ride.creatorId)));
+  const hasPaidCost = ride.costType === 'Paid' || ride.costType === 'Split';
+  const splitPerRiderAmount =
+    ride.costType === 'Split' && typeof ride.splitTotalAmount === 'number' && paymentParticipantIds.length > 0
+      ? ride.splitTotalAmount / paymentParticipantIds.length
+      : undefined;
+  const basePaymentAmount =
+    ride.costType === 'Paid'
+      ? typeof ride.pricePerPerson === 'number'
+        ? ride.pricePerPerson
+        : 0
+      : ride.costType === 'Split'
+        ? splitPerRiderAmount ?? (typeof ride.pricePerPerson === 'number' ? ride.pricePerPerson : 0)
+        : 0;
+  const hasPaymentFlow = hasPaidCost && basePaymentAmount > 0 && paymentParticipantIds.length > 0;
+  const hasUpiLink = typeof ride.upiPaymentLink === 'string' && ride.upiPaymentLink.trim().length > 0;
+  const paymentStatusByUserId = ride.paymentStatusByUserId ?? {};
+  const resolveUserById = (userId: string): User | null => {
+    if (userId === currentUser.id) return currentUser;
+    return usersById.get(userId) ?? null;
+  };
+  const paymentRows = paymentParticipantIds.map((participantId) => {
+    const rowStatus = paymentStatusByUserId[participantId];
+    const fallbackAmount = Number(basePaymentAmount.toFixed(2));
+    const amount = ride.costType === 'Split'
+      ? fallbackAmount
+      : typeof rowStatus?.amount === 'number' && Number.isFinite(rowStatus.amount) && rowStatus.amount > 0
+        ? rowStatus.amount
+        : fallbackAmount;
+
+    return {
+      userId: participantId,
+      user: resolveUserById(participantId),
+      amount,
+      status: rowStatus?.status === 'paid' ? 'paid' : 'pending',
+      paidAt: rowStatus?.paidAt
+    };
+  });
+  const totalCollectableAmount = paymentRows.reduce((total, row) => total + row.amount, 0);
+  const totalCollectedAmount = paymentRows.reduce((total, row) => (row.status === 'paid' ? total + row.amount : total), 0);
+  const pendingPayments = paymentRows.filter((row) => row.status !== 'paid');
+  const myPaymentRow = paymentRows.find((row) => row.userId === currentUser.id);
+  const isMyPaymentPaid = myPaymentRow?.status === 'paid';
 
   const handleOpenRouteInMaps = () => {
     const url = buildGoogleDirectionsUrl(routeCoordinates);
@@ -2321,6 +3803,47 @@ export const RideDetailScreen = ({
     void Linking.openURL(url).catch(() => {
       Alert.alert('Unable to open maps', 'Please try again in a moment.');
     });
+  };
+
+  const updateRiderPaymentStatus = (userId: string, status: 'pending' | 'paid') => {
+    if (!hasPaymentFlow) return;
+    const row = paymentRows.find((item) => item.userId === userId);
+    if (!row) return;
+
+    const now = new Date().toISOString();
+    const nextPaymentStatusByUserId = {
+      ...(ride.paymentStatusByUserId ?? {}),
+      [userId]: {
+        userId,
+        amount: row.amount,
+        status,
+        updatedAt: now,
+        paidAt: status === 'paid' ? now : undefined,
+        method: status === 'paid' ? ('UPI_LINK' as const) : undefined
+      }
+    };
+    onUpdateRide(ride.id, { paymentStatusByUserId: nextPaymentStatusByUserId });
+  };
+
+  const handleOpenUpiPayment = async () => {
+    if (!myPaymentRow || !ride.upiPaymentLink) return;
+
+    const paymentUrl = buildUpiCheckoutUrl(ride.upiPaymentLink, myPaymentRow.amount, `${ride.title} #${ride.id}`);
+    try {
+      const canOpen = await Linking.canOpenURL(paymentUrl).catch(() => true);
+      if (!canOpen) {
+        Alert.alert('UPI App Not Available', 'No app could handle this payment link. Try another UPI app.');
+        return;
+      }
+
+      await Linking.openURL(paymentUrl);
+      Alert.alert('Mark payment complete?', `Confirm once you finish paying ${formatInrCurrency(myPaymentRow.amount)}.`, [
+        { text: 'Not yet', style: 'cancel' },
+        { text: 'Mark Paid', onPress: () => updateRiderPaymentStatus(currentUser.id, 'paid') }
+      ]);
+    } catch {
+      Alert.alert('Unable to open UPI', 'Please try again in a moment.');
+    }
   };
 
   return (
@@ -2380,6 +3903,26 @@ export const RideDetailScreen = ({
                 </Text>
               </View>
             </View>
+
+            {hasRouteStats && (
+              <View style={styles.wrapRow}>
+                {typeof ride.routeEtaMinutes === 'number' && (
+                  <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <Text style={[styles.pillTagText, { color: t.text }]}>ETA {formatRideEta(ride.routeEtaMinutes)}</Text>
+                  </View>
+                )}
+                {typeof ride.routeDistanceKm === 'number' && (
+                  <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <Text style={[styles.pillTagText, { color: t.text }]}>{formatRideDistance(ride.routeDistanceKm)}</Text>
+                  </View>
+                )}
+                {typeof ride.tollEstimateInr === 'number' && (
+                  <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <Text style={[styles.pillTagText, { color: t.text }]}>Toll {formatInrAmount(ride.tollEstimateInr)}</Text>
+                  </View>
+                )}
+              </View>
+            )}
 
             <TouchableOpacity style={[styles.organizerCard, { borderColor: t.border, backgroundColor: t.subtle }]} onPress={() => onHandleViewProfile?.(ride.creatorId)}>
               <View style={styles.rowAligned}>
@@ -2454,6 +3997,354 @@ export const RideDetailScreen = ({
                       </View>
                     );
                   })}
+                </View>
+              </View>
+            )}
+          </View>
+
+          {hasPaymentFlow && (
+            <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
+              <View style={styles.rowBetween}>
+                <Text style={[styles.cardHeader, { color: t.muted }]}>PAYMENTS</Text>
+                <Badge color={pendingPayments.length === 0 ? 'green' : 'orange'} theme={theme}>
+                  {pendingPayments.length === 0 ? 'Settled' : `${pendingPayments.length} pending`}
+                </Badge>
+              </View>
+
+              <Text style={[styles.bodyText, { color: t.muted }]}>
+                {ride.costType === 'Split'
+                  ? `Split ${formatInrCurrency(ride.splitTotalAmount ?? 0)} across joined riders.`
+                  : `Each joined rider pays ${formatInrCurrency(basePaymentAmount)} to the organizer.`}
+              </Text>
+
+              <View style={styles.profileStatsRow}>
+                <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <Text style={[styles.profileStatValue, { color: t.text }]}>{formatInrCurrency(totalCollectableAmount)}</Text>
+                  <Text style={[styles.profileStatLabel, { color: t.muted }]}>Total</Text>
+                </View>
+                <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <Text style={[styles.profileStatValue, { color: TOKENS[theme].green }]}>{formatInrCurrency(totalCollectedAmount)}</Text>
+                  <Text style={[styles.profileStatLabel, { color: t.muted }]}>Collected</Text>
+                </View>
+              </View>
+
+              {!hasUpiLink && (
+                <View style={[styles.safetyHintCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <MaterialCommunityIcons name="alert-circle-outline" size={16} color={TOKENS[theme].red} />
+                  <Text style={[styles.metaText, { color: t.muted }]}>Organizer has not added a UPI link yet.</Text>
+                </View>
+              )}
+
+              {!!myPaymentRow && (
+                <View style={[styles.routePreview, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <View style={styles.rowBetween}>
+                    <Text style={[styles.inputLabel, { color: t.muted, marginBottom: 0 }]}>Your payment</Text>
+                    <Badge color={isMyPaymentPaid ? 'green' : 'slate'} theme={theme}>
+                      {isMyPaymentPaid ? 'Paid' : 'Pending'}
+                    </Badge>
+                  </View>
+                  <Text style={[styles.cardTitle, { color: t.text }]}>{formatInrCurrency(myPaymentRow.amount)}</Text>
+                  {myPaymentRow.paidAt && (
+                    <Text style={[styles.metaText, { color: t.muted }]}>Paid at {formatClock(myPaymentRow.paidAt)}</Text>
+                  )}
+
+                  {!isMyPaymentPaid ? (
+                    hasUpiLink ? (
+                      <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={handleOpenUpiPayment}>
+                        <MaterialCommunityIcons name="qrcode-scan" size={18} color="#fff" />
+                        <Text style={styles.primaryButtonText}>Pay via UPI</Text>
+                      </TouchableOpacity>
+                    ) : (
+                      <TouchableOpacity
+                        style={[styles.primaryButton, { backgroundColor: TOKENS[theme].blue }]}
+                        onPress={() => updateRiderPaymentStatus(currentUser.id, 'paid')}
+                      >
+                        <MaterialCommunityIcons name="check-circle-outline" size={18} color="#fff" />
+                        <Text style={styles.primaryButtonText}>Mark as Paid</Text>
+                      </TouchableOpacity>
+                    )
+                  ) : (
+                    <TouchableOpacity
+                      style={[styles.ghostButton, { borderColor: t.border, backgroundColor: t.card }]}
+                      onPress={() => updateRiderPaymentStatus(currentUser.id, 'pending')}
+                    >
+                      <MaterialCommunityIcons name="history" size={16} color={t.muted} />
+                      <Text style={[styles.ghostButtonText, { color: t.muted }]}>Mark Pending</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
+
+              <Text style={[styles.cardHeader, { color: t.muted }]}>RIDER STATUS</Text>
+              <View style={styles.liveParticipantList}>
+                {paymentRows.map((row) => (
+                  <View key={`payment-${row.userId}`} style={[styles.requestRow, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <View style={styles.rowAligned}>
+                      <Image source={{ uri: row.user?.avatar || avatarFallback }} style={styles.avatarSmall} />
+                      <View>
+                        <Text style={[styles.boldText, { color: t.text }]}>{row.user?.name ?? 'Rider'}</Text>
+                        <Text style={[styles.metaText, { color: t.muted }]}>{formatInrCurrency(row.amount)}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.rowAligned}>
+                      <Badge color={row.status === 'paid' ? 'green' : 'slate'} theme={theme}>
+                        {row.status === 'paid' ? 'Paid' : 'Pending'}
+                      </Badge>
+                      {isCreator && (
+                        <TouchableOpacity
+                          style={[styles.primaryCompactButton, { borderColor: t.border, backgroundColor: t.card }]}
+                          onPress={() => updateRiderPaymentStatus(row.userId, row.status === 'paid' ? 'pending' : 'paid')}
+                        >
+                          <MaterialCommunityIcons
+                            name={row.status === 'paid' ? 'arrow-u-left-top' : 'check'}
+                            size={14}
+                            color={t.primary}
+                          />
+                          <Text style={[styles.primaryCompactButtonText, { color: t.primary }]}>
+                            {row.status === 'paid' ? 'Reopen' : 'Settle'}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </View>
+          )}
+
+          <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
+            <View style={styles.rowBetween}>
+              <Text style={[styles.cardHeader, { color: t.muted }]}>LIVE TRACKING + SAFETY</Text>
+              <Badge color={isLiveTrackingActive ? 'green' : 'orange'} theme={theme}>
+                {isLiveTrackingActive ? 'Active' : 'Inactive'}
+              </Badge>
+            </View>
+
+            <Text style={[styles.bodyText, { color: t.muted }]}>
+              {isLiveTrackingActive
+                ? 'Realtime location updates and SOS alerts are live for this ride.'
+                : isCreator
+                  ? 'Start live tracking before ride-out so participants can check in and share location.'
+                  : 'Waiting for the organizer to start live tracking for this ride.'}
+            </Text>
+
+            {!!liveTrackingSyncError && (
+              <View style={[styles.syncBanner, { borderColor: `${TOKENS[theme].red}66`, backgroundColor: t.subtle }]}>
+                <MaterialCommunityIcons name="cloud-alert-outline" size={18} color={TOKENS[theme].red} />
+                <View style={styles.syncBannerContent}>
+                  <Text style={[styles.syncBannerTitle, { color: TOKENS[theme].red }]}>Live Sync Failed</Text>
+                  <Text style={[styles.syncBannerMessage, { color: t.muted }]}>{liveTrackingSyncError}</Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.syncBannerRetry, { borderColor: t.border, backgroundColor: t.card, opacity: isLiveTrackingSyncing ? 0.7 : 1 }]}
+                  onPress={onRetryRideTrackingSync}
+                  disabled={!onRetryRideTrackingSync || isLiveTrackingSyncing}
+                >
+                  {isLiveTrackingSyncing ? (
+                    <ActivityIndicator size="small" color={t.primary} />
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons name="refresh" size={14} color={t.primary} />
+                      <Text style={[styles.syncBannerRetryText, { color: t.primary }]}>Retry</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {isCreator ? (
+              <TouchableOpacity
+                style={[
+                  styles.safetyActionButton,
+                  {
+                    borderColor: isLiveTrackingActive ? `${TOKENS[theme].red}66` : t.border,
+                    backgroundColor: isLiveTrackingActive ? `${TOKENS[theme].red}14` : t.subtle,
+                    opacity: isStartingRideTracking || isStoppingRideTracking ? 0.75 : 1
+                  }
+                ]}
+                onPress={() => (isLiveTrackingActive ? onStopRideTracking?.(ride.id) : onStartRideTracking?.(ride.id))}
+                disabled={isStartingRideTracking || isStoppingRideTracking}
+              >
+                {isStartingRideTracking || isStoppingRideTracking ? (
+                  <ActivityIndicator size="small" color={t.primary} />
+                ) : (
+                  <>
+                    <MaterialCommunityIcons
+                      name={isLiveTrackingActive ? 'stop-circle-outline' : 'play-circle-outline'}
+                      size={18}
+                      color={isLiveTrackingActive ? TOKENS[theme].red : t.primary}
+                    />
+                    <Text style={[styles.safetyActionButtonText, { color: isLiveTrackingActive ? TOKENS[theme].red : t.primary }]}>
+                      {isLiveTrackingActive ? 'Stop Live Session' : 'Start Live Session'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.liveActionRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.safetyActionButton,
+                    styles.flex1,
+                    {
+                      borderColor: isCheckedIn ? `${TOKENS[theme].green}66` : t.border,
+                      backgroundColor: isCheckedIn ? `${TOKENS[theme].green}14` : t.subtle,
+                      opacity: isRideParticipant && isLiveTrackingActive && !isUpdatingRideCheckIn ? 1 : 0.55
+                    }
+                  ]}
+                  onPress={() => onToggleRideCheckIn?.(ride.id, !isCheckedIn)}
+                  disabled={!isRideParticipant || !isLiveTrackingActive || isUpdatingRideCheckIn}
+                >
+                  {isUpdatingRideCheckIn ? (
+                    <ActivityIndicator size="small" color={t.primary} />
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons
+                        name={isCheckedIn ? 'shield-check-outline' : 'shield-outline'}
+                        size={18}
+                        color={isCheckedIn ? TOKENS[theme].green : t.primary}
+                      />
+                      <Text style={[styles.safetyActionButtonText, { color: isCheckedIn ? TOKENS[theme].green : t.primary }]}>
+                        {isCheckedIn ? 'Checked In' : 'Check In'}
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.safetyActionButton,
+                    styles.flex1,
+                    {
+                      borderColor: `${TOKENS[theme].red}66`,
+                      backgroundColor: `${TOKENS[theme].red}14`,
+                      opacity: isRideParticipant && isLiveTrackingActive && !isSendingRideSos ? 1 : 0.55
+                    }
+                  ]}
+                  onPress={() => onSendRideSos?.(ride.id)}
+                  disabled={!isRideParticipant || !isLiveTrackingActive || isSendingRideSos}
+                >
+                  {isSendingRideSos ? (
+                    <ActivityIndicator size="small" color={TOKENS[theme].red} />
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons name="alert-outline" size={18} color={TOKENS[theme].red} />
+                      <Text style={[styles.safetyActionButtonText, { color: TOKENS[theme].red }]}>Send SOS</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {!isCreator && !isRideParticipant && (
+              <View style={[styles.safetyHintCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                <MaterialCommunityIcons name="information-outline" size={16} color={t.muted} />
+                <Text style={[styles.metaText, { color: t.muted }]}>Join this ride to check in and use SOS mode.</Text>
+              </View>
+            )}
+
+            {!isCreator && (
+              <View style={[styles.safetyHintCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                <MaterialCommunityIcons name="map-marker-radius-outline" size={16} color={t.muted} />
+                <Text style={[styles.metaText, { color: t.muted }]}>
+                  {startCheckpoint
+                    ? `Check-in is geofenced to ${rideCheckInGeofenceRadiusMeters}m around start point (${startCheckpoint.label ?? 'Waypoint 1'}).`
+                    : 'Organizer needs to set a route start point before geofenced check-in can work.'}
+                </Text>
+              </View>
+            )}
+
+            {isLiveTrackingActive && (
+              <View style={styles.liveParticipantList}>
+                {liveParticipantStates.map(({ user, state, checkedIn, hasLocation }) => {
+                  const latestLocationTimestamp = state?.lastLocation?.updatedAt;
+
+                  return (
+                    <View key={user.id} style={[styles.liveParticipantRow, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                      <View style={styles.rowAligned}>
+                        <Image source={{ uri: user.avatar || avatarFallback }} style={styles.avatarTiny} />
+                        <View>
+                          <Text style={[styles.boldText, { color: t.text }]}>{user.name}</Text>
+                          <Text style={[styles.metaText, { color: t.muted }]}>
+                            {checkedIn ? 'Checked in' : 'Not checked in'}
+                            {latestLocationTimestamp ? ` • ${formatClock(latestLocationTimestamp)}` : ''}
+                          </Text>
+                        </View>
+                      </View>
+                      <View style={styles.rowAligned}>
+                        {hasLocation && <MaterialCommunityIcons name="crosshairs-gps" size={16} color={t.primary} />}
+                        <MaterialCommunityIcons
+                          name={checkedIn ? 'check-circle' : 'clock-outline'}
+                          size={16}
+                          color={checkedIn ? TOKENS[theme].green : t.muted}
+                          style={hasLocation ? { marginLeft: 8 } : undefined}
+                        />
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+
+            {isLiveTrackingActive && (
+              <View>
+                <Text style={[styles.inputLabel, { color: t.muted, marginBottom: 8 }]}>Participant Status</Text>
+                <View style={styles.liveStatusBadgeWrap}>
+                  {liveParticipantStates.map(({ user, status }) => {
+                    const badgeTone = colorForBadge(status.badgeColor, theme);
+                    const riderName = user.name.split(' ')[0] || 'Rider';
+
+                    return (
+                      <View
+                        key={`live-status-${user.id}`}
+                        style={[styles.liveStatusBadge, { borderColor: badgeTone.border, backgroundColor: badgeTone.bg }]}
+                      >
+                        <MaterialCommunityIcons name={status.icon} size={12} color={badgeTone.text} />
+                        <Text style={[styles.liveStatusBadgeText, { color: badgeTone.text }]}>
+                          {riderName} • {status.label}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+
+            {isLiveTrackingActive && liveParticipantCoordinates.length > 0 && routeMapModule && (
+              <View style={[styles.routeMapFrame, { borderColor: t.border }]}>
+                <routeMapModule.MapView style={styles.routeMap} initialRegion={liveTrackingRegion}>
+                  {routeCoordinates.length > 1 && (
+                    <routeMapModule.Polyline coordinates={routeCoordinates} strokeWidth={3} strokeColor={`${t.primary}88`} />
+                  )}
+                  {liveParticipantCoordinates.map((participant) => (
+                    <routeMapModule.Marker
+                      key={`live-${participant.id}`}
+                      coordinate={participant.coordinate}
+                      title={participant.name}
+                      description={`${participant.statusLabel} • ${formatClock(participant.updatedAt)}`}
+                      pinColor={participant.markerColor}
+                    />
+                  ))}
+                </routeMapModule.MapView>
+              </View>
+            )}
+
+            {isLiveTrackingActive && liveParticipantCoordinates.length === 0 && (
+              <View style={[styles.mapUnavailable, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                <MaterialCommunityIcons name="crosshairs-question" size={18} color={t.primary} />
+                <Text style={[styles.metaText, { color: t.muted }]}>Waiting for riders to share live location.</Text>
+              </View>
+            )}
+
+            {lastSos && (
+              <View style={[styles.sosAlertCard, { borderColor: `${TOKENS[theme].red}66`, backgroundColor: `${TOKENS[theme].red}14` }]}>
+                <MaterialCommunityIcons name="alert-decagram-outline" size={18} color={TOKENS[theme].red} />
+                <View style={styles.flex1}>
+                  <Text style={[styles.sosAlertTitle, { color: TOKENS[theme].red }]}>Latest SOS Alert</Text>
+                  <Text style={[styles.metaText, { color: t.muted }]}>
+                    {lastSosUser?.name ?? 'Rider'} • {formatClock(lastSos.createdAt)}
+                  </Text>
+                  <Text style={[styles.bodyText, { color: t.text }]}>{lastSos.message}</Text>
                 </View>
               </View>
             )}
@@ -2872,22 +4763,34 @@ export const CreateSquadModal = ({
 }: {
   visible: boolean;
   onClose: () => void;
-  onSubmit: (data: { name: string; description: string; rideStyle: string }) => void;
+  onSubmit: (data: { name: string; description: string; rideStyles: string[]; joinPermission: SquadJoinPermission }) => void;
   theme: Theme;
 }) => {
   const t = TOKENS[theme];
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [rideStyle, setRideStyle] = useState('Touring');
+  const [rideStyles, setRideStyles] = useState<string[]>(['Touring']);
+  const [joinPermission, setJoinPermission] = useState<SquadJoinPermission>('anyone');
 
   const rideStyleOptions = ['Touring', 'City / Urban', 'Adventure / Off-road', 'Night Cruise', 'Sport', 'Cafe Racer'];
 
+  const toggleRideStyle = (style: string) => {
+    setRideStyles((prev) => {
+      if (prev.includes(style)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((item) => item !== style);
+      }
+      return [...prev, style];
+    });
+  };
+
   const submit = () => {
-    if (!name.trim() || !description.trim()) return;
-    onSubmit({ name: name.trim(), description: description.trim(), rideStyle });
+    if (!name.trim() || !description.trim() || rideStyles.length === 0) return;
+    onSubmit({ name: name.trim(), description: description.trim(), rideStyles, joinPermission });
     setName('');
     setDescription('');
-    setRideStyle('Touring');
+    setRideStyles(['Touring']);
+    setJoinPermission('anyone');
   };
 
   return (
@@ -2920,10 +4823,10 @@ export const CreateSquadModal = ({
               </View>
 
               <View>
-                <Text style={[styles.inputLabel, { color: t.muted }]}>Ride Style</Text>
+                <Text style={[styles.inputLabel, { color: t.muted }]}>Ride Styles</Text>
                 <View style={styles.wrapRow}>
                   {rideStyleOptions.map((option) => {
-                    const isActive = rideStyle === option;
+                    const isActive = rideStyles.includes(option);
                     return (
                       <TouchableOpacity
                         key={option}
@@ -2934,12 +4837,45 @@ export const CreateSquadModal = ({
                             backgroundColor: isActive ? `${t.primary}22` : t.subtle
                           }
                         ]}
-                        onPress={() => setRideStyle(option)}
+                        onPress={() => toggleRideStyle(option)}
                       >
                         <Text style={[styles.selectorChipText, { color: isActive ? t.primary : t.muted }]}>{option}</Text>
                       </TouchableOpacity>
                     );
                   })}
+                </View>
+                <Text style={[styles.metaText, { color: t.muted, marginTop: 8 }]}>Select one or more styles.</Text>
+              </View>
+
+              <View>
+                <Text style={[styles.inputLabel, { color: t.muted }]}>Join Permission</Text>
+                <View style={styles.wrapRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.selectorChip,
+                      {
+                        borderColor: joinPermission === 'anyone' ? t.primary : t.border,
+                        backgroundColor: joinPermission === 'anyone' ? `${t.primary}22` : t.subtle
+                      }
+                    ]}
+                    onPress={() => setJoinPermission('anyone')}
+                  >
+                    <Text style={[styles.selectorChipText, { color: joinPermission === 'anyone' ? t.primary : t.muted }]}>Anyone</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.selectorChip,
+                      {
+                        borderColor: joinPermission === 'request_to_join' ? t.primary : t.border,
+                        backgroundColor: joinPermission === 'request_to_join' ? `${t.primary}22` : t.subtle
+                      }
+                    ]}
+                    onPress={() => setJoinPermission('request_to_join')}
+                  >
+                    <Text style={[styles.selectorChipText, { color: joinPermission === 'request_to_join' ? t.primary : t.muted }]}>
+                      Request to Join
+                    </Text>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -2961,8 +4897,13 @@ export const SquadDetailModal = ({
   currentUser,
   users,
   onClose,
+  onOpenSquadChat,
   onJoinSquad,
   onLeaveSquad,
+  onAcceptJoinRequest,
+  onRejectJoinRequest,
+  onPromoteAdmin,
+  onDemoteAdmin,
   onViewProfile,
   theme
 }: {
@@ -2971,8 +4912,13 @@ export const SquadDetailModal = ({
   currentUser: User;
   users: User[];
   onClose: () => void;
+  onOpenSquadChat: (squadId: string) => void;
   onJoinSquad: (squadId: string) => void;
   onLeaveSquad: (squadId: string) => void;
+  onAcceptJoinRequest: (squadId: string, userId: string) => void;
+  onRejectJoinRequest: (squadId: string, userId: string) => void;
+  onPromoteAdmin: (squadId: string, userId: string) => void;
+  onDemoteAdmin: (squadId: string, userId: string) => void;
   onViewProfile: (userId: string) => void;
   theme: Theme;
 }) => {
@@ -2984,7 +4930,17 @@ export const SquadDetailModal = ({
   const allUsers = [currentUser, ...users];
   const isMember = squad.members.includes(currentUser.id);
   const isOwner = squad.creatorId === currentUser.id;
+  const isAdmin = squad.adminIds.includes(currentUser.id);
+  const canManageRequests = isOwner || isAdmin;
+  const isPending = squad.joinRequests.includes(currentUser.id);
   const creator = allUsers.find((u) => u.id === squad.creatorId);
+  const requestUsers = allUsers.filter((u) => squad.joinRequests.includes(u.id));
+  const joinPermissionLabel = squad.joinPermission === 'request_to_join' ? 'Request approval' : 'Anyone can join';
+  const getMemberRole = (memberId: string): SquadRole => {
+    if (memberId === squad.creatorId) return 'owner';
+    if (squad.adminIds.includes(memberId)) return 'admin';
+    return 'member';
+  };
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -3010,13 +4966,24 @@ export const SquadDetailModal = ({
                     <Text style={[styles.metaText, { color: t.muted }]}>{squad.city}</Text>
                   </View>
                   <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                    <Text style={[styles.pillTagText, { color: t.muted }]}>{squad.rideStyle}</Text>
+                    <Text style={[styles.pillTagText, { color: t.muted }]}>{joinPermissionLabel}</Text>
                   </View>
                 </View>
               </View>
             </View>
 
             <Text style={[styles.bodyText, { color: t.text }]}>{squad.description}</Text>
+
+            <View style={{ marginTop: 10 }}>
+              <Text style={[styles.cardHeader, { color: t.muted }]}>RIDE STYLES</Text>
+              <View style={styles.wrapRow}>
+                {squad.rideStyles.map((style) => (
+                  <View key={style} style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <Text style={[styles.pillTagText, { color: t.text }]}>{style}</Text>
+                  </View>
+                ))}
+              </View>
+            </View>
 
             <View style={styles.profileStatsRow}>
               <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
@@ -3029,11 +4996,29 @@ export const SquadDetailModal = ({
               </View>
             </View>
 
-            {!isMember ? (
-              <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={() => onJoinSquad(squad.id)}>
-                <MaterialCommunityIcons name="plus" size={18} color="#fff" />
-                <Text style={styles.primaryButtonText}>Join Squad</Text>
+            {isMember && (
+              <TouchableOpacity style={[styles.primaryButton, { backgroundColor: TOKENS[theme].blue }]} onPress={() => onOpenSquadChat(squad.id)}>
+                <MaterialCommunityIcons name="account-group-outline" size={18} color="#fff" />
+                <Text style={styles.primaryButtonText}>Open Squad Chat</Text>
               </TouchableOpacity>
+            )}
+
+            {!isMember ? (
+              isPending ? (
+                <View style={[styles.statusStrip, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <MaterialCommunityIcons name="clock-outline" size={16} color={t.muted} />
+                  <Text style={[styles.statusStripText, { color: t.muted }]}>Request sent</Text>
+                </View>
+              ) : (
+                <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={() => onJoinSquad(squad.id)}>
+                  <MaterialCommunityIcons
+                    name={squad.joinPermission === 'request_to_join' ? 'account-clock-outline' : 'plus'}
+                    size={18}
+                    color="#fff"
+                  />
+                  <Text style={styles.primaryButtonText}>{squad.joinPermission === 'request_to_join' ? 'Request to Join' : 'Join Squad'}</Text>
+                </TouchableOpacity>
+              )
             ) : isOwner ? (
               <View style={[styles.statusStrip, { borderColor: `${t.primary}66`, backgroundColor: `${t.primary}15` }]}>
                 <MaterialCommunityIcons name="crown" size={16} color={t.primary} />
@@ -3047,11 +5032,44 @@ export const SquadDetailModal = ({
             )}
           </View>
 
+          {canManageRequests && requestUsers.length > 0 && (
+            <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
+              <Text style={[styles.cardHeader, { color: t.primary }]}>JOIN REQUESTS ({requestUsers.length})</Text>
+              {requestUsers.map((u) => (
+                <View key={u.id} style={[styles.requestRow, { borderColor: t.border }]}>
+                  <View style={styles.rowAligned}>
+                    <Image source={{ uri: u.avatar || avatarFallback }} style={styles.avatarSmall} />
+                    <View>
+                      <Text style={[styles.boldText, { color: t.text }]}>{u.name}</Text>
+                      <Text style={[styles.metaText, { color: t.muted }]}>{u.garage?.[0] ?? 'Unknown bike'}</Text>
+                    </View>
+                  </View>
+                  <View style={styles.rowAligned}>
+                    <TouchableOpacity
+                      style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                      onPress={() => onRejectJoinRequest(squad.id, u.id)}
+                    >
+                      <MaterialCommunityIcons name="close" size={18} color={TOKENS[theme].red} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.iconButton, { borderColor: t.primary, backgroundColor: t.primary }]}
+                      onPress={() => onAcceptJoinRequest(squad.id, u.id)}
+                    >
+                      <MaterialCommunityIcons name="check" size={18} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+
           <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
             <Text style={[styles.cardHeader, { color: t.muted }]}>MEMBERS ({squad.members.length})</Text>
             {squad.members.map((memberId) => {
               const member = allUsers.find((u) => u.id === memberId);
               if (!member) return null;
+              const role = getMemberRole(memberId);
+
               return (
                 <TouchableOpacity
                   key={memberId}
@@ -3071,9 +5089,39 @@ export const SquadDetailModal = ({
                     </View>
                   </View>
                   <Badge color={memberId === squad.creatorId ? 'orange' : 'slate'} theme={theme}>
-                    {memberId === squad.creatorId ? 'Owner' : 'Member'}
+                    {role === 'owner' ? 'Owner' : role === 'admin' ? 'Admin' : 'Member'}
                   </Badge>
                 </TouchableOpacity>
+              );
+            })}
+            {squad.members.map((memberId) => {
+              const member = allUsers.find((u) => u.id === memberId);
+              if (!member) return null;
+              if (!isOwner || memberId === squad.creatorId) return null;
+
+              const isTargetAdmin = squad.adminIds.includes(memberId);
+
+              return (
+                <View key={`${memberId}-admin-action`} style={[styles.rowBetween, { marginTop: 8 }]}>
+                  <Text style={[styles.metaText, { color: t.muted }]}>
+                    {member.name.split(' ')[0]} role: {isTargetAdmin ? 'Admin' : 'Member'}
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.primaryCompactButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                    onPress={() =>
+                      isTargetAdmin ? onDemoteAdmin(squad.id, memberId) : onPromoteAdmin(squad.id, memberId)
+                    }
+                  >
+                    <MaterialCommunityIcons
+                      name={isTargetAdmin ? 'account-arrow-down-outline' : 'account-arrow-up-outline'}
+                      size={14}
+                      color={t.primary}
+                    />
+                    <Text style={[styles.primaryCompactButtonText, { color: t.primary }]}>
+                      {isTargetAdmin ? 'Set as Member' : 'Set as Admin'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
               );
             })}
           </View>

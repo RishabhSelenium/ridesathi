@@ -17,9 +17,12 @@ import {
   ModerationReport,
   RideCostType,
   RideInviteAudience,
+  RidePaymentMethod,
+  RidePaymentStatus,
   RidePost,
   RideVisibility,
   Squad,
+  SquadJoinPermission,
   User
 } from '../types';
 import { getFirebaseServices } from './client';
@@ -30,6 +33,7 @@ const HELP_COLLECTION = 'helpPosts';
 const SQUADS_COLLECTION = 'squads';
 const MODERATION_REPORTS_COLLECTION = 'moderationReports';
 const RIDE_VISIBILITY_OPTIONS: RideVisibility[] = ['Nearby', 'City', 'Friends'];
+const SQUAD_JOIN_PERMISSION_OPTIONS: SquadJoinPermission[] = ['anyone', 'request_to_join'];
 
 const asString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
 const asBoolean = (value: unknown, fallback = false): boolean => (typeof value === 'boolean' ? value : fallback);
@@ -37,6 +41,8 @@ const asNumber = (value: unknown, fallback = 0): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 const asStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+const normalizeSosContacts = (value: unknown): string[] =>
+  Array.from(new Set(asStringArray(value).map((item) => item.trim()).filter(Boolean)));
 
 const normalizeVisibility = (value: unknown): RideVisibility[] => {
   if (Array.isArray(value)) {
@@ -84,37 +90,86 @@ const normalizeReply = (item: unknown): HelpReply | null => {
   };
 };
 
-const normalizeUser = (id: string, raw: DocumentData): User => ({
-  id,
-  phoneNumber: typeof raw.phoneNumber === 'string' ? raw.phoneNumber : undefined,
-  name: asString(raw.name),
-  garage: asStringArray(raw.garage),
-  bikeType: asString(raw.bikeType),
-  city: asString(raw.city),
-  style: asString(raw.style),
-  experience: (asString(raw.experience, 'Beginner') as User['experience']) ?? 'Beginner',
-  distance: asString(raw.distance),
-  isPro: asBoolean(raw.isPro, false),
-  avatar: asString(raw.avatar),
-  verified: asBoolean(raw.verified, false),
-  typicalRideTime: asString(raw.typicalRideTime),
-  friends: asStringArray(raw.friends),
-  friendRequests: {
-    sent: asStringArray(raw.friendRequests?.sent),
-    received: asStringArray(raw.friendRequests?.received)
-  },
-  blockedUserIds: asStringArray(raw.blockedUserIds)
-});
+const normalizeRidePaymentStatus = (userId: string, value: unknown): RidePaymentStatus | null => {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const amount = asNumber(raw.amount, NaN);
+  if (!Number.isFinite(amount) || amount < 0) return null;
+
+  const status = asString(raw.status) === 'paid' ? 'paid' : 'pending';
+  const methodRaw = asString(raw.method);
+  const method: RidePaymentMethod | undefined = methodRaw === 'UPI_LINK' ? 'UPI_LINK' : undefined;
+
+  return {
+    userId,
+    amount,
+    status,
+    updatedAt: asString(raw.updatedAt, new Date().toISOString()),
+    paidAt: asString(raw.paidAt) || undefined,
+    method,
+    transactionRef: asString(raw.transactionRef) || undefined
+  };
+};
+
+const normalizeRidePaymentStatusByUserId = (value: unknown): Record<string, RidePaymentStatus> | undefined => {
+  if (!value || typeof value !== 'object') return undefined;
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([userId, raw]) => normalizeRidePaymentStatus(userId, raw))
+    .filter((item): item is RidePaymentStatus => item !== null);
+
+  if (entries.length === 0) return undefined;
+
+  return Object.fromEntries(entries.map((item) => [item.userId, item]));
+};
+
+const normalizeUser = (id: string, raw: DocumentData): User => {
+  const normalizedSosContacts = normalizeSosContacts(raw.sosContacts);
+  const legacySosNumber = typeof raw.sosNumber === 'string' ? raw.sosNumber.trim() : '';
+  const primarySosNumber = normalizedSosContacts[0] ?? legacySosNumber;
+
+  return {
+    id,
+    phoneNumber: typeof raw.phoneNumber === 'string' ? raw.phoneNumber : undefined,
+    name: asString(raw.name),
+    garage: asStringArray(raw.garage),
+    bikeType: asString(raw.bikeType),
+    city: asString(raw.city),
+    style: asString(raw.style),
+    experience: (asString(raw.experience, 'Beginner') as User['experience']) ?? 'Beginner',
+    distance: asString(raw.distance),
+    isPro: asBoolean(raw.isPro, false),
+    avatar: asString(raw.avatar),
+    verified: asBoolean(raw.verified, false),
+    typicalRideTime: asString(raw.typicalRideTime),
+    friends: asStringArray(raw.friends),
+    friendRequests: {
+      sent: asStringArray(raw.friendRequests?.sent),
+      received: asStringArray(raw.friendRequests?.received)
+    },
+    blockedUserIds: asStringArray(raw.blockedUserIds),
+    firstName: typeof raw.firstName === 'string' ? raw.firstName : undefined,
+    lastName: typeof raw.lastName === 'string' ? raw.lastName : undefined,
+    fullName: typeof raw.fullName === 'string' ? raw.fullName : undefined,
+    sosNumber: primarySosNumber || undefined,
+    sosContacts: normalizedSosContacts.length > 0 ? normalizedSosContacts : legacySosNumber ? [legacySosNumber] : undefined,
+    dob: typeof raw.dob === 'string' ? raw.dob : undefined,
+    bloodGroup: typeof raw.bloodGroup === 'string' ? raw.bloodGroup : undefined,
+    profileComplete: typeof raw.profileComplete === 'boolean' ? raw.profileComplete : undefined
+  };
+};
 
 const normalizeRide = (id: string, raw: DocumentData): RidePost => {
   const costTypeRaw = asString(raw.costType);
   const inviteAudienceRaw = asString(raw.inviteAudience);
+  const paymentMethodRaw = asString(raw.paymentMethod);
   const costType: RideCostType | undefined = ['Paid', 'Split', 'Free'].includes(costTypeRaw as RideCostType)
     ? (costTypeRaw as RideCostType)
     : undefined;
   const inviteAudience: RideInviteAudience | undefined = ['groups', 'riders'].includes(inviteAudienceRaw as RideInviteAudience)
     ? (inviteAudienceRaw as RideInviteAudience)
     : undefined;
+  const paymentMethod: RidePaymentMethod | undefined = paymentMethodRaw === 'UPI_LINK' ? 'UPI_LINK' : undefined;
 
   return {
     id,
@@ -140,8 +195,15 @@ const normalizeRide = (id: string, raw: DocumentData): RidePost => {
     assemblyTime: asString(raw.assemblyTime) || undefined,
     flagOffTime: asString(raw.flagOffTime) || undefined,
     rideDuration: asString(raw.rideDuration) || undefined,
+    routeDistanceKm: typeof raw.routeDistanceKm === 'number' && Number.isFinite(raw.routeDistanceKm) ? raw.routeDistanceKm : undefined,
+    routeEtaMinutes: typeof raw.routeEtaMinutes === 'number' && Number.isFinite(raw.routeEtaMinutes) ? raw.routeEtaMinutes : undefined,
+    tollEstimateInr: typeof raw.tollEstimateInr === 'number' && Number.isFinite(raw.tollEstimateInr) ? raw.tollEstimateInr : undefined,
     costType,
     pricePerPerson: typeof raw.pricePerPerson === 'number' && Number.isFinite(raw.pricePerPerson) ? raw.pricePerPerson : undefined,
+    splitTotalAmount: typeof raw.splitTotalAmount === 'number' && Number.isFinite(raw.splitTotalAmount) ? raw.splitTotalAmount : undefined,
+    paymentMethod,
+    upiPaymentLink: asString(raw.upiPaymentLink) || undefined,
+    paymentStatusByUserId: normalizeRidePaymentStatusByUserId(raw.paymentStatusByUserId),
     inclusions: asStringArray(raw.inclusions),
     rideNote: asString(raw.rideNote) || undefined,
     inviteAudience,
@@ -165,17 +227,42 @@ const normalizeHelpPost = (id: string, raw: DocumentData): HelpPost => ({
   createdAt: asString(raw.createdAt, new Date().toISOString())
 });
 
-const normalizeSquad = (id: string, raw: DocumentData): Squad => ({
-  id,
-  name: asString(raw.name),
-  description: asString(raw.description),
-  creatorId: asString(raw.creatorId),
-  members: asStringArray(raw.members),
-  avatar: asString(raw.avatar),
-  city: asString(raw.city),
-  rideStyle: asString(raw.rideStyle),
-  createdAt: asString(raw.createdAt, new Date().toISOString())
-});
+const normalizeSquadRideStyles = (raw: DocumentData): string[] => {
+  const fromArray = asStringArray(raw.rideStyles).map((value) => value.trim()).filter(Boolean);
+  if (fromArray.length > 0) {
+    return Array.from(new Set(fromArray));
+  }
+
+  const legacyRideStyle = asString(raw.rideStyle).trim();
+  return legacyRideStyle ? [legacyRideStyle] : ['Touring'];
+};
+
+const normalizeSquadJoinPermission = (value: unknown): SquadJoinPermission =>
+  typeof value === 'string' && SQUAD_JOIN_PERMISSION_OPTIONS.includes(value as SquadJoinPermission)
+    ? (value as SquadJoinPermission)
+    : 'anyone';
+
+const normalizeSquad = (id: string, raw: DocumentData): Squad => {
+  const members = Array.from(new Set(asStringArray(raw.members)));
+  const adminIds = Array.from(new Set(asStringArray(raw.adminIds))).filter((memberId) =>
+    memberId !== asString(raw.creatorId) && members.includes(memberId)
+  );
+
+  return {
+    id,
+    name: asString(raw.name),
+    description: asString(raw.description),
+    creatorId: asString(raw.creatorId),
+    members,
+    adminIds,
+    avatar: asString(raw.avatar),
+    city: asString(raw.city),
+    rideStyles: normalizeSquadRideStyles(raw),
+    joinPermission: normalizeSquadJoinPermission(raw.joinPermission),
+    joinRequests: Array.from(new Set(asStringArray(raw.joinRequests))).filter((memberId) => !members.includes(memberId)),
+    createdAt: asString(raw.createdAt, new Date().toISOString())
+  };
+};
 
 export const fetchUsersFromFirestore = async (): Promise<User[]> => {
   const services = getFirebaseServices();

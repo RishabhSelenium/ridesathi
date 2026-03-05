@@ -11,6 +11,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Image,
+  Linking,
   Platform,
   Pressable,
   SafeAreaView,
@@ -44,10 +45,11 @@ import {
   NewsArticleModal,
   NotificationsOverlay,
   RideDetailScreen,
+  SquadChatRoomScreen,
   SquadDetailModal,
   UserProfileModal
 } from './src/components/modals';
-import { ChatsTab, FeedTab, LoginScreen, MyRidesTab, NewsTab, ProfileTab, SplashScreen, SquadTab } from './src/screens/tabs';
+import { ChatsTab, CompleteProfileScreen, FeedTab, LoginScreen, MyRidesTab, NewsTab, ProfileTab, SplashScreen, SquadTab } from './src/screens/tabs';
 import {
   MOCK_CONVERSATIONS,
   MOCK_CURRENT_USER,
@@ -66,13 +68,29 @@ import {
   ModerationReport,
   NewsArticle,
   Notification,
+  RidePaymentStatus,
   RidePost,
+  RideTrackingSession,
   RideVisibility,
   Squad,
+  SquadJoinPermission,
   User
 } from './src/types';
 import { signInWithBetaPhoneIdentity, signOutFirebase, subscribeToAuthState } from './src/firebase/auth';
-import { sendChatMessageToRealtime, subscribeChatMessages } from './src/firebase/chat';
+import {
+  sendChatMessageToRealtime,
+  sendSquadChatMessageToRealtime,
+  subscribeChatMessages,
+  subscribeSquadChatMessages
+} from './src/firebase/chat';
+import {
+  sendRideSosSignal,
+  startRideTrackingSession,
+  stopRideTrackingSession,
+  subscribeRideTrackingSession,
+  updateRideParticipantCheckIn,
+  updateRideParticipantLocation
+} from './src/firebase/live-tracking';
 import { getFirebaseServices, isFirebaseConfigured } from './src/firebase/client';
 import {
   createModerationReportInFirestore,
@@ -100,10 +118,12 @@ const STORAGE_KEYS = {
   rides: 'ridesathi.rides',
   helpPosts: 'ridesathi.helpPosts',
   conversations: 'ridesathi.conversations',
+  squadChats: 'ridesathi.squadChats',
   news: 'ridesathi.news',
   squads: 'ridesathi.squads',
   locationMode: 'ridesathi.locationMode',
-  moderationReports: 'ridesathi.moderationReports'
+  moderationReports: 'ridesathi.moderationReports',
+  profileCompletionByPhone: 'ridesathi.profileCompletionByPhone'
 } as const;
 
 const SESSION_STORAGE_KEYS = [
@@ -113,6 +133,7 @@ const SESSION_STORAGE_KEYS = [
   STORAGE_KEYS.rides,
   STORAGE_KEYS.helpPosts,
   STORAGE_KEYS.conversations,
+  STORAGE_KEYS.squadChats,
   STORAGE_KEYS.squads,
   STORAGE_KEYS.locationMode,
   STORAGE_KEYS.moderationReports
@@ -121,30 +142,49 @@ const SESSION_STORAGE_KEYS = [
 type RootStackParamList = {
   Splash: undefined;
   Login: undefined;
+  CompleteProfile: undefined;
   Main: undefined;
 };
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
 const FIREBASE_ENABLED = isFirebaseConfigured();
 const NEWS_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
-type SyncChannel = 'rides' | 'help' | 'chat' | 'news';
+const STORAGE_WRITE_DEBOUNCE_MS = 250;
+type SyncChannel = 'rides' | 'help' | 'chat' | 'squadChat' | 'news' | 'rideTracking';
 type SyncChannelState = {
   isSyncing: boolean;
   error: string | null;
   lastSuccessAt: string | null;
 };
 type SyncState = Record<SyncChannel, SyncChannelState>;
+type AppNotificationPayload = {
+  type?: Notification['type'];
+  senderId?: string;
+  senderName?: string;
+  senderAvatar?: string;
+  content: string;
+  data?: Record<string, unknown>;
+  openCenter?: boolean;
+  sendPush?: boolean;
+  pushTitle?: string;
+  pushBody?: string;
+};
 
 const INITIAL_SYNC_STATE: SyncState = {
   rides: { isSyncing: false, error: null, lastSuccessAt: null },
   help: { isSyncing: false, error: null, lastSuccessAt: null },
   chat: { isSyncing: false, error: null, lastSuccessAt: null },
-  news: { isSyncing: false, error: null, lastSuccessAt: null }
+  squadChat: { isSyncing: false, error: null, lastSuccessAt: null },
+  news: { isSyncing: false, error: null, lastSuccessAt: null },
+  rideTracking: { isSyncing: false, error: null, lastSuccessAt: null }
 };
 
 const uniqueStrings = (values: string[]) => Array.from(new Set(values));
 const RIDE_VISIBILITY_OPTIONS: RideVisibility[] = ['Nearby', 'City', 'Friends'];
+const SQUAD_JOIN_PERMISSION_OPTIONS: SquadJoinPermission[] = ['anyone', 'request_to_join'];
 const isRideVisibility = (value: string): value is RideVisibility => RIDE_VISIBILITY_OPTIONS.includes(value as RideVisibility);
+const isSquadJoinPermission = (value: string): value is SquadJoinPermission =>
+  SQUAD_JOIN_PERMISSION_OPTIONS.includes(value as SquadJoinPermission);
 const FRIEND_REQUEST_WINDOW_MS = 10 * 60 * 1000;
 const FRIEND_REQUEST_MAX_IN_WINDOW = 6;
 const FRIEND_REQUEST_TARGET_COOLDOWN_MS = 2 * 60 * 1000;
@@ -158,6 +198,52 @@ const CHAT_BURST_MAX_MESSAGES = 6;
 const CHAT_MIN_INTERVAL_MS = 700;
 const CHAT_DUPLICATE_COOLDOWN_MS = 6 * 1000;
 const CHAT_MESSAGE_MAX_LENGTH = 500;
+const RIDE_CHECK_IN_GEOFENCE_RADIUS_METERS = 250;
+
+type RideCoordinate = {
+  lat: number;
+  lng: number;
+  label?: string;
+};
+
+const getRideStartPoint = (ride: RidePost): RideCoordinate | null => {
+  const startPoint = ride.routePoints?.find((point) => Number.isFinite(point.lat) && Number.isFinite(point.lng));
+  if (!startPoint) return null;
+
+  return {
+    lat: startPoint.lat,
+    lng: startPoint.lng,
+    label: startPoint.label
+  };
+};
+
+const toRadians = (value: number): number => (value * Math.PI) / 180;
+
+const calculateDistanceMeters = (
+  source: { lat: number; lng: number },
+  destination: { lat: number; lng: number }
+): number => {
+  const earthRadiusMeters = 6371000;
+  const dLat = toRadians(destination.lat - source.lat);
+  const dLng = toRadians(destination.lng - source.lng);
+  const lat1 = toRadians(source.lat);
+  const lat2 = toRadians(destination.lat);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.sin(dLng / 2) * Math.sin(dLng / 2) * Math.cos(lat1) * Math.cos(lat2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return earthRadiusMeters * c;
+};
+
+const formatDistanceMeters = (distanceMeters: number): string => {
+  if (distanceMeters < 1000) return `${Math.round(distanceMeters)} m`;
+
+  const distanceKm = distanceMeters / 1000;
+  if (distanceKm < 10) return `${distanceKm.toFixed(1)} km`;
+  return `${Math.round(distanceKm)} km`;
+};
 
 const isEnabledFlag = (value: string | undefined, fallback = false): boolean => {
   if (typeof value !== 'string') return fallback;
@@ -171,6 +257,43 @@ const normalizePhoneToE164 = (value: string): string => {
   if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
   if (value.trim().startsWith('+') && digits.length >= 10) return `+${digits}`;
   return '';
+};
+
+const normalizeEmergencyContactNumber = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length < 10) return '';
+  return trimmed.startsWith('+') ? `+${digits}` : digits;
+};
+
+const dedupeEmergencyContactNumbers = (values: string[]): string[] => {
+  const uniqueByDigits = new Set<string>();
+  const normalized: string[] = [];
+
+  values.forEach((value) => {
+    const candidate = normalizeEmergencyContactNumber(value);
+    if (!candidate) return;
+    const key = candidate.replace(/\D/g, '');
+    if (uniqueByDigits.has(key)) return;
+    uniqueByDigits.add(key);
+    normalized.push(candidate);
+  });
+
+  return normalized;
+};
+
+const formatEmergencyContactLabel = (phoneNumber: string): string => {
+  const digits = phoneNumber.replace(/\D/g, '');
+  if (digits.length < 4) return phoneNumber;
+  return `••••${digits.slice(-4)}`;
+};
+
+const buildEmergencySmsDeeplink = (recipients: string[], body: string): string => {
+  const recipientString = recipients.join(',');
+  const separator = Platform.OS === 'ios' ? '&' : '?';
+  return `sms:${recipientString}${separator}body=${encodeURIComponent(body)}`;
 };
 
 const parseBetaAllowedPhones = (value: string | undefined): string[] => {
@@ -204,6 +327,21 @@ const formatCooldown = (milliseconds: number): string => {
   return `${Math.max(1, seconds)}s`;
 };
 
+const waitForAuthSession = async (timeoutMs = 1200, pollMs = 80): Promise<boolean> => {
+  if (!FIREBASE_ENABLED) return false;
+  const auth = getFirebaseServices()?.auth;
+  if (!auth) return false;
+  if (auth.currentUser) return true;
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, pollMs));
+    if (auth.currentUser) return true;
+  }
+
+  return false;
+};
+
 const normalizeRideVisibility = (value: unknown): RideVisibility[] => {
   if (Array.isArray(value)) {
     const normalized = value.filter((item): item is RideVisibility => typeof item === 'string' && isRideVisibility(item));
@@ -217,11 +355,95 @@ const normalizeRideVisibility = (value: unknown): RideVisibility[] => {
   return ['City'];
 };
 
+const normalizeRidePaymentStatusByUserId = (value: unknown): Record<string, RidePaymentStatus> | undefined => {
+  if (!value || typeof value !== 'object') return undefined;
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([userId, raw]): RidePaymentStatus | null => {
+      if (!raw || typeof raw !== 'object') return null;
+      const statusValue = raw as Record<string, unknown>;
+      const amountRaw = statusValue.amount;
+      const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : NaN;
+      if (!Number.isFinite(amount) || amount < 0) return null;
+
+      return {
+        userId,
+        amount,
+        status: statusValue.status === 'paid' ? 'paid' : 'pending',
+        updatedAt: typeof statusValue.updatedAt === 'string' ? statusValue.updatedAt : new Date().toISOString(),
+        paidAt: typeof statusValue.paidAt === 'string' ? statusValue.paidAt : undefined,
+        method: statusValue.method === 'UPI_LINK' ? 'UPI_LINK' : undefined,
+        transactionRef: typeof statusValue.transactionRef === 'string' ? statusValue.transactionRef : undefined
+      };
+    })
+    .filter((item): item is RidePaymentStatus => item !== null);
+
+  if (entries.length === 0) return undefined;
+  return Object.fromEntries(entries.map((item) => [item.userId, item]));
+};
+
 const normalizeRides = (items: RidePost[]): RidePost[] =>
   items.map((ride) => ({
     ...ride,
-    visibility: normalizeRideVisibility(ride.visibility)
+    visibility: normalizeRideVisibility(ride.visibility),
+    splitTotalAmount:
+      typeof ride.splitTotalAmount === 'number' && Number.isFinite(ride.splitTotalAmount) && ride.splitTotalAmount >= 0
+        ? ride.splitTotalAmount
+        : undefined,
+    paymentMethod: ride.paymentMethod === 'UPI_LINK' ? 'UPI_LINK' : undefined,
+    upiPaymentLink: typeof ride.upiPaymentLink === 'string' && ride.upiPaymentLink.trim().length > 0
+      ? ride.upiPaymentLink.trim()
+      : undefined,
+    paymentStatusByUserId: normalizeRidePaymentStatusByUserId(ride.paymentStatusByUserId)
   }));
+
+type LegacySquad = Omit<Squad, 'rideStyles' | 'joinPermission' | 'joinRequests' | 'adminIds'> & {
+  rideStyle?: unknown;
+  rideStyles?: unknown;
+  adminIds?: unknown;
+  joinPermission?: unknown;
+  joinRequests?: unknown;
+};
+
+const asStringArray = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+
+const normalizeSquadRideStyles = (squad: LegacySquad): string[] => {
+  const normalizedStyles = asStringArray(squad.rideStyles).map((value) => value.trim()).filter(Boolean);
+  if (normalizedStyles.length > 0) return uniqueStrings(normalizedStyles);
+
+  if (typeof squad.rideStyle === 'string' && squad.rideStyle.trim().length > 0) {
+    return [squad.rideStyle.trim()];
+  }
+
+  return ['Touring'];
+};
+
+const normalizeSquadJoinPermission = (value: unknown): SquadJoinPermission =>
+  typeof value === 'string' && isSquadJoinPermission(value) ? value : 'anyone';
+
+const normalizeSquad = (squad: LegacySquad): Squad => {
+  const memberIds = uniqueStrings(asStringArray(squad.members));
+  const adminIds = uniqueStrings(asStringArray(squad.adminIds)).filter((id) => id !== squad.creatorId && memberIds.includes(id));
+  const joinRequests = uniqueStrings(asStringArray(squad.joinRequests)).filter((id) => !memberIds.includes(id));
+
+  return {
+    id: squad.id,
+    name: squad.name,
+    description: squad.description,
+    creatorId: squad.creatorId,
+    members: memberIds,
+    adminIds,
+    avatar: squad.avatar,
+    city: squad.city,
+    rideStyles: normalizeSquadRideStyles(squad),
+    joinPermission: normalizeSquadJoinPermission(squad.joinPermission),
+    joinRequests,
+    createdAt: squad.createdAt
+  };
+};
+
+const normalizeSquads = (items: LegacySquad[]): Squad[] => items.map(normalizeSquad);
 
 const safeParse = <T,>(value: string | null, fallback: T): T => {
   if (!value) return fallback;
@@ -233,6 +455,35 @@ const safeParse = <T,>(value: string | null, fallback: T): T => {
   }
 };
 
+const getPhoneProfileCompletionMap = async (): Promise<Record<string, boolean>> => {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEYS.profileCompletionByPhone);
+    return safeParse<Record<string, boolean>>(raw, {});
+  } catch {
+    return {};
+  }
+};
+
+const isProfileCompletedForPhone = async (phoneNumber: string): Promise<boolean> => {
+  const key = normalizePhoneToE164(phoneNumber);
+  if (!key) return false;
+  const map = await getPhoneProfileCompletionMap();
+  return map[key] === true;
+};
+
+const markProfileCompletedForPhone = async (phoneNumber: string): Promise<void> => {
+  const key = normalizePhoneToE164(phoneNumber);
+  if (!key) return;
+
+  const map = await getPhoneProfileCompletionMap();
+  if (map[key] === true) return;
+
+  await saveToStorage(STORAGE_KEYS.profileCompletionByPhone, {
+    ...map,
+    [key]: true
+  });
+};
+
 type LoginPayload = {
   uid?: string;
   phoneNumber: string;
@@ -242,7 +493,9 @@ const fallbackSyncErrorByChannel: Record<SyncChannel, string> = {
   rides: 'Unable to sync rides right now. Check your network and retry.',
   help: 'Unable to sync help posts right now. Check your network and retry.',
   chat: 'Chat sync is unavailable right now. Check your network and retry.',
-  news: 'Unable to refresh the news feed right now. Check your network and retry.'
+  squadChat: 'Squad chat sync is unavailable right now. Check your network and retry.',
+  news: 'Unable to refresh the news feed right now. Check your network and retry.',
+  rideTracking: 'Live tracking sync is unavailable right now. Check your network and retry.'
 };
 
 const buildSyncErrorMessage = (channel: SyncChannel, error: unknown): string => {
@@ -270,7 +523,8 @@ const buildAuthenticatedUser = (uid: string, phoneNumber: string | undefined, se
       sent: Array.isArray(base.friendRequests?.sent) ? base.friendRequests.sent : [],
       received: Array.isArray(base.friendRequests?.received) ? base.friendRequests.received : []
     },
-    blockedUserIds: Array.isArray(base.blockedUserIds) ? base.blockedUserIds : []
+    blockedUserIds: Array.isArray(base.blockedUserIds) ? base.blockedUserIds : [],
+    profileComplete: typeof base.profileComplete === 'boolean' ? base.profileComplete : false
   };
 };
 
@@ -289,12 +543,47 @@ const getCurrentUserFromStorage = async () => {
   };
 };
 
-const saveToStorage = async <T,>(key: string, value: T) => {
+const saveSerializedToStorage = async (key: string, serializedValue: string) => {
   try {
-    await AsyncStorage.setItem(key, JSON.stringify(value));
+    await AsyncStorage.setItem(key, serializedValue);
   } catch {
     // ignore persistence errors
   }
+};
+
+const saveToStorage = async <T,>(key: string, value: T) => {
+  try {
+    await saveSerializedToStorage(key, JSON.stringify(value));
+  } catch {
+    // ignore persistence errors
+  }
+};
+
+const useDebouncedStorageValue = <T,>(
+  enabled: boolean,
+  key: string,
+  value: T,
+  delayMs = STORAGE_WRITE_DEBOUNCE_MS
+) => {
+  const lastSerializedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      lastSerializedRef.current = null;
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const serialized = JSON.stringify(value);
+      if (lastSerializedRef.current === serialized) return;
+      lastSerializedRef.current = serialized;
+      void saveSerializedToStorage(key, serialized);
+    }, delayMs);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [delayMs, enabled, key, value]);
 };
 
 const SplashRoute = ({ theme, onComplete }: { theme: Theme; onComplete: () => void }) => {
@@ -387,11 +676,30 @@ const AppShell = () => {
   const helpReplyMetaByPostRef = useRef<Map<string, { sentAt: number; text: string }>>(new Map());
   const chatTimestampsByConversationRef = useRef<Map<string, number[]>>(new Map());
   const chatLastMessageByConversationRef = useRef<Map<string, { sentAt: number; text: string }>>(new Map());
+  const squadChatTimestampsByRoomRef = useRef<Map<string, number[]>>(new Map());
+  const squadChatLastMessageByRoomRef = useRef<Map<string, { sentAt: number; text: string }>>(new Map());
   const lastGuardrailNotificationRef = useRef<{ sentAt: number; message: string } | null>(null);
+  const lastRideSosByRideRef = useRef<Map<string, string>>(new Map());
+  const previousRidesForNotificationRef = useRef<RidePost[] | null>(null);
+  const previousSquadsForNotificationRef = useRef<Squad[] | null>(null);
+  const rideNotificationUserRef = useRef<string | null>(null);
+  const squadNotificationUserRef = useRef<string | null>(null);
   const hasLoggedAppOpenRef = useRef(false);
   const [syncState, setSyncState] = useState<SyncState>(INITIAL_SYNC_STATE);
   const [chatSyncRetryToken, setChatSyncRetryToken] = useState(0);
+  const [squadChatSyncRetryToken, setSquadChatSyncRetryToken] = useState(0);
   const [activeNewsArticleUrl, setActiveNewsArticleUrl] = useState<string | null>(null);
+  const [activeSquadChatId, setActiveSquadChatId] = useState<string | null>(null);
+  const [squadChatMessagesByRoom, setSquadChatMessagesByRoom] = useState<Record<string, ChatMessage[]>>({});
+  const [rideTrackingSyncRetryToken, setRideTrackingSyncRetryToken] = useState(0);
+  const [selectedRideTrackingSession, setSelectedRideTrackingSession] = useState<RideTrackingSession | null>(null);
+  const [localRideTrackingSessions, setLocalRideTrackingSessions] = useState<Record<string, RideTrackingSession>>({});
+  const [isStartingRideTracking, setIsStartingRideTracking] = useState(false);
+  const [isStoppingRideTracking, setIsStoppingRideTracking] = useState(false);
+  const [isUpdatingRideCheckIn, setIsUpdatingRideCheckIn] = useState(false);
+  const [isSendingRideSos, setIsSendingRideSos] = useState(false);
+  const rideTrackingLocationAlertShownRef = useRef(false);
+  const hasFirebaseAuthSession = FIREBASE_ENABLED && Boolean(getFirebaseServices()?.auth.currentUser);
 
   const clearPersistedSessionStorage = useCallback(async () => {
     try {
@@ -433,7 +741,17 @@ const AppShell = () => {
     setActiveTab('feed');
     setSyncState(INITIAL_SYNC_STATE);
     setChatSyncRetryToken(0);
+    setSquadChatSyncRetryToken(0);
+    setRideTrackingSyncRetryToken(0);
     setActiveNewsArticleUrl(null);
+    setActiveSquadChatId(null);
+    setSquadChatMessagesByRoom({});
+    setSelectedRideTrackingSession(null);
+    setLocalRideTrackingSessions({});
+    setIsStartingRideTracking(false);
+    setIsStoppingRideTracking(false);
+    setIsUpdatingRideCheckIn(false);
+    setIsSendingRideSos(false);
 
     lastSyncedUsersRef.current = null;
     friendRequestTimestampsRef.current = [];
@@ -442,12 +760,24 @@ const AppShell = () => {
     helpReplyMetaByPostRef.current = new Map();
     chatTimestampsByConversationRef.current = new Map();
     chatLastMessageByConversationRef.current = new Map();
+    squadChatTimestampsByRoomRef.current = new Map();
+    squadChatLastMessageByRoomRef.current = new Map();
     lastGuardrailNotificationRef.current = null;
+    lastRideSosByRideRef.current = new Map();
+    previousRidesForNotificationRef.current = null;
+    previousSquadsForNotificationRef.current = null;
+    rideNotificationUserRef.current = null;
+    squadNotificationUserRef.current = null;
+    rideTrackingLocationAlertShownRef.current = false;
   }, [
     setActiveConversation,
+    setActiveSquadChatId,
     setActiveNewsArticleUrl,
     setActiveTab,
     setChatSyncRetryToken,
+    setSquadChatMessagesByRoom,
+    setSquadChatSyncRetryToken,
+    setRideTrackingSyncRetryToken,
     setConversations,
     setCurrentUser,
     setFeedFilter,
@@ -475,7 +805,13 @@ const AppShell = () => {
     setSquadSearchQuery,
     setSquads,
     setSyncState,
-    setUsers
+    setUsers,
+    setSelectedRideTrackingSession,
+    setLocalRideTrackingSessions,
+    setIsStartingRideTracking,
+    setIsStoppingRideTracking,
+    setIsUpdatingRideCheckIn,
+    setIsSendingRideSos
   ]);
 
   const clearSession = useCallback(() => {
@@ -517,27 +853,103 @@ const AppShell = () => {
     }));
   }, []);
 
+  const ensureFirebaseAuthSession = useCallback(async (preferredPhoneNumber?: string): Promise<boolean> => {
+    if (!FIREBASE_ENABLED) return false;
+    const auth = getFirebaseServices()?.auth;
+    if (!auth) return false;
+
+    const hasValidSession = async (): Promise<boolean> => {
+      if (!auth.currentUser) return false;
+      try {
+        await auth.currentUser.getIdToken();
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    if (await hasValidSession()) return true;
+
+    const candidatePhones = uniqueStrings(
+      [preferredPhoneNumber, currentUser.phoneNumber]
+        .map((value) => normalizePhoneToE164(value ?? ''))
+        .filter((value) => value.length > 0)
+    );
+
+    if (!BETA_MODE_ENABLED || candidatePhones.length === 0) return false;
+
+    for (const phone of candidatePhones) {
+      try {
+        await signInWithBetaPhoneIdentity(phone);
+      } catch {
+        continue;
+      }
+
+      const hasSession = await waitForAuthSession(2200, 110);
+      if (!hasSession) continue;
+      if (await hasValidSession()) return true;
+    }
+
+    return false;
+  }, [currentUser.phoneNumber]);
+
   const runRideMutationSync = useCallback(
     (operation: () => Promise<void>) => {
       if (!FIREBASE_ENABLED) return;
       startSync('rides');
-      void operation().then(() => markSyncSuccess('rides')).catch((error) => markSyncFailure('rides', error));
+      void (async () => {
+        const hasAuthSession = await ensureFirebaseAuthSession();
+        if (!hasAuthSession) {
+          throw new Error('Ride sync requires an authenticated Firebase session. Please log in again.');
+        }
+        await operation();
+        markSyncSuccess('rides');
+      })().catch((error) => markSyncFailure('rides', error));
     },
-    [markSyncFailure, markSyncSuccess, startSync]
+    [ensureFirebaseAuthSession, markSyncFailure, markSyncSuccess, startSync]
   );
 
   const runHelpMutationSync = useCallback(
     (operation: () => Promise<void>) => {
       if (!FIREBASE_ENABLED) return;
       startSync('help');
-      void operation().then(() => markSyncSuccess('help')).catch((error) => markSyncFailure('help', error));
+      void (async () => {
+        const hasAuthSession = await ensureFirebaseAuthSession();
+        if (!hasAuthSession) {
+          throw new Error('Help sync requires an authenticated Firebase session. Please log in again.');
+        }
+        await operation();
+        markSyncSuccess('help');
+      })().catch((error) => markSyncFailure('help', error));
     },
-    [markSyncFailure, markSyncSuccess, startSync]
+    [ensureFirebaseAuthSession, markSyncFailure, markSyncSuccess, startSync]
+  );
+
+  const runRideTrackingMutationSync = useCallback(
+    (operation: () => Promise<void>) => {
+      if (!FIREBASE_ENABLED) return;
+      startSync('rideTracking');
+      void (async () => {
+        const hasAuthSession = await ensureFirebaseAuthSession();
+        if (!hasAuthSession) {
+          throw new Error('Live tracking sync requires an authenticated Firebase session. Please log in again.');
+        }
+        await operation();
+        markSyncSuccess('rideTracking');
+      })().catch((error) => markSyncFailure('rideTracking', error));
+    },
+    [ensureFirebaseAuthSession, markSyncFailure, markSyncSuccess, startSync]
   );
 
   const syncRidesFromCloud = useCallback(async () => {
     if (!FIREBASE_ENABLED) return;
     startSync('rides');
+
+    const hasAuthSession = await ensureFirebaseAuthSession();
+    if (!hasAuthSession) {
+      markSyncFailure('rides', new Error('Cloud sync requires an authenticated Firebase session. Please log in again.'));
+      return;
+    }
 
     try {
       const remoteRides = await fetchRidesFromFirestore();
@@ -546,11 +958,17 @@ const AppShell = () => {
     } catch (error) {
       markSyncFailure('rides', error);
     }
-  }, [markSyncFailure, markSyncSuccess, setRides, startSync]);
+  }, [ensureFirebaseAuthSession, markSyncFailure, markSyncSuccess, setRides, startSync]);
 
   const syncHelpFromCloud = useCallback(async () => {
     if (!FIREBASE_ENABLED) return;
     startSync('help');
+
+    const hasAuthSession = await ensureFirebaseAuthSession();
+    if (!hasAuthSession) {
+      markSyncFailure('help', new Error('Cloud sync requires an authenticated Firebase session. Please log in again.'));
+      return;
+    }
 
     try {
       const remoteHelpPosts = await fetchHelpPostsFromFirestore();
@@ -559,7 +977,7 @@ const AppShell = () => {
     } catch (error) {
       markSyncFailure('help', error);
     }
-  }, [markSyncFailure, markSyncSuccess, setHelpPosts, startSync]);
+  }, [ensureFirebaseAuthSession, markSyncFailure, markSyncSuccess, setHelpPosts, startSync]);
 
   useEffect(() => {
     const uninstall = installCrashLogging();
@@ -598,8 +1016,8 @@ const AppShell = () => {
   const applyAuthenticatedSession = useCallback(
     async (payload: { uid: string; phoneNumber?: string }) => {
       let remoteUser: User | null = null;
-      const authUser = FIREBASE_ENABLED ? getFirebaseServices()?.auth.currentUser ?? null : null;
-      const canSyncCloud = FIREBASE_ENABLED && Boolean(authUser);
+      let resolvedUser: User | null = null;
+      const canSyncCloud = FIREBASE_ENABLED && await ensureFirebaseAuthSession(payload.phoneNumber);
 
       if (canSyncCloud) {
         try {
@@ -611,13 +1029,15 @@ const AppShell = () => {
 
       setCurrentUser((prev) => {
         const seed = remoteUser ?? (prev.id === payload.uid ? prev : undefined);
-        return buildAuthenticatedUser(payload.uid, payload.phoneNumber, seed);
+        const next = buildAuthenticatedUser(payload.uid, payload.phoneNumber, seed);
+        resolvedUser = next;
+        return next;
       });
       setUsers((prev) => prev.filter((user) => user.id !== payload.uid));
       setIsLoggedIn(true);
 
       if (!canSyncCloud) {
-        return;
+        return resolvedUser ?? buildAuthenticatedUser(payload.uid, payload.phoneNumber, remoteUser ?? undefined);
       }
 
       startSync('rides');
@@ -632,17 +1052,37 @@ const AppShell = () => {
 
       if (remoteUsersResult.status === 'fulfilled' && remoteUsersResult.value.length > 0) {
         const me = remoteUsersResult.value.find((user) => user.id === payload.uid);
-        if (me) {
-          setCurrentUser((prev) => ({
-            ...prev,
-            ...me,
-            friendRequests: {
-              ...prev.friendRequests,
-              ...me.friendRequests
-            }
-          }));
+        const matchedByPhone = !me && payload.phoneNumber
+          ? remoteUsersResult.value.find((user) => normalizePhoneToE164(user.phoneNumber ?? '') === payload.phoneNumber)
+          : null;
+        const normalizedPhoneDigits = (payload.phoneNumber ?? '').replace(/\D/g, '');
+        const legacyUid = normalizedPhoneDigits.length >= 10 ? `user-${normalizedPhoneDigits.slice(-10)}` : '';
+        const matchedByLegacyUid = !me && !matchedByPhone && legacyUid
+          ? remoteUsersResult.value.find((user) => user.id === legacyUid)
+          : null;
+        const resolvedRemoteUser = me ?? matchedByPhone ?? matchedByLegacyUid;
+
+        if (resolvedRemoteUser) {
+          setCurrentUser((prev) => {
+            const next = {
+              ...prev,
+              ...resolvedRemoteUser,
+              id: payload.uid,
+              phoneNumber: payload.phoneNumber ?? resolvedRemoteUser.phoneNumber ?? prev.phoneNumber,
+              profileComplete:
+                typeof resolvedRemoteUser.profileComplete === 'boolean' ? resolvedRemoteUser.profileComplete : true,
+              friendRequests: {
+                ...prev.friendRequests,
+                ...resolvedRemoteUser.friendRequests
+              }
+            };
+            resolvedUser = next;
+            return next;
+          });
         }
-        setUsers(remoteUsersResult.value.filter((user) => user.id !== payload.uid));
+        setUsers(
+          remoteUsersResult.value.filter((user) => user.id !== payload.uid && user.id !== resolvedRemoteUser?.id)
+        );
       }
 
       if (remoteRidesResult.status === 'fulfilled') {
@@ -660,10 +1100,12 @@ const AppShell = () => {
       }
 
       if (remoteSquadsResult.status === 'fulfilled' && remoteSquadsResult.value.length > 0) {
-        setSquads(remoteSquadsResult.value);
+        setSquads(normalizeSquads(remoteSquadsResult.value));
       }
+
+      return resolvedUser ?? buildAuthenticatedUser(payload.uid, payload.phoneNumber, remoteUser ?? undefined);
     },
-    [markSyncFailure, markSyncSuccess, setCurrentUser, setHelpPosts, setIsLoggedIn, setRides, setSquads, setUsers, startSync]
+    [ensureFirebaseAuthSession, markSyncFailure, markSyncSuccess, setCurrentUser, setHelpPosts, setIsLoggedIn, setRides, setSquads, setUsers, startSync]
   );
 
   useEffect(() => {
@@ -671,7 +1113,18 @@ const AppShell = () => {
 
     const hydrate = async () => {
       try {
-        const [savedTheme, savedUsers, savedNotifications, savedRides, savedHelpPosts, savedConversations, savedNews, savedSquads, savedLocationMode] =
+        const [
+          savedTheme,
+          savedUsers,
+          savedNotifications,
+          savedRides,
+          savedHelpPosts,
+          savedConversations,
+          savedSquadChats,
+          savedNews,
+          savedSquads,
+          savedLocationMode
+        ] =
           await Promise.all([
             AsyncStorage.getItem(STORAGE_KEYS.theme),
             AsyncStorage.getItem(STORAGE_KEYS.users),
@@ -679,13 +1132,20 @@ const AppShell = () => {
             AsyncStorage.getItem(STORAGE_KEYS.rides),
             AsyncStorage.getItem(STORAGE_KEYS.helpPosts),
             AsyncStorage.getItem(STORAGE_KEYS.conversations),
+            AsyncStorage.getItem(STORAGE_KEYS.squadChats),
             AsyncStorage.getItem(STORAGE_KEYS.news),
             AsyncStorage.getItem(STORAGE_KEYS.squads),
             AsyncStorage.getItem(STORAGE_KEYS.locationMode)
           ]);
 
         const nextCurrentUser = await getCurrentUserFromStorage();
-        const authUser = FIREBASE_ENABLED ? getFirebaseServices()?.auth.currentUser ?? null : null;
+        let authUser = FIREBASE_ENABLED ? getFirebaseServices()?.auth.currentUser ?? null : null;
+        if (FIREBASE_ENABLED && !authUser) {
+          const restoredSession = await ensureFirebaseAuthSession(nextCurrentUser.phoneNumber);
+          if (restoredSession) {
+            authUser = getFirebaseServices()?.auth.currentUser ?? null;
+          }
+        }
         const hasAuthenticatedSession = FIREBASE_ENABLED ? Boolean(authUser) : true;
         const effectiveCurrentUser = authUser
           ? buildAuthenticatedUser(
@@ -709,8 +1169,13 @@ const AppShell = () => {
         setRides(hasAuthenticatedSession ? normalizeRides(safeParse<RidePost[]>(savedRides, MOCK_RIDES)) : MOCK_RIDES);
         setHelpPosts(hasAuthenticatedSession ? safeParse<HelpPost[]>(savedHelpPosts, MOCK_HELP) : MOCK_HELP);
         setConversations(hasAuthenticatedSession ? safeParse<Conversation[]>(savedConversations, MOCK_CONVERSATIONS) : MOCK_CONVERSATIONS);
+        setSquadChatMessagesByRoom(hasAuthenticatedSession ? safeParse<Record<string, ChatMessage[]>>(savedSquadChats, {}) : {});
         setNewsArticles(safeParse<NewsArticle[]>(savedNews, MOCK_NEWS));
-        setSquads(hasAuthenticatedSession ? safeParse<Squad[]>(savedSquads, MOCK_SQUADS) : MOCK_SQUADS);
+        setSquads(
+          hasAuthenticatedSession
+            ? normalizeSquads(safeParse<LegacySquad[]>(savedSquads, MOCK_SQUADS))
+            : normalizeSquads(MOCK_SQUADS)
+        );
         setLocationMode(hasAuthenticatedSession ? safeParse<LocationMode>(savedLocationMode, 'auto') : 'auto');
 
         if (FIREBASE_ENABLED && !hasAuthenticatedSession) {
@@ -761,7 +1226,7 @@ const AppShell = () => {
           }
 
           if (remoteSquadsResult.status === 'fulfilled' && remoteSquadsResult.value.length > 0) {
-            setSquads(remoteSquadsResult.value);
+            setSquads(normalizeSquads(remoteSquadsResult.value));
           }
         }
       } finally {
@@ -782,6 +1247,7 @@ const AppShell = () => {
     if (!FIREBASE_ENABLED) return;
     const unsubscribe = subscribeToAuthState((user) => {
       if (!user) {
+        if (!hydrated && !isLoggedIn) return;
         clearSession();
         return;
       }
@@ -792,27 +1258,24 @@ const AppShell = () => {
       });
     });
     return unsubscribe;
-  }, [applyAuthenticatedSession, clearSession]);
+  }, [applyAuthenticatedSession, clearSession, hydrated, isLoggedIn]);
 
-  useEffect(() => {
-    if (!hydrated) return;
-    saveToStorage(STORAGE_KEYS.theme, theme);
-  }, [hydrated, theme]);
-
-  useEffect(() => {
-    if (!hydrated || !isLoggedIn) return;
-    saveToStorage(STORAGE_KEYS.currentUser, currentUser);
-  }, [hydrated, isLoggedIn, currentUser]);
+  useDebouncedStorageValue(hydrated, STORAGE_KEYS.theme, theme);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.currentUser, currentUser);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.users, users);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.notifications, notifications);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.rides, rides);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.helpPosts, helpPosts);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.conversations, conversations);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.squadChats, squadChatMessagesByRoom);
+  useDebouncedStorageValue(hydrated, STORAGE_KEYS.news, newsArticles);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.squads, squads);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.locationMode, locationMode);
 
   useEffect(() => {
     if (!hydrated || !isLoggedIn || !FIREBASE_ENABLED) return;
     void upsertUserInFirestore(currentUser);
   }, [hydrated, isLoggedIn, currentUser]);
-
-  useEffect(() => {
-    if (!hydrated || !isLoggedIn) return;
-    saveToStorage(STORAGE_KEYS.users, users);
-  }, [hydrated, isLoggedIn, users]);
 
   useEffect(() => {
     if (!hydrated || !isLoggedIn || !FIREBASE_ENABLED) return;
@@ -836,31 +1299,6 @@ const AppShell = () => {
 
     lastSyncedUsersRef.current = nextSignatures;
   }, [hydrated, isLoggedIn, users]);
-
-  useEffect(() => {
-    if (!hydrated || !isLoggedIn) return;
-    saveToStorage(STORAGE_KEYS.notifications, notifications);
-  }, [hydrated, isLoggedIn, notifications]);
-
-  useEffect(() => {
-    if (!hydrated || !isLoggedIn) return;
-    saveToStorage(STORAGE_KEYS.rides, rides);
-  }, [hydrated, isLoggedIn, rides]);
-
-  useEffect(() => {
-    if (!hydrated || !isLoggedIn) return;
-    saveToStorage(STORAGE_KEYS.helpPosts, helpPosts);
-  }, [hydrated, isLoggedIn, helpPosts]);
-
-  useEffect(() => {
-    if (!hydrated || !isLoggedIn) return;
-    saveToStorage(STORAGE_KEYS.conversations, conversations);
-  }, [hydrated, isLoggedIn, conversations]);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    saveToStorage(STORAGE_KEYS.news, newsArticles);
-  }, [hydrated, newsArticles]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -887,22 +1325,15 @@ const AppShell = () => {
     void refreshNewsFeed();
   }, [hydrated, activeTab, refreshNewsFeed]);
 
-  useEffect(() => {
-    if (!hydrated || !isLoggedIn) return;
-    saveToStorage(STORAGE_KEYS.squads, squads);
-  }, [hydrated, isLoggedIn, squads]);
-
-  useEffect(() => {
-    if (!hydrated || !isLoggedIn) return;
-    saveToStorage(STORAGE_KEYS.locationMode, locationMode);
-  }, [hydrated, isLoggedIn, locationMode]);
-
   const usersById = useMemo(() => {
     const byId = new Map<string, User>();
     byId.set(currentUser.id, currentUser);
     users.forEach((user) => byId.set(user.id, user));
     return byId;
   }, [currentUser, users]);
+  const ridesById = useMemo(() => new Map<string, RidePost>(rides.map((ride) => [ride.id, ride])), [rides]);
+  const helpPostsById = useMemo(() => new Map<string, HelpPost>(helpPosts.map((post) => [post.id, post])), [helpPosts]);
+  const squadsById = useMemo(() => new Map<string, Squad>(squads.map((squad) => [squad.id, squad])), [squads]);
 
   const blockedUserIds = useMemo(() => new Set(currentUser.blockedUserIds), [currentUser.blockedUserIds]);
   const visibleUsers = useMemo(() => users.filter((user) => !blockedUserIds.has(user.id)), [users, blockedUserIds]);
@@ -926,20 +1357,38 @@ const AppShell = () => {
 
   const selectedRide = useMemo(() => {
     if (!selectedRideId) return null;
-    return rides.find((ride) => ride.id === selectedRideId) ?? null;
-  }, [rides, selectedRideId]);
+    return ridesById.get(selectedRideId) ?? null;
+  }, [ridesById, selectedRideId]);
+
+  const effectiveRideTrackingSession = useMemo(() => {
+    if (!selectedRideId) return null;
+    if (FIREBASE_ENABLED && hasFirebaseAuthSession) {
+      return selectedRideTrackingSession;
+    }
+    return localRideTrackingSessions[selectedRideId] ?? null;
+  }, [hasFirebaseAuthSession, localRideTrackingSessions, selectedRideId, selectedRideTrackingSession]);
 
   const selectedUserProfile = useMemo(() => {
     if (!selectedUserId) return null;
     if (blockedUserIds.has(selectedUserId)) return null;
-    if (selectedUserId === currentUser.id) return currentUser;
-    return users.find((user) => user.id === selectedUserId) ?? null;
-  }, [selectedUserId, blockedUserIds, currentUser, users]);
+    return usersById.get(selectedUserId) ?? null;
+  }, [blockedUserIds, selectedUserId, usersById]);
 
   const selectedSquad = useMemo(() => {
     if (!selectedSquadId) return null;
-    return squads.find((s) => s.id === selectedSquadId) ?? null;
-  }, [squads, selectedSquadId]);
+    return squadsById.get(selectedSquadId) ?? null;
+  }, [selectedSquadId, squadsById]);
+
+  const activeSquadChat = useMemo(() => {
+    if (!activeSquadChatId) return null;
+    return squadsById.get(activeSquadChatId) ?? null;
+  }, [activeSquadChatId, squadsById]);
+
+  const activeSquadChatMessages = useMemo(() => {
+    if (!activeSquadChat) return [];
+    const roomMessages = squadChatMessagesByRoom[activeSquadChat.id] ?? [];
+    return roomMessages.filter((message) => message.senderId === currentUser.id || !blockedUserIds.has(message.senderId));
+  }, [activeSquadChat, squadChatMessagesByRoom, currentUser.id, blockedUserIds]);
 
   const selectedFriendStatus: FriendStatus = useMemo(() => {
     if (!selectedUserProfile) return 'none';
@@ -971,7 +1420,14 @@ const AppShell = () => {
   }, [selectedHelpPost, blockedUserIds, setIsHelpDetailOpen, setSelectedHelpPost]);
 
   useEffect(() => {
-    if (!FIREBASE_ENABLED || !activeConversation) return;
+    if (!activeSquadChatId) return;
+    const squad = squadsById.get(activeSquadChatId);
+    if (squad && squad.members.includes(currentUser.id)) return;
+    setActiveSquadChatId(null);
+  }, [activeSquadChatId, currentUser.id, squadsById]);
+
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !hasFirebaseAuthSession || !activeConversation) return;
     const conversationId = activeConversation.id;
     startSync('chat');
 
@@ -1010,7 +1466,66 @@ const AppShell = () => {
         markSyncFailure('chat', error);
       }
     );
-  }, [activeConversation?.id, chatSyncRetryToken, markSyncFailure, markSyncSuccess, startSync]);
+  }, [activeConversation?.id, chatSyncRetryToken, hasFirebaseAuthSession, markSyncFailure, markSyncSuccess, startSync]);
+
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !hasFirebaseAuthSession || !activeSquadChatId) return;
+    const squad = squadsById.get(activeSquadChatId);
+    if (!squad || !squad.members.includes(currentUser.id)) return;
+
+    startSync('squadChat');
+
+    return subscribeSquadChatMessages(
+      activeSquadChatId,
+      (messages) => {
+        markSyncSuccess('squadChat');
+        setSquadChatMessagesByRoom((prev) => ({
+          ...prev,
+          [activeSquadChatId]: messages
+        }));
+      },
+      (error) => {
+        markSyncFailure('squadChat', error);
+      }
+    );
+  }, [
+    activeSquadChatId,
+    currentUser.id,
+    hasFirebaseAuthSession,
+    markSyncFailure,
+    markSyncSuccess,
+    squadChatSyncRetryToken,
+    squadsById,
+    startSync
+  ]);
+
+  useEffect(() => {
+    if (!isRideDetailOpen || !selectedRideId) {
+      setSelectedRideTrackingSession(null);
+      return;
+    }
+
+    if (FIREBASE_ENABLED && hasFirebaseAuthSession) return;
+
+    setSelectedRideTrackingSession(localRideTrackingSessions[selectedRideId] ?? null);
+  }, [hasFirebaseAuthSession, isRideDetailOpen, localRideTrackingSessions, selectedRideId]);
+
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !hasFirebaseAuthSession || !isRideDetailOpen || !selectedRideId) return;
+
+    setSelectedRideTrackingSession(null);
+    startSync('rideTracking');
+    return subscribeRideTrackingSession(
+      selectedRideId,
+      (session) => {
+        setSelectedRideTrackingSession(session);
+        markSyncSuccess('rideTracking');
+      },
+      (error) => {
+        markSyncFailure('rideTracking', error);
+      }
+    );
+  }, [hasFirebaseAuthSession, isRideDetailOpen, markSyncFailure, markSyncSuccess, rideTrackingSyncRetryToken, selectedRideId, startSync]);
 
   const resolveCityFromGeocode = (address: Location.LocationGeocodedAddress | undefined) =>
     address?.city ?? address?.district ?? address?.subregion ?? address?.region ?? null;
@@ -1049,48 +1564,144 @@ const AppShell = () => {
     }
   };
 
-  const ensureNotificationPermission = async (showAlertOnDeny = false) => {
-    if (isExpoGo) {
-      setNotificationPermissionStatus('denied');
-      if (showAlertOnDeny) {
-        Alert.alert(
-          'Expo Go Limitation',
-          'Notification permission in this app works in a development build or APK, not in Expo Go.'
-        );
-      }
-      return false;
-    }
-
+  const setupNotificationChannel = useCallback(async () => {
+    if (isExpoGo || Platform.OS !== 'android') return;
     try {
       const Notifications = await import('expo-notifications');
-      const existing = await Notifications.getPermissionsAsync();
-      let status = existing.status;
-
-      if (status !== 'granted') {
-        const asked = await Notifications.requestPermissionsAsync();
-        status = asked.status;
-      }
-
-      const mapped: PermissionStatus = status === 'granted' ? 'granted' : 'denied';
-      setNotificationPermissionStatus(mapped);
-
-      if (mapped === 'denied' && showAlertOnDeny) {
-        Alert.alert(
-          'Notifications Disabled',
-          'You can enable notifications later in app settings to receive ride and chat alerts.'
-        );
-      }
-      return mapped === 'granted';
+      await Notifications.setNotificationChannelAsync('throttleup-alerts', {
+        name: 'ThrottleUp Alerts',
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 200, 250],
+        lightColor: '#F97316'
+      });
     } catch {
-      setNotificationPermissionStatus('denied');
-      return false;
+      // ignore channel setup failures
     }
-  };
+  }, [isExpoGo]);
+
+  const ensureNotificationPermission = useCallback(
+    async (showAlertOnDeny = false) => {
+      if (isExpoGo) {
+        setNotificationPermissionStatus('denied');
+        if (showAlertOnDeny) {
+          Alert.alert(
+            'Expo Go Limitation',
+            'Notification permission in this app works in a development build or APK, not in Expo Go.'
+          );
+        }
+        return false;
+      }
+
+      try {
+        const Notifications = await import('expo-notifications');
+        const existing = await Notifications.getPermissionsAsync();
+        let status = existing.status;
+
+        if (status !== 'granted') {
+          const asked = await Notifications.requestPermissionsAsync();
+          status = asked.status;
+        }
+
+        const mapped: PermissionStatus = status === 'granted' ? 'granted' : 'denied';
+        setNotificationPermissionStatus(mapped);
+        if (mapped === 'granted') {
+          void setupNotificationChannel();
+        }
+
+        if (mapped === 'denied' && showAlertOnDeny) {
+          Alert.alert(
+            'Notifications Disabled',
+            'You can enable notifications later in app settings to receive ride and chat alerts.'
+          );
+        }
+        return mapped === 'granted';
+      } catch {
+        setNotificationPermissionStatus('denied');
+        return false;
+      }
+    },
+    [isExpoGo, setupNotificationChannel, setNotificationPermissionStatus]
+  );
+
+  const scheduleDevicePushNotification = useCallback(
+    async (title: string, body: string, data?: Record<string, unknown>) => {
+      if (notificationPermissionStatus !== 'granted' || isExpoGo) return;
+      try {
+        const Notifications = await import('expo-notifications');
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title,
+            body,
+            data,
+            sound: true
+          },
+          trigger: null
+        });
+      } catch {
+        // ignore local push scheduling failures
+      }
+    },
+    [isExpoGo, notificationPermissionStatus]
+  );
+
+  const pushAppNotification = useCallback(
+    (payload: AppNotificationPayload) => {
+      const senderName = payload.senderName ?? 'ThrottleUp';
+      const notification: Notification = {
+        id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type: payload.type ?? 'message',
+        senderId: payload.senderId ?? 'system',
+        senderName,
+        senderAvatar: payload.senderAvatar ?? avatarFallback,
+        content: payload.content,
+        timestamp: new Date().toISOString(),
+        read: false,
+        data: payload.data
+      };
+
+      setNotifications((prev) => [notification, ...prev]);
+      if (payload.openCenter) {
+        setIsNotificationsOpen(true);
+      }
+      if (payload.sendPush) {
+        void scheduleDevicePushNotification(payload.pushTitle ?? senderName, payload.pushBody ?? payload.content, payload.data);
+      }
+    },
+    [scheduleDevicePushNotification, setIsNotificationsOpen, setNotifications]
+  );
+
+  useEffect(() => {
+    if (isExpoGo) return;
+    let active = true;
+
+    const configureHandler = async () => {
+      try {
+        const Notifications = await import('expo-notifications');
+        if (!active) return;
+        Notifications.setNotificationHandler({
+          handleNotification: async () => ({
+            shouldShowBanner: true,
+            shouldShowList: true,
+            shouldPlaySound: true,
+            shouldSetBadge: false
+          })
+        });
+      } catch {
+        // ignore handler setup failures
+      }
+    };
+
+    void configureHandler();
+
+    return () => {
+      active = false;
+    };
+  }, [isExpoGo]);
 
   useEffect(() => {
     if (!hydrated || !isLoggedIn) return;
     void ensureNotificationPermission();
-  }, [hydrated, isLoggedIn]);
+  }, [ensureNotificationPermission, hydrated, isLoggedIn]);
 
   useEffect(() => {
     if (!hydrated || !isLoggedIn || locationMode !== 'auto') return;
@@ -1127,18 +1738,15 @@ const AppShell = () => {
   }, [hydrated, isLoggedIn, locationMode, locationPermissionStatus]);
 
   const pushSystemNotification = (content: string) => {
-    const notification: Notification = {
-      id: `system-${Date.now()}`,
+    pushAppNotification({
       type: 'message',
       senderId: 'system',
       senderName: 'ThrottleUp',
       senderAvatar: avatarFallback,
       content,
-      timestamp: new Date().toISOString(),
-      read: false
-    };
-
-    setNotifications((prev) => [notification, ...prev]);
+      pushTitle: 'ThrottleUp',
+      pushBody: content
+    });
   };
 
   const showActionGuardrail = (message: string) => {
@@ -1155,6 +1763,351 @@ const AppShell = () => {
     pushSystemNotification(message);
     setIsNotificationsOpen(true);
   };
+
+  const updateLocalRideTrackingSession = useCallback(
+    (rideId: string, updater: (session: RideTrackingSession | null) => RideTrackingSession | null) => {
+      setLocalRideTrackingSessions((prev) => {
+        const current = prev[rideId] ?? null;
+        const next = updater(current);
+        if (!next) {
+          if (!(rideId in prev)) return prev;
+          const copy = { ...prev };
+          delete copy[rideId];
+          return copy;
+        }
+        return {
+          ...prev,
+          [rideId]: next
+        };
+      });
+    },
+    [setLocalRideTrackingSessions]
+  );
+
+  useEffect(() => {
+    if (!isRideDetailOpen || !selectedRide || !effectiveRideTrackingSession?.isActive) return;
+    if (!selectedRide.currentParticipants.includes(currentUser.id)) return;
+
+    let active = true;
+    let locationSub: Location.LocationSubscription | null = null;
+
+    const publishLocation = async (coords: Location.LocationObjectCoords) => {
+      if (!active) return;
+      if (!Number.isFinite(coords.latitude) || !Number.isFinite(coords.longitude)) return;
+
+      const updatedAt = new Date().toISOString();
+      const nextLocation = {
+        lat: coords.latitude,
+        lng: coords.longitude,
+        accuracy: typeof coords.accuracy === 'number' ? coords.accuracy : undefined,
+        speed: typeof coords.speed === 'number' ? coords.speed : undefined,
+        heading: typeof coords.heading === 'number' ? coords.heading : undefined,
+        updatedAt
+      };
+
+      updateLocalRideTrackingSession(selectedRide.id, (session) => {
+        if (!session) return session;
+
+        const existingParticipant = session.participants[currentUser.id];
+        return {
+          ...session,
+          updatedAt,
+          participants: {
+            ...session.participants,
+            [currentUser.id]: {
+              userId: currentUser.id,
+              checkedIn: existingParticipant?.checkedIn ?? false,
+              checkedInAt: existingParticipant?.checkedInAt,
+              lastLocation: nextLocation,
+              updatedAt
+            }
+          }
+        };
+      });
+
+      if (FIREBASE_ENABLED && hasFirebaseAuthSession) {
+        void updateRideParticipantLocation({
+          rideId: selectedRide.id,
+          userId: currentUser.id,
+          location: nextLocation
+        }).catch((error) => {
+          markSyncFailure('rideTracking', error);
+        });
+      }
+    };
+
+    const startTracking = async () => {
+      const existingPermission = await Location.getForegroundPermissionsAsync();
+      let status = existingPermission.status;
+
+      if (status !== 'granted') {
+        const requested = await Location.requestForegroundPermissionsAsync();
+        status = requested.status;
+      }
+
+      if (!active) return;
+      if (status !== 'granted') {
+        if (!rideTrackingLocationAlertShownRef.current) {
+          rideTrackingLocationAlertShownRef.current = true;
+          Alert.alert('Location Permission Needed', 'Enable location permission to share live ride tracking updates.');
+        }
+        return;
+      }
+
+      rideTrackingLocationAlertShownRef.current = false;
+
+      try {
+        const currentPosition = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        await publishLocation(currentPosition.coords);
+      } catch {
+        // ignore one-off location read failures and continue watching
+      }
+
+      locationSub = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: 20000,
+          distanceInterval: 60
+        },
+        (position) => {
+          void publishLocation(position.coords);
+        }
+      );
+    };
+
+    void startTracking();
+
+    return () => {
+      active = false;
+      locationSub?.remove();
+    };
+  }, [currentUser.id, effectiveRideTrackingSession?.isActive, hasFirebaseAuthSession, isRideDetailOpen, markSyncFailure, selectedRide, updateLocalRideTrackingSession]);
+
+  useEffect(() => {
+    const latestSos = effectiveRideTrackingSession?.lastSos;
+    if (!latestSos) return;
+
+    const previousSosId = lastRideSosByRideRef.current.get(effectiveRideTrackingSession.rideId);
+    if (previousSosId === latestSos.id) return;
+    lastRideSosByRideRef.current.set(effectiveRideTrackingSession.rideId, latestSos.id);
+
+    if (latestSos.userId === currentUser.id) return;
+
+    const rideTitle = selectedRide?.id === effectiveRideTrackingSession.rideId
+      ? selectedRide.title
+      : ridesById.get(effectiveRideTrackingSession.rideId)?.title ?? 'an active ride';
+    const sender = usersById.get(latestSos.userId);
+
+    pushAppNotification({
+      type: 'message',
+      senderId: latestSos.userId,
+      senderName: sender?.name ?? 'Rider',
+      senderAvatar: sender?.avatar ?? avatarFallback,
+      content: `triggered SOS on "${rideTitle}"`,
+      openCenter: true,
+      sendPush: true,
+      pushTitle: 'SOS Alert',
+      pushBody: `${sender?.name ?? 'A rider'} triggered SOS on "${rideTitle}".`
+    });
+  }, [
+    currentUser.id,
+    effectiveRideTrackingSession,
+    pushAppNotification,
+    ridesById,
+    selectedRide?.id,
+    selectedRide?.title,
+    usersById
+  ]);
+
+  useEffect(() => {
+    if (!hydrated || !isLoggedIn) {
+      previousRidesForNotificationRef.current = null;
+      rideNotificationUserRef.current = null;
+      return;
+    }
+
+    if (rideNotificationUserRef.current !== currentUser.id) {
+      rideNotificationUserRef.current = currentUser.id;
+      previousRidesForNotificationRef.current = rides;
+      return;
+    }
+
+    const previousRides = previousRidesForNotificationRef.current;
+    if (!previousRides) {
+      previousRidesForNotificationRef.current = rides;
+      return;
+    }
+
+    const previousById = new Map<string, RidePost>(previousRides.map((ride) => [ride.id, ride]));
+    const resolveSender = (userId: string, fallbackName = 'A rider') => {
+      const user = usersById.get(userId);
+      return {
+        senderId: userId,
+        senderName: user?.name ?? fallbackName,
+        senderAvatar: user?.avatar ?? avatarFallback
+      };
+    };
+
+    rides.forEach((ride) => {
+      const previousRide = previousById.get(ride.id);
+      if (!previousRide) return;
+
+      if (ride.creatorId === currentUser.id) {
+        const newRequesterIds = ride.requests.filter((id) => id !== currentUser.id && !previousRide.requests.includes(id));
+        newRequesterIds.forEach((requesterId) => {
+          const requester = resolveSender(requesterId);
+          pushAppNotification({
+            type: 'ride_request',
+            senderId: requester.senderId,
+            senderName: requester.senderName,
+            senderAvatar: requester.senderAvatar,
+            content: `requested to join "${ride.title}"`,
+            sendPush: true,
+            pushTitle: 'Request received',
+            pushBody: `${requester.senderName} requested to join "${ride.title}".`
+          });
+        });
+      }
+
+      const hadPendingRequest = previousRide.requests.includes(currentUser.id);
+      const hasPendingRequest = ride.requests.includes(currentUser.id);
+      if (hadPendingRequest && !hasPendingRequest) {
+        const creator = usersById.get(ride.creatorId);
+        const senderName = creator?.name ?? ride.creatorName;
+        const senderAvatar = creator?.avatar ?? ride.creatorAvatar ?? avatarFallback;
+        const wasApproved = ride.currentParticipants.includes(currentUser.id);
+        pushAppNotification({
+          type: wasApproved ? 'ride_joined' : 'ride_request',
+          senderId: ride.creatorId,
+          senderName,
+          senderAvatar,
+          content: `${wasApproved ? 'approved' : 'rejected'} your join request for "${ride.title}"`,
+          sendPush: true,
+          pushTitle: wasApproved ? 'Request approved' : 'Request rejected',
+          pushBody: wasApproved
+            ? `Your request to join "${ride.title}" was approved.`
+            : `Your request to join "${ride.title}" was rejected.`
+        });
+      }
+
+      const shouldNotifyMemberChanges =
+        ride.creatorId === currentUser.id ||
+        previousRide.currentParticipants.includes(currentUser.id) ||
+        ride.currentParticipants.includes(currentUser.id);
+      if (!shouldNotifyMemberChanges) return;
+
+      const newParticipantIds = ride.currentParticipants.filter(
+        (participantId) => participantId !== currentUser.id && !previousRide.currentParticipants.includes(participantId)
+      );
+      newParticipantIds.forEach((participantId) => {
+        const participant = resolveSender(participantId);
+        pushAppNotification({
+          type: 'ride_joined',
+          senderId: participant.senderId,
+          senderName: participant.senderName,
+          senderAvatar: participant.senderAvatar,
+          content: `joined "${ride.title}"`,
+          sendPush: true,
+          pushTitle: 'New member joined',
+          pushBody: `${participant.senderName} joined "${ride.title}".`
+        });
+      });
+    });
+
+    previousRidesForNotificationRef.current = rides;
+  }, [currentUser.id, hydrated, isLoggedIn, pushAppNotification, rides, usersById]);
+
+  useEffect(() => {
+    if (!hydrated || !isLoggedIn) {
+      previousSquadsForNotificationRef.current = null;
+      squadNotificationUserRef.current = null;
+      return;
+    }
+
+    if (squadNotificationUserRef.current !== currentUser.id) {
+      squadNotificationUserRef.current = currentUser.id;
+      previousSquadsForNotificationRef.current = squads;
+      return;
+    }
+
+    const previousSquads = previousSquadsForNotificationRef.current;
+    if (!previousSquads) {
+      previousSquadsForNotificationRef.current = squads;
+      return;
+    }
+
+    const previousById = new Map<string, Squad>(previousSquads.map((squad) => [squad.id, squad]));
+    const resolveSender = (userId: string, fallbackName = 'A rider') => {
+      const user = usersById.get(userId);
+      return {
+        senderId: userId,
+        senderName: user?.name ?? fallbackName,
+        senderAvatar: user?.avatar ?? avatarFallback
+      };
+    };
+
+    squads.forEach((squad) => {
+      const previousSquad = previousById.get(squad.id);
+      if (!previousSquad) return;
+
+      if (squad.creatorId === currentUser.id) {
+        const newRequesterIds = squad.joinRequests.filter((id) => id !== currentUser.id && !previousSquad.joinRequests.includes(id));
+        newRequesterIds.forEach((requesterId) => {
+          const requester = resolveSender(requesterId);
+          pushAppNotification({
+            type: 'ride_request',
+            senderId: requester.senderId,
+            senderName: requester.senderName,
+            senderAvatar: requester.senderAvatar,
+            content: `requested to join squad "${squad.name}"`,
+            sendPush: true,
+            pushTitle: 'Request received',
+            pushBody: `${requester.senderName} requested to join squad "${squad.name}".`
+          });
+        });
+      }
+
+      const hadPendingRequest = previousSquad.joinRequests.includes(currentUser.id);
+      const hasPendingRequest = squad.joinRequests.includes(currentUser.id);
+      if (hadPendingRequest && !hasPendingRequest) {
+        const creator = resolveSender(squad.creatorId, 'Squad owner');
+        const wasApproved = squad.members.includes(currentUser.id);
+        pushAppNotification({
+          type: wasApproved ? 'ride_joined' : 'ride_request',
+          senderId: creator.senderId,
+          senderName: creator.senderName,
+          senderAvatar: creator.senderAvatar,
+          content: `${wasApproved ? 'approved' : 'rejected'} your join request for squad "${squad.name}"`,
+          sendPush: true,
+          pushTitle: wasApproved ? 'Request approved' : 'Request rejected',
+          pushBody: wasApproved
+            ? `Your request to join "${squad.name}" was approved.`
+            : `Your request to join "${squad.name}" was rejected.`
+        });
+      }
+
+      const shouldNotifyMemberChanges =
+        squad.creatorId === currentUser.id || previousSquad.members.includes(currentUser.id) || squad.members.includes(currentUser.id);
+      if (!shouldNotifyMemberChanges) return;
+
+      const newMemberIds = squad.members.filter((memberId) => memberId !== currentUser.id && !previousSquad.members.includes(memberId));
+      newMemberIds.forEach((memberId) => {
+        const member = resolveSender(memberId);
+        pushAppNotification({
+          type: 'ride_joined',
+          senderId: member.senderId,
+          senderName: member.senderName,
+          senderAvatar: member.senderAvatar,
+          content: `joined squad "${squad.name}"`,
+          sendPush: true,
+          pushTitle: 'New member joined',
+          pushBody: `${member.senderName} joined squad "${squad.name}".`
+        });
+      });
+    });
+
+    previousSquadsForNotificationRef.current = squads;
+  }, [currentUser.id, hydrated, isLoggedIn, pushAppNotification, squads, usersById]);
 
   const persistModerationReport = async (report: ModerationReport) => {
     try {
@@ -1209,7 +2162,7 @@ const AppShell = () => {
   };
 
   const handleReportRide = (rideId: string) => {
-    const targetRide = rides.find((ride) => ride.id === rideId);
+    const targetRide = ridesById.get(rideId);
     if (!targetRide) return;
 
     Alert.alert('Report ride post?', `Report "${targetRide.title}" as spam or unsafe?`, [
@@ -1229,7 +2182,7 @@ const AppShell = () => {
   };
 
   const handleReportHelpPost = (postId: string) => {
-    const targetPost = helpPosts.find((post) => post.id === postId);
+    const targetPost = helpPostsById.get(postId);
     if (!targetPost) return;
 
     Alert.alert('Report help post?', `Report "${targetPost.title}" for abuse, scam, or spam?`, [
@@ -1380,7 +2333,7 @@ const AppShell = () => {
   };
 
   const handleCancelRide = (rideId: string) => {
-    const rideToCancel = rides.find((ride) => ride.id === rideId);
+    const rideToCancel = ridesById.get(rideId);
     if (!rideToCancel) return;
 
     const cancelNotifications: Notification[] = rideToCancel.currentParticipants
@@ -1401,12 +2354,377 @@ const AppShell = () => {
     }
 
     setRides((prev) => prev.filter((ride) => ride.id !== rideId));
+    updateLocalRideTrackingSession(rideId, () => null);
+    if (selectedRideTrackingSession?.rideId === rideId) {
+      setSelectedRideTrackingSession(null);
+    }
     if (FIREBASE_ENABLED) {
       runRideMutationSync(() => deleteRideInFirestore(rideId));
       void triggerRideCancelledNotification(rideId, rideToCancel.title, currentUser.id).catch(() => undefined);
     }
     setIsRideDetailOpen(false);
     setSelectedRideId(null);
+  };
+
+  const handleStartRideTracking = async (rideId: string) => {
+    const rideToTrack = ridesById.get(rideId);
+    if (!rideToTrack) return;
+    if (rideToTrack.creatorId !== currentUser.id) {
+      showActionGuardrail('Only the ride organizer can start live tracking.');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const participantIds = uniqueStrings(
+      (rideToTrack.currentParticipants.length > 0 ? rideToTrack.currentParticipants : [rideToTrack.creatorId]).filter(Boolean)
+    );
+    const previousSession = localRideTrackingSessions[rideId] ?? effectiveRideTrackingSession ?? null;
+    const participants: RideTrackingSession['participants'] = {};
+    participantIds.forEach((participantId) => {
+      const previousParticipant = previousSession?.participants[participantId];
+      const checkedIn = participantId === currentUser.id || previousParticipant?.checkedIn === true;
+      participants[participantId] = {
+        userId: participantId,
+        checkedIn,
+        checkedInAt: checkedIn ? previousParticipant?.checkedInAt ?? now : undefined,
+        lastLocation: previousParticipant?.lastLocation,
+        updatedAt: now
+      };
+    });
+
+    const nextSession: RideTrackingSession = {
+      rideId,
+      isActive: true,
+      startedAt: now,
+      startedByUserId: currentUser.id,
+      updatedAt: now,
+      participants,
+      lastSos: undefined
+    };
+
+    updateLocalRideTrackingSession(rideId, () => nextSession);
+    setSelectedRideTrackingSession(nextSession);
+
+    setIsStartingRideTracking(true);
+    try {
+      if (FIREBASE_ENABLED) {
+        const hasAuthSession = await ensureFirebaseAuthSession();
+        if (!hasAuthSession) {
+          throw new Error('Live tracking sync requires an authenticated Firebase session. Please log in again.');
+        }
+        startSync('rideTracking');
+        await startRideTrackingSession(rideId, {
+          startedByUserId: currentUser.id,
+          participantIds,
+          startedAt: now
+        });
+        markSyncSuccess('rideTracking');
+      }
+      pushSystemNotification(`Live tracking started for "${rideToTrack.title}".`);
+    } catch (error) {
+      markSyncFailure('rideTracking', error);
+      showActionGuardrail('Unable to start live tracking right now. Please try again.');
+    } finally {
+      setIsStartingRideTracking(false);
+    }
+  };
+
+  const handleStopRideTracking = async (rideId: string) => {
+    const rideToTrack = ridesById.get(rideId);
+    if (!rideToTrack) return;
+    if (rideToTrack.creatorId !== currentUser.id) {
+      showActionGuardrail('Only the ride organizer can stop live tracking.');
+      return;
+    }
+
+    const now = new Date().toISOString();
+    updateLocalRideTrackingSession(rideId, (session) => {
+      if (!session) return session;
+      return {
+        ...session,
+        isActive: false,
+        endedAt: now,
+        endedByUserId: currentUser.id,
+        updatedAt: now
+      };
+    });
+
+    setIsStoppingRideTracking(true);
+    try {
+      if (FIREBASE_ENABLED) {
+        const hasAuthSession = await ensureFirebaseAuthSession();
+        if (!hasAuthSession) {
+          throw new Error('Live tracking sync requires an authenticated Firebase session. Please log in again.');
+        }
+        startSync('rideTracking');
+        await stopRideTrackingSession(rideId, currentUser.id);
+        markSyncSuccess('rideTracking');
+      }
+      pushSystemNotification(`Live tracking stopped for "${rideToTrack.title}".`);
+    } catch (error) {
+      markSyncFailure('rideTracking', error);
+      showActionGuardrail('Unable to stop live tracking right now. Please try again.');
+    } finally {
+      setIsStoppingRideTracking(false);
+    }
+  };
+
+  const handleToggleRideCheckIn = (rideId: string, checkedIn: boolean) => {
+    void (async () => {
+      const rideToTrack = ridesById.get(rideId);
+      if (!rideToTrack) return;
+      if (!rideToTrack.currentParticipants.includes(currentUser.id)) {
+        showActionGuardrail('Join this ride first to use check-in.');
+        return;
+      }
+
+      const session =
+        (selectedRideTrackingSession?.rideId === rideId ? selectedRideTrackingSession : localRideTrackingSessions[rideId]) ?? null;
+      if (!session?.isActive) {
+        showActionGuardrail('Live tracking is not active for this ride yet.');
+        return;
+      }
+
+      if (checkedIn) {
+        const startPoint = getRideStartPoint(rideToTrack);
+        if (!startPoint) {
+          showActionGuardrail('Organizer needs to set a route start point before geofenced check-in can work.');
+          return;
+        }
+
+        setIsUpdatingRideCheckIn(true);
+        try {
+          const existingPermission = await Location.getForegroundPermissionsAsync();
+          let status = existingPermission.status;
+          if (status !== 'granted') {
+            const requestedPermission = await Location.requestForegroundPermissionsAsync();
+            status = requestedPermission.status;
+          }
+
+          if (status !== 'granted') {
+            showActionGuardrail('Location permission is required to check in at the ride start point.');
+            return;
+          }
+
+          const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          if (!Number.isFinite(position.coords.latitude) || !Number.isFinite(position.coords.longitude)) {
+            showActionGuardrail('Unable to verify your location for check-in right now. Try again.');
+            return;
+          }
+
+          const distanceFromStartMeters = calculateDistanceMeters(
+            { lat: position.coords.latitude, lng: position.coords.longitude },
+            { lat: startPoint.lat, lng: startPoint.lng }
+          );
+
+          if (distanceFromStartMeters > RIDE_CHECK_IN_GEOFENCE_RADIUS_METERS) {
+            const startLabel = startPoint.label?.trim() || 'the ride start point';
+            showActionGuardrail(
+              `Move closer to ${startLabel} to check in. You are ${formatDistanceMeters(distanceFromStartMeters)} away (within ${RIDE_CHECK_IN_GEOFENCE_RADIUS_METERS} m required).`
+            );
+            return;
+          }
+        } catch {
+          showActionGuardrail('Unable to verify your location for check-in right now. Try again.');
+          return;
+        } finally {
+          setIsUpdatingRideCheckIn(false);
+        }
+      }
+
+      const now = new Date().toISOString();
+      updateLocalRideTrackingSession(rideId, (current) => {
+        if (!current) return current;
+        const previousParticipant = current.participants[currentUser.id];
+        return {
+          ...current,
+          updatedAt: now,
+          participants: {
+            ...current.participants,
+            [currentUser.id]: {
+              userId: currentUser.id,
+              checkedIn,
+              checkedInAt: checkedIn ? previousParticipant?.checkedInAt ?? now : undefined,
+              lastLocation: previousParticipant?.lastLocation,
+              updatedAt: now
+            }
+          }
+        };
+      });
+
+      if (FIREBASE_ENABLED) {
+        runRideTrackingMutationSync(() =>
+          updateRideParticipantCheckIn({
+            rideId,
+            userId: currentUser.id,
+            checkedIn
+          })
+        );
+      }
+    })();
+  };
+
+  const handleSendRideSos = async (rideId: string) => {
+    const rideToTrack = ridesById.get(rideId);
+    if (!rideToTrack) return;
+    if (!rideToTrack.currentParticipants.includes(currentUser.id)) {
+      showActionGuardrail('Join this ride first to send SOS alerts.');
+      return;
+    }
+
+    const session = (selectedRideTrackingSession?.rideId === rideId ? selectedRideTrackingSession : localRideTrackingSessions[rideId]) ?? null;
+    if (!session?.isActive) {
+      showActionGuardrail('Live tracking is not active for this ride yet.');
+      return;
+    }
+
+    setIsSendingRideSos(true);
+    try {
+      let locationPayload: { lat: number; lng: number; accuracy?: number; speed?: number; heading?: number; updatedAt?: string } | undefined;
+      try {
+        const permission = await Location.getForegroundPermissionsAsync();
+        if (permission.status === 'granted') {
+          const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          if (Number.isFinite(position.coords.latitude) && Number.isFinite(position.coords.longitude)) {
+            locationPayload = {
+              lat: position.coords.latitude,
+              lng: position.coords.longitude,
+              accuracy: typeof position.coords.accuracy === 'number' ? position.coords.accuracy : undefined,
+              speed: typeof position.coords.speed === 'number' ? position.coords.speed : undefined,
+              heading: typeof position.coords.heading === 'number' ? position.coords.heading : undefined,
+              updatedAt: new Date().toISOString()
+            };
+          }
+        }
+      } catch {
+        // location is best effort for SOS payload
+      }
+
+      const createdAt = new Date().toISOString();
+      const message = `SOS from ${currentUser.name}. Immediate assistance needed.`;
+      updateLocalRideTrackingSession(rideId, (current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          updatedAt: createdAt,
+          lastSos: {
+            id: `sos-${Date.now()}-${currentUser.id}`,
+            userId: currentUser.id,
+            message,
+            createdAt,
+            location: locationPayload
+              ? {
+                lat: locationPayload.lat,
+                lng: locationPayload.lng,
+                accuracy: locationPayload.accuracy,
+                speed: locationPayload.speed,
+                heading: locationPayload.heading,
+                updatedAt: locationPayload.updatedAt ?? createdAt
+              }
+              : undefined
+          }
+        };
+      });
+
+      if (FIREBASE_ENABLED) {
+        const hasAuthSession = await ensureFirebaseAuthSession();
+        if (!hasAuthSession) {
+          throw new Error('Live tracking sync requires an authenticated Firebase session. Please log in again.');
+        }
+        startSync('rideTracking');
+        await sendRideSosSignal({
+          rideId,
+          userId: currentUser.id,
+          message,
+          location: locationPayload
+        });
+        markSyncSuccess('rideTracking');
+      }
+
+      pushAppNotification({
+        type: 'message',
+        senderId: currentUser.id,
+        senderName: currentUser.name,
+        senderAvatar: currentUser.avatar,
+        content: `SOS sent for "${rideToTrack.title}"`,
+        openCenter: true,
+        sendPush: true,
+        pushTitle: 'SOS Sent',
+        pushBody: `Your SOS alert was sent for "${rideToTrack.title}".`
+      });
+
+      const emergencyContacts = dedupeEmergencyContactNumbers([
+        ...(currentUser.sosContacts ?? []),
+        currentUser.sosNumber ?? ''
+      ]);
+      if (emergencyContacts.length === 0) {
+        Alert.alert(
+          'SOS Alert Sent',
+          `Alert delivered for "${rideToTrack.title}". Add emergency contacts in your profile to enable one-tap call and SMS escalation.`
+        );
+        return;
+      }
+
+      const openCallDialer = (phoneNumber: string) => {
+        void Linking.openURL(`tel:${phoneNumber}`).catch(() => {
+          showActionGuardrail('Unable to place a call right now.');
+        });
+      };
+
+      const promptCallContact = () => {
+        if (emergencyContacts.length === 1) {
+          openCallDialer(emergencyContacts[0]);
+          return;
+        }
+
+        Alert.alert(
+          'Call Emergency Contact',
+          'Choose which contact to call now.',
+          [
+            ...emergencyContacts.map((phoneNumber, index) => ({
+              text: `Contact ${index + 1} (${formatEmergencyContactLabel(phoneNumber)})`,
+              onPress: () => {
+                openCallDialer(phoneNumber);
+              }
+            })),
+            { text: 'Cancel', style: 'cancel' as const }
+          ]
+        );
+      };
+
+      const smsLines = [
+        `SOS from ${currentUser.name}.`,
+        `Ride: ${rideToTrack.title}.`,
+        locationPayload
+          ? `My location: https://maps.google.com/?q=${locationPayload.lat},${locationPayload.lng}`
+          : 'Location unavailable in this SOS payload.',
+        `Timestamp: ${new Date(createdAt).toLocaleString()}`
+      ];
+      const smsBody = smsLines.join(' ');
+
+      const smsActionLabel = locationPayload ? 'Send Location SMS' : 'Send SMS';
+      const openSmsComposer = () => {
+        const smsUrl = buildEmergencySmsDeeplink(emergencyContacts, smsBody);
+        void Linking.openURL(smsUrl).catch(() => {
+          showActionGuardrail('Unable to open SMS right now.');
+        });
+      };
+
+      Alert.alert(
+        'SOS Alert Sent',
+        `Alert delivered for "${rideToTrack.title}". Choose an escalation action.`,
+        [
+          { text: 'Done', style: 'cancel' },
+          { text: 'Call Contact', onPress: promptCallContact },
+          { text: smsActionLabel, onPress: openSmsComposer }
+        ]
+      );
+    } catch (error) {
+      markSyncFailure('rideTracking', error);
+      showActionGuardrail('Unable to send SOS right now. Please try again.');
+    } finally {
+      setIsSendingRideSos(false);
+    }
   };
 
   const handleRequestToJoinRide = (rideId: string) => {
@@ -1573,20 +2891,46 @@ const AppShell = () => {
   };
 
   const handleUpdateProfile = (updates: Partial<User>) => {
-    setCurrentUser((prev) => ({ ...prev, ...updates }));
+    setCurrentUser((prev) => {
+      const normalizedEmergencyContacts = dedupeEmergencyContactNumbers([
+        ...(updates.sosContacts ?? prev.sosContacts ?? []),
+        updates.sosNumber ?? prev.sosNumber ?? ''
+      ]);
+
+      const next: User = {
+        ...prev,
+        ...updates,
+        ...(normalizedEmergencyContacts.length > 0
+          ? {
+            sosNumber: normalizedEmergencyContacts[0],
+            sosContacts: normalizedEmergencyContacts
+          }
+          : {})
+      };
+
+      if (FIREBASE_ENABLED) {
+        void upsertUserInFirestore(next);
+      }
+
+      return next;
+    });
     setIsEditProfileOpen(false);
   };
 
-  const handleCreateSquad = (data: { name: string; description: string; rideStyle: string }) => {
+  const handleCreateSquad = (data: { name: string; description: string; rideStyles: string[]; joinPermission: SquadJoinPermission }) => {
+    const rideStyles = uniqueStrings(data.rideStyles.map((style) => style.trim()).filter(Boolean));
     const newSquad: Squad = {
       id: `sq-${Date.now()}`,
       name: data.name,
       description: data.description,
       creatorId: currentUser.id,
       members: [currentUser.id],
+      adminIds: [],
       avatar: `https://api.dicebear.com/7.x/identicon/png?seed=${encodeURIComponent(data.name)}`,
       city: currentUser.city,
-      rideStyle: data.rideStyle,
+      rideStyles: rideStyles.length > 0 ? rideStyles : ['Touring'],
+      joinPermission: data.joinPermission,
+      joinRequests: [],
       createdAt: new Date().toISOString()
     };
     setSquads((prev) => [newSquad, ...prev]);
@@ -1602,7 +2946,17 @@ const AppShell = () => {
       const next = prev.map((s) => {
         if (s.id !== squadId) return s;
         if (s.members.includes(currentUser.id)) return s;
-        updatedSquad = { ...s, members: [...s.members, currentUser.id] };
+        if (s.joinPermission === 'request_to_join') {
+          if (s.joinRequests.includes(currentUser.id)) return s;
+          updatedSquad = { ...s, joinRequests: [...s.joinRequests, currentUser.id] };
+          return updatedSquad;
+        }
+
+        updatedSquad = {
+          ...s,
+          members: [...s.members, currentUser.id],
+          joinRequests: s.joinRequests.filter((id) => id !== currentUser.id)
+        };
         return updatedSquad;
       });
 
@@ -1620,8 +2974,112 @@ const AppShell = () => {
       const next = prev.map((s) => {
         if (s.id !== squadId) return s;
         if (s.creatorId === currentUser.id) return s;
-        if (!s.members.includes(currentUser.id)) return s;
-        updatedSquad = { ...s, members: s.members.filter((id) => id !== currentUser.id) };
+        const isMember = s.members.includes(currentUser.id);
+        const hasPendingRequest = s.joinRequests.includes(currentUser.id);
+        if (!isMember && !hasPendingRequest) return s;
+        updatedSquad = {
+          ...s,
+          members: s.members.filter((id) => id !== currentUser.id),
+          adminIds: s.adminIds.filter((id) => id !== currentUser.id),
+          joinRequests: s.joinRequests.filter((id) => id !== currentUser.id)
+        };
+        return updatedSquad;
+      });
+
+      if (updatedSquad && FIREBASE_ENABLED) {
+        void upsertSquadInFirestore(updatedSquad);
+      }
+
+      return next;
+    });
+  };
+
+  const handleAcceptSquadJoinRequest = (squadId: string, userId: string) => {
+    setSquads((prev) => {
+      let updatedSquad: Squad | null = null;
+      const next = prev.map((s) => {
+        if (s.id !== squadId) return s;
+        const canApprove = s.creatorId === currentUser.id || s.adminIds.includes(currentUser.id);
+        if (!canApprove) return s;
+        if (!s.joinRequests.includes(userId)) return s;
+
+        updatedSquad = {
+          ...s,
+          members: s.members.includes(userId) ? s.members : [...s.members, userId],
+          joinRequests: s.joinRequests.filter((id) => id !== userId)
+        };
+        return updatedSquad;
+      });
+
+      if (updatedSquad && FIREBASE_ENABLED) {
+        void upsertSquadInFirestore(updatedSquad);
+      }
+
+      return next;
+    });
+  };
+
+  const handleRejectSquadJoinRequest = (squadId: string, userId: string) => {
+    setSquads((prev) => {
+      let updatedSquad: Squad | null = null;
+      const next = prev.map((s) => {
+        if (s.id !== squadId) return s;
+        const canApprove = s.creatorId === currentUser.id || s.adminIds.includes(currentUser.id);
+        if (!canApprove) return s;
+        if (!s.joinRequests.includes(userId)) return s;
+
+        updatedSquad = {
+          ...s,
+          joinRequests: s.joinRequests.filter((id) => id !== userId)
+        };
+        return updatedSquad;
+      });
+
+      if (updatedSquad && FIREBASE_ENABLED) {
+        void upsertSquadInFirestore(updatedSquad);
+      }
+
+      return next;
+    });
+  };
+
+  const handlePromoteSquadAdmin = (squadId: string, userId: string) => {
+    setSquads((prev) => {
+      let updatedSquad: Squad | null = null;
+      const next = prev.map((s) => {
+        if (s.id !== squadId) return s;
+        if (s.creatorId !== currentUser.id) return s;
+        if (userId === s.creatorId) return s;
+        if (!s.members.includes(userId)) return s;
+        if (s.adminIds.includes(userId)) return s;
+
+        updatedSquad = {
+          ...s,
+          adminIds: [...s.adminIds, userId]
+        };
+        return updatedSquad;
+      });
+
+      if (updatedSquad && FIREBASE_ENABLED) {
+        void upsertSquadInFirestore(updatedSquad);
+      }
+
+      return next;
+    });
+  };
+
+  const handleDemoteSquadAdmin = (squadId: string, userId: string) => {
+    setSquads((prev) => {
+      let updatedSquad: Squad | null = null;
+      const next = prev.map((s) => {
+        if (s.id !== squadId) return s;
+        if (s.creatorId !== currentUser.id) return s;
+        if (!s.adminIds.includes(userId)) return s;
+
+        updatedSquad = {
+          ...s,
+          adminIds: s.adminIds.filter((id) => id !== userId)
+        };
         return updatedSquad;
       });
 
@@ -1635,6 +3093,18 @@ const AppShell = () => {
 
   const handleOpenSquadDetail = (squadId: string) => {
     setSelectedSquadId(squadId);
+  };
+
+  const handleOpenSquadChat = (squadId: string) => {
+    const squad = squadsById.get(squadId);
+    if (!squad || !squad.members.includes(currentUser.id)) {
+      showActionGuardrail('Join this squad to access the squad room.');
+      return;
+    }
+
+    setSelectedSquadId(null);
+    setActiveSquadChatId(squadId);
+    setActiveTab('squad');
   };
 
   const handleResolveHelp = (id: string) => {
@@ -1659,7 +3129,7 @@ const AppShell = () => {
   };
 
   const handleUpvoteHelp = (id: string) => {
-    const targetPost = helpPosts.find((post) => post.id === id);
+    const targetPost = helpPostsById.get(id);
     if (targetPost && blockedUserIds.has(targetPost.creatorId)) return;
 
     setHelpPosts((prev) => {
@@ -1683,7 +3153,7 @@ const AppShell = () => {
   };
 
   const handleReplyHelp = (postId: string, text: string) => {
-    const targetPost = helpPosts.find((post) => post.id === postId);
+    const targetPost = helpPostsById.get(postId);
     if (targetPost && blockedUserIds.has(targetPost.creatorId)) return;
 
     const normalizedText = text.trim();
@@ -1893,13 +3363,54 @@ const AppShell = () => {
     void refreshNewsFeed();
   };
 
-  const handleRetryChatSync = () => {
-    if (!activeConversation) {
-      markSyncFailure('chat', new Error('Open a chat room to retry chat sync.'));
-      return;
-    }
+  const handleRetryRideTrackingSync = () => {
+    void (async () => {
+      const hasSession = hasFirebaseAuthSession || await ensureFirebaseAuthSession();
+      if (!hasSession) {
+        markSyncFailure('rideTracking', new Error('Live tracking sync requires an authenticated Firebase session.'));
+        return;
+      }
 
-    setChatSyncRetryToken((prev) => prev + 1);
+      if (!selectedRideId) {
+        markSyncFailure('rideTracking', new Error('Open a ride detail to retry live tracking sync.'));
+        return;
+      }
+      setRideTrackingSyncRetryToken((prev) => prev + 1);
+    })();
+  };
+
+  const handleRetryChatSync = () => {
+    void (async () => {
+      const hasSession = hasFirebaseAuthSession || await ensureFirebaseAuthSession();
+      if (!hasSession) {
+        markSyncFailure('chat', new Error('Chat sync requires an authenticated Firebase session.'));
+        return;
+      }
+
+      if (!activeConversation) {
+        markSyncFailure('chat', new Error('Open a chat room to retry chat sync.'));
+        return;
+      }
+
+      setChatSyncRetryToken((prev) => prev + 1);
+    })();
+  };
+
+  const handleRetrySquadChatSync = () => {
+    void (async () => {
+      const hasSession = hasFirebaseAuthSession || await ensureFirebaseAuthSession();
+      if (!hasSession) {
+        markSyncFailure('squadChat', new Error('Squad chat sync requires an authenticated Firebase session.'));
+        return;
+      }
+
+      if (!activeSquadChatId) {
+        markSyncFailure('squadChat', new Error('Open a squad chat room to retry sync.'));
+        return;
+      }
+
+      setSquadChatSyncRetryToken((prev) => prev + 1);
+    })();
   };
 
   const handleSendMessage = (conversationId: string, text: string) => {
@@ -1971,13 +3482,16 @@ const AppShell = () => {
 
     if (FIREBASE_ENABLED) {
       startSync('chat');
-      void sendChatMessageToRealtime(conversationId, newMsg)
-        .then(() => {
-          markSyncSuccess('chat');
-        })
-        .catch((error) => {
-          markSyncFailure('chat', error);
-        });
+      void (async () => {
+        const hasAuthSession = await ensureFirebaseAuthSession();
+        if (!hasAuthSession) {
+          throw new Error('Chat sync requires an authenticated Firebase session. Please log in again.');
+        }
+        await sendChatMessageToRealtime(conversationId, newMsg);
+        markSyncSuccess('chat');
+      })().catch((error) => {
+        markSyncFailure('chat', error);
+      });
     }
 
     void logAnalyticsEvent('send_message', {
@@ -1991,6 +3505,75 @@ const AppShell = () => {
     setActiveConversation(openedConversation);
     setConversations((prev) => prev.map((conv) => (conv.id === openedConversation.id ? openedConversation : conv)));
     setActiveTab('chats');
+  };
+
+  const handleSendSquadMessage = (squadId: string, text: string) => {
+    const targetSquad = squadsById.get(squadId);
+    if (!targetSquad || !targetSquad.members.includes(currentUser.id)) return;
+
+    const normalizedText = text.trim();
+    if (!normalizedText) return;
+
+    if (normalizedText.length > CHAT_MESSAGE_MAX_LENGTH) {
+      showActionGuardrail(`Message is too long. Keep it under ${CHAT_MESSAGE_MAX_LENGTH} characters.`);
+      return;
+    }
+
+    const now = Date.now();
+    const previousTimestamps = squadChatTimestampsByRoomRef.current.get(squadId) ?? [];
+    const recentMessages = pruneTimestamps(previousTimestamps, now, CHAT_BURST_WINDOW_MS);
+    const lastSentAt = recentMessages[recentMessages.length - 1];
+    if (lastSentAt && now - lastSentAt < CHAT_MIN_INTERVAL_MS) {
+      showActionGuardrail(
+        `You're sending too fast. Wait ${formatCooldown(CHAT_MIN_INTERVAL_MS - (now - lastSentAt))} before the next message.`
+      );
+      return;
+    }
+
+    if (recentMessages.length >= CHAT_BURST_MAX_MESSAGES) {
+      showActionGuardrail('Chat burst limit reached. Please pause for a few seconds.');
+      return;
+    }
+
+    const lastMessageForRoom = squadChatLastMessageByRoomRef.current.get(squadId);
+    if (lastMessageForRoom && lastMessageForRoom.text === normalizedText && now - lastMessageForRoom.sentAt < CHAT_DUPLICATE_COOLDOWN_MS) {
+      showActionGuardrail('Duplicate message blocked. Please send a different message.');
+      return;
+    }
+
+    squadChatTimestampsByRoomRef.current.set(squadId, [...recentMessages, now]);
+    squadChatLastMessageByRoomRef.current.set(squadId, { sentAt: now, text: normalizedText });
+
+    const newMsg: ChatMessage = {
+      id: `sqm-${Date.now()}`,
+      senderId: currentUser.id,
+      text: normalizedText,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    setSquadChatMessagesByRoom((prev) => ({
+      ...prev,
+      [squadId]: [...(prev[squadId] ?? []), newMsg]
+    }));
+
+    if (FIREBASE_ENABLED) {
+      startSync('squadChat');
+      void (async () => {
+        const hasAuthSession = await ensureFirebaseAuthSession();
+        if (!hasAuthSession) {
+          throw new Error('Squad chat sync requires an authenticated Firebase session. Please log in again.');
+        }
+        await sendSquadChatMessageToRealtime(squadId, newMsg);
+        markSyncSuccess('squadChat');
+      })().catch((error) => {
+        markSyncFailure('squadChat', error);
+      });
+    }
+
+    void logAnalyticsEvent('send_squad_message', {
+      squad_id: squadId,
+      message_length: normalizedText.length
+    });
   };
 
   const handleOpenLocationModal = () => {
@@ -2307,6 +3890,20 @@ const AppShell = () => {
         theme={theme}
       />
 
+      <SquadChatRoomScreen
+        visible={Boolean(activeSquadChat)}
+        squad={activeSquadChat}
+        messages={activeSquadChatMessages}
+        currentUserId={currentUser.id}
+        users={allUsers}
+        syncError={syncState.squadChat.error}
+        isSyncing={syncState.squadChat.isSyncing}
+        onRetrySync={handleRetrySquadChatSync}
+        onClose={() => setActiveSquadChatId(null)}
+        onSendMessage={handleSendSquadMessage}
+        theme={theme}
+      />
+
       <CreateHelpModal
         visible={isCreateHelpModalOpen}
         theme={theme}
@@ -2343,6 +3940,19 @@ const AppShell = () => {
         onUpdateRide={handleUpdateRide}
         onCancelRide={handleCancelRide}
         onReportRide={handleReportRide}
+        rideTrackingSession={effectiveRideTrackingSession}
+        isLiveTrackingSyncing={syncState.rideTracking.isSyncing}
+        liveTrackingSyncError={syncState.rideTracking.error}
+        isStartingRideTracking={isStartingRideTracking}
+        isStoppingRideTracking={isStoppingRideTracking}
+        isUpdatingRideCheckIn={isUpdatingRideCheckIn}
+        isSendingRideSos={isSendingRideSos}
+        rideCheckInGeofenceRadiusMeters={RIDE_CHECK_IN_GEOFENCE_RADIUS_METERS}
+        onRetryRideTrackingSync={handleRetryRideTrackingSync}
+        onStartRideTracking={handleStartRideTracking}
+        onStopRideTracking={handleStopRideTracking}
+        onToggleRideCheckIn={handleToggleRideCheckIn}
+        onSendRideSos={handleSendRideSos}
         isCreatorBlocked={Boolean(selectedRide && blockedUserIds.has(selectedRide.creatorId))}
         onHandleViewProfile={handleViewProfile}
       />
@@ -2389,19 +3999,32 @@ const AppShell = () => {
         users={visibleUsers}
         theme={theme}
         onClose={() => setSelectedSquadId(null)}
+        onOpenSquadChat={handleOpenSquadChat}
         onJoinSquad={handleJoinSquad}
         onLeaveSquad={handleLeaveSquad}
+        onAcceptJoinRequest={handleAcceptSquadJoinRequest}
+        onRejectJoinRequest={handleRejectSquadJoinRequest}
+        onPromoteAdmin={handlePromoteSquadAdmin}
+        onDemoteAdmin={handleDemoteSquadAdmin}
         onViewProfile={handleViewProfile}
       />
     </SafeAreaView>
   );
+
+  const resolvePostLoginRoute = (user: typeof currentUser) => user.profileComplete === false ? 'CompleteProfile' : 'Main';
 
   return (
     <NavigationContainer>
       <RootStack.Navigator screenOptions={{ headerShown: false }}>
         <RootStack.Screen name="Splash">
           {({ navigation }) => (
-            <SplashRoute theme={theme} onComplete={() => navigation.replace(isLoggedIn ? 'Main' : 'Login')} />
+            <SplashRoute theme={theme} onComplete={() => {
+              if (!isLoggedIn) {
+                navigation.replace('Login');
+              } else {
+                navigation.replace(resolvePostLoginRoute(currentUser));
+              }
+            }} />
           )}
         </RootStack.Screen>
         <RootStack.Screen name="Login">
@@ -2413,26 +4036,54 @@ const AppShell = () => {
                   throw new Error('Please enter a valid phone number.');
                 }
 
+                let resolvedUser: typeof currentUser | null = null;
+                let isKnownExistingPhoneIdentity = false;
+
                 if (BETA_MODE_ENABLED) {
                   if (BETA_ALLOWED_PHONES.length > 0 && !BETA_ALLOWED_PHONES.includes(normalizedPhone)) {
                     throw new Error('This number is not enabled for this beta build.');
                   }
 
                   const betaUser = await signInWithBetaPhoneIdentity(normalizedPhone);
-                  await applyAuthenticatedSession({
+                  isKnownExistingPhoneIdentity = betaUser.isNewUser === false;
+                  resolvedUser = await applyAuthenticatedSession({
                     uid: betaUser.uid,
                     phoneNumber: normalizedPhone
                   });
                 } else if (payload.uid) {
-                  await applyAuthenticatedSession({
+                  resolvedUser = await applyAuthenticatedSession({
                     uid: payload.uid,
                     phoneNumber: normalizedPhone
                   });
                 } else {
-                  setCurrentUser((prev) => ({ ...prev, phoneNumber: normalizedPhone || prev.phoneNumber }));
+                  setCurrentUser((prev) => {
+                    const updated = { ...prev, phoneNumber: normalizedPhone || prev.phoneNumber };
+                    resolvedUser = updated;
+                    return updated;
+                  });
                   setIsLoggedIn(true);
                 }
-                navigation.replace('Main');
+
+                let userForRoute = resolvedUser ?? currentUser;
+                if (userForRoute.profileComplete === false) {
+                  let completedForPhone = await isProfileCompletedForPhone(normalizedPhone);
+                  if (!completedForPhone && isKnownExistingPhoneIdentity) {
+                    completedForPhone = true;
+                  }
+                  if (completedForPhone) {
+                    userForRoute = { ...userForRoute, profileComplete: true };
+                    setCurrentUser((prev) => ({
+                      ...prev,
+                      profileComplete: true
+                    }));
+                  }
+                }
+
+                if (userForRoute.profileComplete) {
+                  void markProfileCompletedForPhone(normalizedPhone);
+                }
+
+                navigation.replace(resolvePostLoginRoute(userForRoute));
               }}
               theme={theme}
               onToggleTheme={setTheme}
@@ -2440,6 +4091,41 @@ const AppShell = () => {
               betaModeEnabled={BETA_MODE_ENABLED}
               betaDefaultOtp={BETA_DEFAULT_OTP}
               betaAllowedPhones={BETA_ALLOWED_PHONES}
+            />
+          )}
+        </RootStack.Screen>
+        <RootStack.Screen name="CompleteProfile">
+          {({ navigation }) => (
+            <CompleteProfileScreen
+              theme={theme}
+              onSubmit={(data) => {
+                setCurrentUser((prev) => {
+                  const normalizedFirstName = data.firstName.trim();
+                  const normalizedLastName = data.lastName.trim();
+                  const normalizedFullName = [normalizedFirstName, normalizedLastName].filter(Boolean).join(' ');
+                  const updated = {
+                    ...prev,
+                    name: normalizedFirstName || prev.name,
+                    firstName: normalizedFirstName,
+                    lastName: normalizedLastName,
+                    fullName: normalizedFullName || prev.fullName,
+                    sosNumber: data.sosNumber,
+                    sosContacts: data.sosContacts,
+                    dob: data.dob,
+                    bloodGroup: data.bloodGroup,
+                    profileComplete: true
+                  };
+                  if (FIREBASE_ENABLED) {
+                    void upsertUserInFirestore(updated);
+                  }
+                  if (updated.profileComplete && updated.phoneNumber) {
+                    void markProfileCompletedForPhone(updated.phoneNumber);
+                  }
+                  void saveToStorage(STORAGE_KEYS.currentUser, updated);
+                  return updated;
+                });
+                navigation.replace('Main');
+              }}
             />
           )}
         </RootStack.Screen>

@@ -60,6 +60,11 @@ Copy `.env.example` to `.env` and fill your Firebase project values.
 cp .env.example .env
 ```
 
+For map-style location suggestions in Create Ride, also set one of:
+
+- `EXPO_PUBLIC_GOOGLE_PLACES_API_KEY` (preferred)
+- `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` (used as fallback)
+
 ### 2. Enable products in Firebase Console
 
 - Authentication: Email/Password

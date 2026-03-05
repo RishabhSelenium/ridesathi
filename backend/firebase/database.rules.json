@@ -31,6 +31,152 @@
           }
         }
       }
+    },
+    "squadChats": {
+      "$squadId": {
+        ".read": "auth != null",
+        "messages": {
+          ".read": "auth != null",
+          "$messageId": {
+            ".write": "auth != null && (!data.exists() || data.child('senderId').val() === auth.uid)",
+            ".validate": "newData.hasChildren(['id', 'senderId', 'text', 'timestamp', 'timestampEpoch'])",
+            "id": {
+              ".validate": "newData.isString() && newData.val() === $messageId"
+            },
+            "senderId": {
+              ".validate": "newData.isString() && newData.val() === auth.uid"
+            },
+            "text": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 2000"
+            },
+            "timestamp": {
+              ".validate": "newData.isString()"
+            },
+            "timestampEpoch": {
+              ".validate": "newData.isNumber()"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      }
+    },
+    "rideTracking": {
+      "$rideId": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "rideId": {
+          ".validate": "newData.isString() && newData.val() === $rideId"
+        },
+        "isActive": {
+          ".validate": "newData.isBoolean()"
+        },
+        "startedAt": {
+          ".validate": "newData.isString()"
+        },
+        "startedByUserId": {
+          ".validate": "newData.isString()"
+        },
+        "endedAt": {
+          ".validate": "!newData.exists() || newData.isString()"
+        },
+        "endedByUserId": {
+          ".validate": "!newData.exists() || newData.isString()"
+        },
+        "updatedAt": {
+          ".validate": "newData.isString()"
+        },
+        "participants": {
+          "$userId": {
+            ".validate": "newData.hasChildren(['userId', 'checkedIn', 'updatedAt'])",
+            "userId": {
+              ".validate": "newData.isString() && newData.val() === $userId"
+            },
+            "checkedIn": {
+              ".validate": "newData.isBoolean()"
+            },
+            "checkedInAt": {
+              ".validate": "!newData.exists() || newData.isString()"
+            },
+            "updatedAt": {
+              ".validate": "newData.isString()"
+            },
+            "lastLocation": {
+              ".validate": "!newData.exists() || (newData.hasChildren(['lat', 'lng', 'updatedAt']) && newData.child('lat').isNumber() && newData.child('lng').isNumber() && newData.child('updatedAt').isString())",
+              "lat": {
+                ".validate": "newData.isNumber()"
+              },
+              "lng": {
+                ".validate": "newData.isNumber()"
+              },
+              "accuracy": {
+                ".validate": "!newData.exists() || newData.isNumber()"
+              },
+              "speed": {
+                ".validate": "!newData.exists() || newData.isNumber()"
+              },
+              "heading": {
+                ".validate": "!newData.exists() || newData.isNumber()"
+              },
+              "updatedAt": {
+                ".validate": "newData.isString()"
+              },
+              "$other": {
+                ".validate": false
+              }
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "lastSos": {
+          ".validate": "!newData.exists() || (newData.hasChildren(['id', 'userId', 'message', 'createdAt']) && newData.child('id').isString() && newData.child('userId').isString() && newData.child('message').isString() && newData.child('createdAt').isString())",
+          "id": {
+            ".validate": "newData.isString()"
+          },
+          "userId": {
+            ".validate": "newData.isString()"
+          },
+          "message": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 500"
+          },
+          "createdAt": {
+            ".validate": "newData.isString()"
+          },
+          "location": {
+            ".validate": "!newData.exists() || (newData.hasChildren(['lat', 'lng', 'updatedAt']) && newData.child('lat').isNumber() && newData.child('lng').isNumber() && newData.child('updatedAt').isString())",
+            "lat": {
+              ".validate": "newData.isNumber()"
+            },
+            "lng": {
+              ".validate": "newData.isNumber()"
+            },
+            "accuracy": {
+              ".validate": "!newData.exists() || newData.isNumber()"
+            },
+            "speed": {
+              ".validate": "!newData.exists() || newData.isNumber()"
+            },
+            "heading": {
+              ".validate": "!newData.exists() || newData.isNumber()"
+            },
+            "updatedAt": {
+              ".validate": "newData.isString()"
+            },
+            "$other": {
+              ".validate": false
+            }
+          },
+          "$other": {
+            ".validate": false
+          }
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
     }
   }
 }

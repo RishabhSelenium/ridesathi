@@ -8,6 +8,7 @@ type RealtimeChatMessage = ChatMessage & {
 };
 
 const messagePathForConversation = (conversationId: string) => `chats/${conversationId}/messages`;
+const messagePathForSquad = (squadId: string) => `squadChats/${squadId}/messages`;
 
 const normalizeRealtimeMessage = (value: unknown): RealtimeChatMessage | null => {
   if (!value || typeof value !== 'object') return null;
@@ -31,6 +32,24 @@ export const subscribeChatMessages = (
   onMessages: (messages: ChatMessage[]) => void,
   onError?: (error: Error) => void
 ): (() => void) => {
+  const path = messagePathForConversation(conversationId);
+  return subscribeMessages(path, onMessages, onError);
+};
+
+export const subscribeSquadChatMessages = (
+  squadId: string,
+  onMessages: (messages: ChatMessage[]) => void,
+  onError?: (error: Error) => void
+): (() => void) => {
+  const path = messagePathForSquad(squadId);
+  return subscribeMessages(path, onMessages, onError);
+};
+
+const subscribeMessages = (
+  path: string,
+  onMessages: (messages: ChatMessage[]) => void,
+  onError?: (error: Error) => void
+): (() => void) => {
   const services = getFirebaseServices();
   if (!services) {
     onMessages([]);
@@ -38,7 +57,7 @@ export const subscribeChatMessages = (
     return () => undefined;
   }
 
-  const messagesRef = ref(services.realtimeDb, messagePathForConversation(conversationId));
+  const messagesRef = ref(services.realtimeDb, path);
 
   return onValue(
     messagesRef,
@@ -72,10 +91,23 @@ export const sendChatMessageToRealtime = async (
   conversationId: string,
   message: ChatMessage
 ): Promise<void> => {
+  const path = messagePathForConversation(conversationId);
+  await sendMessage(path, message);
+};
+
+export const sendSquadChatMessageToRealtime = async (
+  squadId: string,
+  message: ChatMessage
+): Promise<void> => {
+  const path = messagePathForSquad(squadId);
+  await sendMessage(path, message);
+};
+
+const sendMessage = async (path: string, message: ChatMessage): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
 
-  const messageRef = ref(services.realtimeDb, `${messagePathForConversation(conversationId)}/${message.id}`);
+  const messageRef = ref(services.realtimeDb, `${path}/${message.id}`);
   const payload: RealtimeChatMessage = {
     ...message,
     timestampEpoch: Date.now()

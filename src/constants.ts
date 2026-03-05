@@ -120,6 +120,26 @@ export const MOCK_RIDES: RidePost[] = [
     requests: ['u3'],
     city: 'Gurugram',
     visibility: ['City'],
+    costType: 'Split',
+    splitTotalAmount: 1800,
+    paymentMethod: 'UPI_LINK',
+    upiPaymentLink: 'upi://pay?pa=ishani@oksbi&pn=Ishani%20Kapur',
+    paymentStatusByUserId: {
+      u2: {
+        userId: 'u2',
+        amount: 900,
+        status: 'paid',
+        updatedAt: new Date().toISOString(),
+        paidAt: new Date().toISOString(),
+        method: 'UPI_LINK'
+      },
+      'me-123': {
+        userId: 'me-123',
+        amount: 900,
+        status: 'pending',
+        updatedAt: new Date().toISOString()
+      }
+    },
     createdAt: new Date().toISOString()
   },
   {
@@ -283,9 +303,12 @@ export const MOCK_SQUADS: Squad[] = [
     description: 'Weekend touring squad covering Delhi-NCR and nearby highways. Regular rides to Rajasthan, Uttarakhand, and beyond.',
     creatorId: 'me-123',
     members: ['me-123', 'u1', 'u2'],
+    adminIds: ['u1'],
     avatar: 'https://api.dicebear.com/7.x/identicon/png?seed=NCRTouring',
     city: 'New Delhi',
-    rideStyle: 'Touring',
+    rideStyles: ['Touring', 'Cafe Racer'],
+    joinPermission: 'anyone',
+    joinRequests: [],
     createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   },
   {
@@ -294,9 +317,12 @@ export const MOCK_SQUADS: Squad[] = [
     description: 'City riders who love exploring hidden lanes, food spots, and heritage routes across Delhi.',
     creatorId: 'u1',
     members: ['u1', 'me-123', 'u3'],
+    adminIds: ['u3'],
     avatar: 'https://api.dicebear.com/7.x/identicon/png?seed=DelhiStreet',
     city: 'New Delhi',
-    rideStyle: 'City / Urban',
+    rideStyles: ['City / Urban', 'Night Cruise'],
+    joinPermission: 'request_to_join',
+    joinRequests: ['u2'],
     createdAt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
   },
   {
@@ -305,9 +331,12 @@ export const MOCK_SQUADS: Squad[] = [
     description: 'ADV riders tackling mountain passes, off-road trails, and high-altitude camping. Ladakh dreams live here.',
     creatorId: 'u2',
     members: ['u2', 'u3'],
+    adminIds: [],
     avatar: 'https://api.dicebear.com/7.x/identicon/png?seed=HimalayanExp',
     city: 'Pan India',
-    rideStyle: 'Adventure / Off-road',
+    rideStyles: ['Adventure / Off-road'],
+    joinPermission: 'request_to_join',
+    joinRequests: [],
     createdAt: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
   },
   {
@@ -316,9 +345,12 @@ export const MOCK_SQUADS: Squad[] = [
     description: 'Late-night cruise squad. Quiet roads, good vibes, and chai stops at 2 AM.',
     creatorId: 'u3',
     members: ['u3'],
+    adminIds: [],
     avatar: 'https://api.dicebear.com/7.x/identicon/png?seed=GurgaonNight',
     city: 'Gurugram',
-    rideStyle: 'Night Cruise',
+    rideStyles: ['Night Cruise', 'Sport'],
+    joinPermission: 'anyone',
+    joinRequests: [],
     createdAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString()
   }
 ];

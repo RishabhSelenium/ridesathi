@@ -31,6 +31,9 @@ service cloud.firestore {
           'phoneNumber',
           'name',
           'handle',
+          'firstName',
+          'lastName',
+          'fullName',
           'garage',
           'bikeType',
           'city',
@@ -41,6 +44,11 @@ service cloud.firestore {
           'avatar',
           'verified',
           'typicalRideTime',
+          'sosNumber',
+          'sosContacts',
+          'dob',
+          'bloodGroup',
+          'profileComplete',
           'friends',
           'friendRequests',
           'blockedUserIds'
@@ -59,6 +67,14 @@ service cloud.firestore {
         data.avatar is string &&
         data.verified is bool &&
         data.typicalRideTime is string &&
+        (data.firstName == null || data.firstName is string) &&
+        (data.lastName == null || data.lastName is string) &&
+        (data.fullName == null || data.fullName is string) &&
+        (data.sosNumber == null || data.sosNumber is string) &&
+        (data.sosContacts == null || data.sosContacts is list) &&
+        (data.dob == null || data.dob is string) &&
+        (data.bloodGroup == null || data.bloodGroup is string) &&
+        (data.profileComplete == null || data.profileComplete is bool) &&
         data.friends is list &&
         data.friendRequests is map &&
         data.friendRequests.keys().hasOnly(['sent', 'received']) &&
@@ -68,85 +84,23 @@ service cloud.firestore {
     }
 
     function validRide(data, rideId) {
-      return data.keys().hasAll([
-          'id',
-          'creatorId',
-          'creatorName',
-          'creatorAvatar',
-          'type',
-          'title',
-          'route',
-          'date',
-          'startTime',
-          'maxParticipants',
-          'currentParticipants',
-          'requests',
-          'city',
-          'visibility',
-          'createdAt'
-        ]) &&
-        data.keys().hasOnly([
-          'id',
-          'creatorId',
-          'creatorName',
-          'creatorAvatar',
-          'type',
-          'title',
-          'route',
-          'routePoints',
-          'date',
-          'startTime',
-          'maxParticipants',
-          'currentParticipants',
-          'requests',
-          'city',
-          'visibility',
-          'createdAt',
-          'primaryDestination',
-          'dayPlan',
-          'startLocation',
-          'endLocation',
-          'assemblyTime',
-          'flagOffTime',
-          'rideDuration',
-          'costType',
-          'pricePerPerson',
-          'inclusions',
-          'rideNote',
-          'inviteAudience',
-          'isPrivate'
-        ]) &&
-        data.id == rideId &&
+      return data.id == rideId &&
         data.creatorId is string &&
         data.creatorName is string &&
         data.creatorAvatar is string &&
         data.type is string &&
         data.title is string &&
         data.route is string &&
-        (data.routePoints == null || data.routePoints is list) &&
         data.date is string &&
         data.startTime is string &&
         isNumber(data.maxParticipants) &&
+        data.maxParticipants >= 1 &&
         data.currentParticipants is list &&
         data.requests is list &&
         data.city is string &&
         data.visibility is list &&
         data.visibility.size() > 0 &&
-        data.visibility.hasOnly(['Nearby', 'City', 'Friends']) &&
-        data.createdAt is string &&
-        (data.primaryDestination == null || data.primaryDestination is string) &&
-        (data.dayPlan == null || data.dayPlan == 'single' || data.dayPlan == 'multi') &&
-        (data.startLocation == null || data.startLocation is string) &&
-        (data.endLocation == null || data.endLocation is string) &&
-        (data.assemblyTime == null || data.assemblyTime is string) &&
-        (data.flagOffTime == null || data.flagOffTime is string) &&
-        (data.rideDuration == null || data.rideDuration is string) &&
-        (data.costType == null || data.costType == 'Paid' || data.costType == 'Split' || data.costType == 'Free') &&
-        (data.pricePerPerson == null || (isNumber(data.pricePerPerson) && data.pricePerPerson >= 0)) &&
-        (data.inclusions == null || data.inclusions is list) &&
-        (data.rideNote == null || data.rideNote is string) &&
-        (data.inviteAudience == null || data.inviteAudience == 'groups' || data.inviteAudience == 'riders') &&
-        (data.isPrivate == null || data.isPrivate is bool);
+        data.createdAt is string;
     }
 
     function validHelpPost(data, postId) {
@@ -201,9 +155,12 @@ service cloud.firestore {
           'description',
           'creatorId',
           'members',
+          'adminIds',
           'avatar',
           'city',
-          'rideStyle',
+          'rideStyles',
+          'joinPermission',
+          'joinRequests',
           'createdAt'
         ]) &&
         data.keys().hasOnly([
@@ -212,9 +169,13 @@ service cloud.firestore {
           'description',
           'creatorId',
           'members',
+          'adminIds',
           'avatar',
           'city',
           'rideStyle',
+          'rideStyles',
+          'joinPermission',
+          'joinRequests',
           'createdAt'
         ]) &&
         data.id == squadId &&
@@ -222,9 +183,14 @@ service cloud.firestore {
         data.description is string &&
         data.creatorId is string &&
         data.members is list &&
+        data.adminIds is list &&
         data.avatar is string &&
         data.city is string &&
-        data.rideStyle is string &&
+        (data.rideStyle == null || data.rideStyle is string) &&
+        data.rideStyles is list &&
+        data.rideStyles.size() > 0 &&
+        (data.joinPermission == 'anyone' || data.joinPermission == 'request_to_join') &&
+        data.joinRequests is list &&
         data.createdAt is string;
     }
 
@@ -326,7 +292,7 @@ service cloud.firestore {
         request.resource.data.createdAt == resource.data.createdAt &&
         (
           request.auth.uid == resource.data.creatorId ||
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members'])
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'joinRequests'])
         );
 
       allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;

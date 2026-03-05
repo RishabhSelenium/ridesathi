@@ -65,6 +65,26 @@ export const formatDay = (isoTime: string) => {
   }
 };
 
+export const formatRideDistance = (distanceKm: number): string => {
+  if (!Number.isFinite(distanceKm)) return 'N/A';
+  return `${distanceKm >= 100 ? distanceKm.toFixed(0) : distanceKm.toFixed(1)} km`;
+};
+
+export const formatRideEta = (etaMinutes: number): string => {
+  if (!Number.isFinite(etaMinutes) || etaMinutes <= 0) return 'N/A';
+  const roundedMinutes = Math.max(1, Math.round(etaMinutes));
+  const hours = Math.floor(roundedMinutes / 60);
+  const minutes = roundedMinutes % 60;
+  if (hours === 0) return `${minutes} min`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
+};
+
+export const formatInrAmount = (amount: number): string => {
+  if (!Number.isFinite(amount) || amount <= 0) return 'No toll';
+  return `₹${Math.round(amount).toLocaleString('en-IN')}`;
+};
+
 export const formatRelative = (isoTime: string) => {
   const delta = Date.now() - new Date(isoTime).getTime();
   if (Number.isNaN(delta)) return isoTime;

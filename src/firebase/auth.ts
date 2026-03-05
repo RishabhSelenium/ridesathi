@@ -11,6 +11,7 @@ import { getFirebaseServices } from './client';
 type AuthUser = {
   uid: string;
   phoneNumber?: string | null;
+  isNewUser?: boolean;
 };
 
 type NativeConfirmation = {
@@ -134,7 +135,8 @@ export const signInWithBetaPhoneIdentity = async (phoneNumber: string): Promise<
     const credential = await signInWithEmailAndPassword(webAuth, email, BETA_AUTH_PASSWORD);
     return {
       uid: credential.user.uid,
-      phoneNumber: normalizedPhone
+      phoneNumber: normalizedPhone,
+      isNewUser: false
     };
   } catch (error) {
     const code = error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
@@ -152,7 +154,8 @@ export const signInWithBetaPhoneIdentity = async (phoneNumber: string): Promise<
     const createdCredential = await createUserWithEmailAndPassword(webAuth, email, BETA_AUTH_PASSWORD);
     return {
       uid: createdCredential.user.uid,
-      phoneNumber: normalizedPhone
+      phoneNumber: normalizedPhone,
+      isNewUser: true
     };
   } catch (error) {
     const code = error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
@@ -165,7 +168,8 @@ export const signInWithBetaPhoneIdentity = async (phoneNumber: string): Promise<
       const credential = await signInWithEmailAndPassword(webAuth, email, BETA_AUTH_PASSWORD);
       return {
         uid: credential.user.uid,
-        phoneNumber: normalizedPhone
+        phoneNumber: normalizedPhone,
+        isNewUser: false
       };
     }
 

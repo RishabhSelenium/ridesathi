@@ -828,6 +828,78 @@ export const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center'
   },
+  liveActionRow: {
+    flexDirection: 'row',
+    gap: 8
+  },
+  safetyActionButton: {
+    borderWidth: 1,
+    borderRadius: 12,
+    minHeight: 42,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 6
+  },
+  safetyActionButtonText: {
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase'
+  },
+  safetyHintCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 10
+  },
+  liveParticipantList: {
+    gap: 8
+  },
+  liveParticipantRow: {
+    borderWidth: 1,
+    borderRadius: 12,
+    minHeight: 48,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center'
+  },
+  liveStatusBadgeWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  liveStatusBadge: {
+    borderWidth: 1,
+    borderRadius: 999,
+    minHeight: 30,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6
+  },
+  liveStatusBadgeText: {
+    fontSize: 10,
+    fontWeight: '800'
+  },
+  sosAlertCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 10,
+    flexDirection: 'row',
+    gap: 8
+  },
+  sosAlertTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8
+  },
   statusStrip: {
     borderWidth: 1,
     borderRadius: 14,
@@ -1046,5 +1118,34 @@ export const styles = StyleSheet.create({
   headerProfileImage: {
     width: '100%',
     height: '100%'
+  },
+  profileCompleteTitle: {
+    fontSize: 28,
+    fontWeight: '900'
+  },
+  profileCompleteSectionLabel: {
+    fontSize: 11,
+    letterSpacing: 2,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginTop: 6
+  },
+  bloodGroupRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8
+  },
+  bloodGroupChip: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    minWidth: 48,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  bloodGroupChipText: {
+    fontSize: 13,
+    fontWeight: '700'
   }
 });
