@@ -1,8 +1,8 @@
 {
   "firestore": {
-    "rules": "firestore.rules"
+    "rules": "backend/firebase/firestore.rules"
   },
   "database": {
-    "rules": "database.rules.json"
+    "rules": "backend/firebase/database.rules.json"
   }
 }

@@ -13,7 +13,6 @@ service cloud.firestore {
       return data.keys().hasAll([
           'id',
           'name',
-          'handle',
           'garage',
           'bikeType',
           'city',
@@ -49,7 +48,7 @@ service cloud.firestore {
         data.id == userId &&
         (data.phoneNumber == null || data.phoneNumber is string) &&
         data.name is string &&
-        data.handle is string &&
+        (data.handle == null || data.handle is string) &&
         data.garage is list &&
         data.bikeType is string &&
         data.city is string &&
@@ -62,7 +61,7 @@ service cloud.firestore {
         data.typicalRideTime is string &&
         data.friends is list &&
         data.friendRequests is map &&
-        data.friendRequests.keys().hasAll(['sent', 'received']) &&
+        data.friendRequests.keys().hasOnly(['sent', 'received']) &&
         data.friendRequests.sent is list &&
         data.friendRequests.received is list &&
         (data.blockedUserIds == null || data.blockedUserIds is list);
@@ -102,7 +101,20 @@ service cloud.firestore {
           'requests',
           'city',
           'visibility',
-          'createdAt'
+          'createdAt',
+          'primaryDestination',
+          'dayPlan',
+          'startLocation',
+          'endLocation',
+          'assemblyTime',
+          'flagOffTime',
+          'rideDuration',
+          'costType',
+          'pricePerPerson',
+          'inclusions',
+          'rideNote',
+          'inviteAudience',
+          'isPrivate'
         ]) &&
         data.id == rideId &&
         data.creatorId is string &&
@@ -119,7 +131,22 @@ service cloud.firestore {
         data.requests is list &&
         data.city is string &&
         data.visibility is list &&
-        data.createdAt is string;
+        data.visibility.size() > 0 &&
+        data.visibility.hasOnly(['Nearby', 'City', 'Friends']) &&
+        data.createdAt is string &&
+        (data.primaryDestination == null || data.primaryDestination is string) &&
+        (data.dayPlan == null || data.dayPlan == 'single' || data.dayPlan == 'multi') &&
+        (data.startLocation == null || data.startLocation is string) &&
+        (data.endLocation == null || data.endLocation is string) &&
+        (data.assemblyTime == null || data.assemblyTime is string) &&
+        (data.flagOffTime == null || data.flagOffTime is string) &&
+        (data.rideDuration == null || data.rideDuration is string) &&
+        (data.costType == null || data.costType == 'Paid' || data.costType == 'Split' || data.costType == 'Free') &&
+        (data.pricePerPerson == null || (isNumber(data.pricePerPerson) && data.pricePerPerson >= 0)) &&
+        (data.inclusions == null || data.inclusions is list) &&
+        (data.rideNote == null || data.rideNote is string) &&
+        (data.inviteAudience == null || data.inviteAudience == 'groups' || data.inviteAudience == 'riders') &&
+        (data.isPrivate == null || data.isPrivate is bool);
     }
 
     function validHelpPost(data, postId) {

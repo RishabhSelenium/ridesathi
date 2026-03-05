@@ -1,0 +1,36 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "chats": {
+      "$conversationId": {
+        ".read": "auth != null",
+        "messages": {
+          ".read": "auth != null",
+          "$messageId": {
+            ".write": "auth != null && (!data.exists() || data.child('senderId').val() === auth.uid)",
+            ".validate": "newData.hasChildren(['id', 'senderId', 'text', 'timestamp', 'timestampEpoch'])",
+            "id": {
+              ".validate": "newData.isString() && newData.val() === $messageId"
+            },
+            "senderId": {
+              ".validate": "newData.isString() && newData.val() === auth.uid"
+            },
+            "text": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 2000"
+            },
+            "timestamp": {
+              ".validate": "newData.isString()"
+            },
+            "timestampEpoch": {
+              ".validate": "newData.isNumber()"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      }
+    }
+  }
+}

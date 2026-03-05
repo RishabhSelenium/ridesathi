@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 
 import { getFirebaseServices } from './client';
@@ -27,8 +27,13 @@ type GlobalErrorUtils = {
   getGlobalHandler?: () => GlobalErrorHandler | undefined;
   setGlobalHandler?: (handler: GlobalErrorHandler) => void;
 };
+const hasRnfbAppModule = (): boolean => Boolean((NativeModules as Record<string, unknown>).RNFBAppModule);
 
 const getNativeAnalytics = (): NativeAnalytics | null => {
+  if (!hasRnfbAppModule()) {
+    return null;
+  }
+
   try {
     const module = require('@react-native-firebase/analytics');
     const factory = module?.default;
@@ -40,6 +45,10 @@ const getNativeAnalytics = (): NativeAnalytics | null => {
 };
 
 const getNativeCrashlytics = (): NativeCrashlytics | null => {
+  if (!hasRnfbAppModule()) {
+    return null;
+  }
+
   try {
     const module = require('@react-native-firebase/crashlytics');
     const factory = module?.default;

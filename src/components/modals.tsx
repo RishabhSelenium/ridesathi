@@ -583,7 +583,6 @@ export const CreateRideModal = ({
   const selectedBackground = `${t.primary}1a`;
   const inactiveButtonBackground = `${t.muted}66`;
   const switchThumbOff = theme === 'dark' ? '#cbd5e1' : '#ffffff';
-  const [step, setStep] = useState<RideStep>(1);
   const [primaryDestination, setPrimaryDestination] = useState('');
   const [rideName, setRideName] = useState('');
   const [dayMode, setDayMode] = useState<'single' | 'multi'>('single');
@@ -639,7 +638,6 @@ export const CreateRideModal = ({
   }, [destinationQuery, destinationSuggestions]);
 
   const resetForm = () => {
-    setStep(1);
     setPrimaryDestination('');
     setRideName('');
     setDayMode('single');
@@ -675,37 +673,24 @@ export const CreateRideModal = ({
     }
   }, [visible]);
 
-  const isStep1Valid = primaryDestination.trim().length > 0;
-  const isStep2Valid = rideName.trim().length > 0;
-  const isStep3Valid =
+  const riderLimit = Math.max(2, Math.min(20, Number(maxParticipants) || 5));
+  const routeSummary = [rideStartsAt.trim(), ridingTo.trim(), rideEndsAt.trim()].filter(Boolean).join(' -> ');
+  const summaryDestination = primaryDestination.trim() || ridingTo.trim() || 'Pending destination';
+
+  const canSubmit =
+    primaryDestination.trim().length > 0 &&
+    rideName.trim().length > 0 &&
     date.trim().length > 0 &&
     rideStartsAt.trim().length > 0 &&
     ridingTo.trim().length > 0 &&
     rideEndsAt.trim().length > 0 &&
     assemblyTime.trim().length > 0 &&
-    flagOffTime.trim().length > 0;
-  const isStep4Valid = costOption !== 'Paid' || pricePerPerson.trim().length > 0;
-  const riderLimit = Math.max(2, Math.min(20, Number(maxParticipants) || 5));
-  const isStep5Valid = !hasRiderLimit || Number(maxParticipants) >= 2;
-
-  const canContinue =
-    step === 1 ? isStep1Valid : step === 2 ? isStep2Valid : step === 3 ? isStep3Valid : step === 4 ? isStep4Valid : isStep5Valid;
-
-  const routeSummary = [rideStartsAt.trim(), ridingTo.trim(), rideEndsAt.trim()].filter(Boolean).join(' -> ');
-  const summaryDate = date.trim() || 'Date pending';
-  const summaryDestination = primaryDestination.trim() || ridingTo.trim() || 'Pending destination';
-
-  const handleGoBack = () => {
-    if (step === 1) {
-      onClose();
-      return;
-    }
-
-    setStep((prev) => (prev - 1) as RideStep);
-  };
+    flagOffTime.trim().length > 0 &&
+    (costOption !== 'Paid' || pricePerPerson.trim().length > 0) &&
+    (!hasRiderLimit || Number(maxParticipants) >= 2);
 
   const submit = () => {
-    if (!isStep1Valid || !isStep2Valid || !isStep3Valid || !isStep4Valid || !isStep5Valid) return;
+    if (!canSubmit) return;
 
     const resolvedRideType: RideType = dayMode === 'multi' ? 'Long Tour' : 'Sunday Morning';
     const resolvedVisibility: RideVisibility[] = isPrivateRide ? ['Friends'] : ['City'];
@@ -746,23 +731,14 @@ export const CreateRideModal = ({
     resetForm();
   };
 
-  const handleStepContinue = () => {
-    if (!canContinue) return;
-
-    if (step === 1) {
-      const destination = primaryDestination.trim();
-      setRidingTo(destination);
-      if (!rideName.trim()) {
-        setRideName(`Ride To ${destination}`);
-      }
+  const handleDestinationSelected = (value: string) => {
+    const destination = value.trim();
+    if (!destination) return;
+    setPrimaryDestination(destination);
+    setRidingTo(destination);
+    if (!rideName.trim()) {
+      setRideName(`Ride To ${destination}`);
     }
-
-    if (step === 5) {
-      submit();
-      return;
-    }
-
-    setStep((prev) => (prev + 1) as RideStep);
   };
 
   const saveDestination = (value: string) => {
@@ -783,6 +759,7 @@ export const CreateRideModal = ({
     setDestinationQuery(normalized);
     saveDestination(normalized);
     setIsDestinationPickerOpen(false);
+    handleDestinationSelected(normalized);
   };
 
   const getLocationValueByContext = (context: LocationPickerContext): string => {
@@ -929,20 +906,16 @@ export const CreateRideModal = ({
 
   return (
     <>
-      <Modal visible={visible} animationType="slide" onRequestClose={handleGoBack}>
+      <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
         <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg, paddingTop: topInset }]}>
           <KeyboardAvoidingView style={styles.fullScreen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <View style={[styles.modalHeader, { borderBottomColor: t.border, paddingHorizontal: 16 }]}>
               <View style={styles.rowAligned}>
-                <TouchableOpacity onPress={handleGoBack} style={createRideWizardStyles.headerBackButton}>
+                <TouchableOpacity onPress={onClose} style={createRideWizardStyles.headerBackButton}>
                   <MaterialCommunityIcons name="arrow-left" size={30} color={t.text} />
                 </TouchableOpacity>
-                <Text style={[createRideWizardStyles.headerTitle, { color: t.text }]}>{step === 5 ? 'Send Invitation' : 'Create Ride'}</Text>
+                <Text style={[createRideWizardStyles.headerTitle, { color: t.text }]}>Create Ride</Text>
               </View>
-            </View>
-
-            <View style={[createRideWizardStyles.progressTrack, { backgroundColor: t.border }]}>
-              <View style={[createRideWizardStyles.progressFill, { backgroundColor: accent, width: `${(step / 5) * 100}%` }]} />
             </View>
 
             <ScrollView
@@ -950,389 +923,346 @@ export const CreateRideModal = ({
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
-              {step >= 2 && (
-                <View style={createRideWizardStyles.summarySection}>
-                  <Text style={[createRideWizardStyles.summaryLabel, { color: t.muted }]}>Riding with others</Text>
-                  <View style={createRideWizardStyles.summaryTagRow}>
-                    <View style={[createRideWizardStyles.summaryTag, { backgroundColor: t.surface, borderColor: t.border }]}>
-                      <Text style={[createRideWizardStyles.summaryTagText, { color: t.muted }]}>Headed to:</Text>
-                      <Text style={[createRideWizardStyles.summaryTagValue, { color: accent }]} numberOfLines={1}>
-                        {summaryDestination}
-                      </Text>
-                    </View>
-                    <View style={[createRideWizardStyles.summaryTag, { backgroundColor: t.surface, borderColor: t.border }]}>
-                      <Text style={[createRideWizardStyles.summaryTagText, { color: t.muted }]}>Ride Name:</Text>
-                      <Text style={[createRideWizardStyles.summaryTagValue, { color: accent }]} numberOfLines={1}>
-                        {rideName.trim() || 'Pending'}
-                      </Text>
-                    </View>
-                  </View>
 
-                  {step >= 3 && (
-                    <View style={[createRideWizardStyles.summaryCard, { backgroundColor: t.surface, borderColor: t.border }]}>
-                      <View style={styles.rowAligned}>
-                        <MaterialCommunityIcons name="calendar-blank-outline" size={18} color={t.muted} />
-                        <Text style={[createRideWizardStyles.summaryCardMeta, { color: t.muted }]}>
-                          {dayMode === 'single' ? 'Single Day Ride' : 'Multi Day Ride'}
-                        </Text>
-                      </View>
-                      <Text style={[createRideWizardStyles.summaryCardRoute, { color: accent }]} numberOfLines={1}>
-                        {routeSummary || 'Route pending'}
-                      </Text>
-                      <Text style={[createRideWizardStyles.summaryCardDate, { color: t.text }]}>{summaryDate}</Text>
-                    </View>
-                  )}
+              {/* ── Section: Destination ── */}
+              <View style={createRideWizardStyles.stepSection}>
+                <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Destination</Text>
+
+                <View style={createRideWizardStyles.fieldBlock}>
+                  <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Primary destination*</Text>
+                  <TouchableOpacity
+                    style={[createRideWizardStyles.destinationPickerField, { borderBottomColor: t.muted }]}
+                    onPress={() => openDestinationPicker('primaryDestination')}
+                  >
+                    <Text style={[createRideWizardStyles.destinationPickerValue, { color: primaryDestination ? t.text : `${t.muted}99` }]}>
+                      {primaryDestination || 'Murthal, Haryana, India'}
+                    </Text>
+                    <MaterialCommunityIcons name="map-marker-outline" size={18} color={t.muted} />
+                  </TouchableOpacity>
                 </View>
-              )}
 
-              {step === 1 && (
-                <View style={createRideWizardStyles.stepSection}>
-                  <Text style={[createRideWizardStyles.stepMeta, { color: t.text }]}>Step 1/5: Primary Destination</Text>
-                  <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Where are you headed to?</Text>
-                  <Text style={[createRideWizardStyles.stepDescription, { color: t.muted }]}>
-                    We know your adventure might take you to multiple places, but there will be one destination that your ride gets known by.
-                  </Text>
-
-                  <View style={createRideWizardStyles.fieldBlock}>
-                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Enter primary destination of your ride*</Text>
-                    <TouchableOpacity
-                      style={[createRideWizardStyles.destinationPickerField, { borderBottomColor: t.muted }]}
-                      onPress={() => openDestinationPicker('primaryDestination')}
-                    >
-                      <Text style={[createRideWizardStyles.destinationPickerValue, { color: primaryDestination ? t.text : `${t.muted}99` }]}>
-                        {primaryDestination || 'Murthal, Haryana, India'}
-                      </Text>
-                      <MaterialCommunityIcons name="map-marker-outline" size={18} color={t.muted} />
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={createRideWizardStyles.fieldBlock}>
-                    <Text style={[createRideWizardStyles.trendingLabel, { color: t.text }]}>Trending Destinations</Text>
-                    <View style={styles.wrapRow}>
-                      {trendingDestinations.map((item) => {
-                        const isActive = item === primaryDestination;
-                        return (
-                          <TouchableOpacity
-                            key={item}
-                            style={[
-                              createRideWizardStyles.trendingChip,
-                              {
-                                borderColor: isActive ? accent : inactiveBorder,
-                                backgroundColor: isActive ? selectedBackground : t.subtle
-                              }
-                            ]}
-                            onPress={() => handleApplyPrimaryDestination(item)}
-                          >
-                            <Text style={[createRideWizardStyles.trendingChipText, { color: t.text }]}>{item}</Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
+                <View style={createRideWizardStyles.fieldBlock}>
+                  <Text style={[createRideWizardStyles.trendingLabel, { color: t.text }]}>Trending Destinations</Text>
+                  <View style={styles.wrapRow}>
+                    {trendingDestinations.map((item) => {
+                      const isActive = item === primaryDestination;
+                      return (
+                        <TouchableOpacity
+                          key={item}
+                          style={[
+                            createRideWizardStyles.trendingChip,
+                            {
+                              borderColor: isActive ? accent : inactiveBorder,
+                              backgroundColor: isActive ? selectedBackground : t.subtle
+                            }
+                          ]}
+                          onPress={() => handleApplyPrimaryDestination(item)}
+                        >
+                          <Text style={[createRideWizardStyles.trendingChipText, { color: t.text }]}>{item}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
                 </View>
-              )}
+              </View>
 
-              {step === 2 && (
-                <View style={createRideWizardStyles.stepSection}>
-                  <Text style={[createRideWizardStyles.stepMeta, { color: t.text }]}>Step 2/5: Name</Text>
-                  <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Let&apos;s give the ride a name</Text>
-                  <Text style={[createRideWizardStyles.stepDescription, { color: t.muted }]}>
-                    Best practice is to have a name that can describe the ride.
-                  </Text>
+              {/* ── Section divider ── */}
+              <View style={[createRideWizardStyles.sectionDivider, { borderBottomColor: t.border }]} />
 
-                  <View style={createRideWizardStyles.fieldBlock}>
-                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Ride Name</Text>
-                    <TextInput
-                      style={[createRideWizardStyles.lineInputLarge, { borderBottomColor: t.muted, color: t.text }]}
-                      value={rideName}
-                      onChangeText={(value) => setRideName(value.slice(0, 65))}
-                      placeholder="Ride To Murthal"
-                      placeholderTextColor={`${t.muted}99`}
-                    />
-                    <Text style={[createRideWizardStyles.charCount, { color: t.muted }]}>({65 - rideName.length})</Text>
-                  </View>
+              {/* ── Section: Ride Name ── */}
+              <View style={createRideWizardStyles.stepSection}>
+                <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Ride Name</Text>
+
+                <View style={createRideWizardStyles.fieldBlock}>
+                  <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Give the ride a name*</Text>
+                  <TextInput
+                    style={[createRideWizardStyles.lineInputLarge, { borderBottomColor: t.muted, color: t.text }]}
+                    value={rideName}
+                    onChangeText={(value) => setRideName(value.slice(0, 65))}
+                    placeholder="Ride To Murthal"
+                    placeholderTextColor={`${t.muted}99`}
+                  />
+                  <Text style={[createRideWizardStyles.charCount, { color: t.muted }]}>({65 - rideName.length})</Text>
                 </View>
-              )}
+              </View>
 
-              {step === 3 && (
-                <View style={createRideWizardStyles.stepSection}>
-                  <Text style={[createRideWizardStyles.stepMeta, { color: t.text }]}>Step 3/5: Detailed Itinerary</Text>
-                  <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Can&apos;t miss these details</Text>
+              {/* ── Section divider ── */}
+              <View style={[createRideWizardStyles.sectionDivider, { borderBottomColor: t.border }]} />
 
-                  <View style={[createRideWizardStyles.dayModeRow, { marginTop: 8 }]}>
-                    <TouchableOpacity
-                      style={[
-                        createRideWizardStyles.dayModeButton,
-                        {
-                          borderColor: dayMode === 'single' ? accent : inactiveBorder,
-                          backgroundColor: dayMode === 'single' ? selectedBackground : t.subtle
-                        }
-                      ]}
-                      onPress={() => setDayMode('single')}
-                    >
-                      <Text style={[createRideWizardStyles.dayModeText, { color: dayMode === 'single' ? accent : inactiveText }]}>Single Day</Text>
-                    </TouchableOpacity>
+              {/* ── Section: Itinerary ── */}
+              <View style={createRideWizardStyles.stepSection}>
+                <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Itinerary</Text>
 
-                    <TouchableOpacity
-                      style={[
-                        createRideWizardStyles.dayModeButton,
-                        {
-                          borderColor: dayMode === 'multi' ? accent : inactiveBorder,
-                          backgroundColor: dayMode === 'multi' ? selectedBackground : t.subtle
-                        }
-                      ]}
-                      onPress={() => setDayMode('multi')}
-                    >
-                      <Text style={[createRideWizardStyles.dayModeText, { color: dayMode === 'multi' ? accent : inactiveText }]}>Multi Day</Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={createRideWizardStyles.fieldBlock}>
-                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Date</Text>
-                    <TextInput
-                      style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, color: t.text }]}
-                      value={date}
-                      onChangeText={setDate}
-                      placeholder="Wed | Mar 4"
-                      placeholderTextColor={`${t.muted}99`}
-                    />
-                  </View>
-
-                  <View style={createRideWizardStyles.fieldBlock}>
-                    <TouchableOpacity
-                      style={[createRideWizardStyles.filledInput, createRideWizardStyles.locationPickerInput, { backgroundColor: t.surface }]}
-                      onPress={() => openRidePointPicker('rideStarts')}
-                    >
-                      <Text style={[createRideWizardStyles.locationPickerInputText, { color: rideStartsAt ? t.text : `${t.muted}99` }]}>
-                        {rideStartsAt || 'Ride starts'}
-                      </Text>
-                      <MaterialCommunityIcons name="map-marker-outline" size={18} color={t.muted} />
-                    </TouchableOpacity>
-
-                    <TextInput
-                      style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, color: t.text }]}
-                      value={ridingTo}
-                      onChangeText={setRidingTo}
-                      placeholder="Riding to"
-                      placeholderTextColor={`${t.muted}99`}
-                    />
-
-                    <TouchableOpacity
-                      style={[createRideWizardStyles.filledInput, createRideWizardStyles.locationPickerInput, { backgroundColor: t.surface }]}
-                      onPress={() => openRidePointPicker('rideEnds')}
-                    >
-                      <Text style={[createRideWizardStyles.locationPickerInputText, { color: rideEndsAt ? t.text : `${t.muted}99` }]}>
-                        {rideEndsAt || 'Ride ends'}
-                      </Text>
-                      <MaterialCommunityIcons name="map-marker-outline" size={18} color={t.muted} />
-                    </TouchableOpacity>
-                  </View>
+                <View style={[createRideWizardStyles.dayModeRow, { marginTop: 8 }]}>
+                  <TouchableOpacity
+                    style={[
+                      createRideWizardStyles.dayModeButton,
+                      {
+                        borderColor: dayMode === 'single' ? accent : inactiveBorder,
+                        backgroundColor: dayMode === 'single' ? selectedBackground : t.subtle
+                      }
+                    ]}
+                    onPress={() => setDayMode('single')}
+                  >
+                    <Text style={[createRideWizardStyles.dayModeText, { color: dayMode === 'single' ? accent : inactiveText }]}>Single Day</Text>
+                  </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[createRideWizardStyles.routeMapButton, { borderColor: t.border, backgroundColor: t.surface }]}
-                    onPress={handleOpenStopPicker}
+                    style={[
+                      createRideWizardStyles.dayModeButton,
+                      {
+                        borderColor: dayMode === 'multi' ? accent : inactiveBorder,
+                        backgroundColor: dayMode === 'multi' ? selectedBackground : t.subtle
+                      }
+                    ]}
+                    onPress={() => setDayMode('multi')}
                   >
-                    <MaterialCommunityIcons name="map-marker-path" size={18} color={accent} />
-                    <Text style={[createRideWizardStyles.routeMapButtonText, { color: accent }]}>
-                      {routePoints.length > 0 ? `Edit route on map (${routePoints.length})` : 'Add route on map'}
-                    </Text>
+                    <Text style={[createRideWizardStyles.dayModeText, { color: dayMode === 'multi' ? accent : inactiveText }]}>Multi Day</Text>
                   </TouchableOpacity>
-                  <View style={createRideWizardStyles.timelineGrid}>
-                    <TextInput
-                      style={[createRideWizardStyles.timeTileInput, { backgroundColor: t.surface, color: t.text }]}
-                      value={assemblyTime}
-                      onChangeText={setAssemblyTime}
-                      placeholder="Assembly time"
-                      placeholderTextColor={`${t.muted}99`}
-                    />
-                    <TextInput
-                      style={[createRideWizardStyles.timeTileInput, { backgroundColor: t.surface, color: t.text }]}
-                      value={flagOffTime}
-                      onChangeText={setFlagOffTime}
-                      placeholder="Flag off time"
-                      placeholderTextColor={`${t.muted}99`}
-                    />
-                    <TextInput
-                      style={[createRideWizardStyles.timeTileInput, { backgroundColor: t.surface, color: t.text }]}
-                      value={rideDuration}
-                      onChangeText={setRideDuration}
-                      placeholder="Ride duration"
-                      placeholderTextColor={`${t.muted}99`}
-                    />
+                </View>
+
+                <View style={createRideWizardStyles.fieldBlock}>
+                  <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Date*</Text>
+                  <TextInput
+                    style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, color: t.text }]}
+                    value={date}
+                    onChangeText={setDate}
+                    placeholder="Wed | Mar 4"
+                    placeholderTextColor={`${t.muted}99`}
+                  />
+                </View>
+
+                <View style={createRideWizardStyles.fieldBlock}>
+                  <TouchableOpacity
+                    style={[createRideWizardStyles.filledInput, createRideWizardStyles.locationPickerInput, { backgroundColor: t.surface }]}
+                    onPress={() => openRidePointPicker('rideStarts')}
+                  >
+                    <Text style={[createRideWizardStyles.locationPickerInputText, { color: rideStartsAt ? t.text : `${t.muted}99` }]}>
+                      {rideStartsAt || 'Ride starts*'}
+                    </Text>
+                    <MaterialCommunityIcons name="map-marker-outline" size={18} color={t.muted} />
+                  </TouchableOpacity>
+
+                  <TextInput
+                    style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, color: t.text }]}
+                    value={ridingTo}
+                    onChangeText={setRidingTo}
+                    placeholder="Riding to*"
+                    placeholderTextColor={`${t.muted}99`}
+                  />
+
+                  <TouchableOpacity
+                    style={[createRideWizardStyles.filledInput, createRideWizardStyles.locationPickerInput, { backgroundColor: t.surface }]}
+                    onPress={() => openRidePointPicker('rideEnds')}
+                  >
+                    <Text style={[createRideWizardStyles.locationPickerInputText, { color: rideEndsAt ? t.text : `${t.muted}99` }]}>
+                      {rideEndsAt || 'Ride ends*'}
+                    </Text>
+                    <MaterialCommunityIcons name="map-marker-outline" size={18} color={t.muted} />
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity
+                  style={[createRideWizardStyles.routeMapButton, { borderColor: t.border, backgroundColor: t.surface }]}
+                  onPress={handleOpenStopPicker}
+                >
+                  <MaterialCommunityIcons name="map-marker-path" size={18} color={accent} />
+                  <Text style={[createRideWizardStyles.routeMapButtonText, { color: accent }]}>
+                    {routePoints.length > 0 ? `Edit route on map (${routePoints.length})` : 'Add route on map'}
+                  </Text>
+                </TouchableOpacity>
+
+                <View style={createRideWizardStyles.timelineGrid}>
+                  <TextInput
+                    style={[createRideWizardStyles.timeTileInput, { backgroundColor: t.surface, color: t.text }]}
+                    value={assemblyTime}
+                    onChangeText={setAssemblyTime}
+                    placeholder="Assembly*"
+                    placeholderTextColor={`${t.muted}99`}
+                  />
+                  <TextInput
+                    style={[createRideWizardStyles.timeTileInput, { backgroundColor: t.surface, color: t.text }]}
+                    value={flagOffTime}
+                    onChangeText={setFlagOffTime}
+                    placeholder="Flag off*"
+                    placeholderTextColor={`${t.muted}99`}
+                  />
+                  <TextInput
+                    style={[createRideWizardStyles.timeTileInput, { backgroundColor: t.surface, color: t.text }]}
+                    value={rideDuration}
+                    onChangeText={setRideDuration}
+                    placeholder="Duration"
+                    placeholderTextColor={`${t.muted}99`}
+                  />
+                </View>
+              </View>
+
+              {/* ── Section divider ── */}
+              <View style={[createRideWizardStyles.sectionDivider, { borderBottomColor: t.border }]} />
+
+              {/* ── Section: Cost & Extras ── */}
+              <View style={createRideWizardStyles.stepSection}>
+                <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Cost & Extras</Text>
+
+                <View style={[createRideWizardStyles.fieldBlock, { marginTop: 8 }]}>
+                  <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Is this ride free?</Text>
+                  <View style={createRideWizardStyles.costRow}>
+                    {(['Paid', 'Split', 'Free'] as RideCostOption[]).map((option) => {
+                      const isActive = costOption === option;
+                      return (
+                        <TouchableOpacity
+                          key={option}
+                          style={[
+                            createRideWizardStyles.costButton,
+                            {
+                              borderColor: isActive ? accent : inactiveBorder,
+                              backgroundColor: isActive ? selectedBackground : t.subtle
+                            }
+                          ]}
+                          onPress={() => setCostOption(option)}
+                        >
+                          <Text style={[createRideWizardStyles.costButtonText, { color: isActive ? accent : t.text }]}>{option}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
                 </View>
-              )}
 
-              {step === 4 && (
-                <View style={createRideWizardStyles.stepSection}>
-                  <Text style={[createRideWizardStyles.stepMeta, { color: t.text }]}>Step 4/5: Details</Text>
-                  <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Before we invite others:</Text>
+                {costOption === 'Paid' && (
+                  <View style={createRideWizardStyles.fieldBlock}>
+                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>How much per person:</Text>
+                    <TextInput
+                      style={[createRideWizardStyles.lineInput, { borderBottomColor: t.muted, color: t.text }]}
+                      value={pricePerPerson}
+                      onChangeText={(value) => setPricePerPerson(value.replace(/[^\d]/g, '').slice(0, 5))}
+                      placeholder="Enter amount"
+                      placeholderTextColor={`${t.muted}99`}
+                      keyboardType="number-pad"
+                    />
 
-                  <View style={[createRideWizardStyles.fieldBlock, { marginTop: 8 }]}>
-                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Is this ride free?</Text>
-                    <View style={createRideWizardStyles.costRow}>
-                      {(['Paid', 'Split', 'Free'] as RideCostOption[]).map((option) => {
-                        const isActive = costOption === option;
+                    <Text style={[createRideWizardStyles.inclusionHeader, { color: t.text }]}>
+                      Inclusions: {inclusions.length} selected
+                    </Text>
+                    <View style={styles.wrapRow}>
+                      {inclusionOptions.map((option) => {
+                        const isSelected = inclusions.includes(option);
+                        const iconName =
+                          option === 'Drinks' ? 'glass-cocktail' : option === 'Breakfast' ? 'coffee' : 'silverware-fork-knife';
                         return (
                           <TouchableOpacity
                             key={option}
                             style={[
-                              createRideWizardStyles.costButton,
+                              createRideWizardStyles.inclusionChip,
                               {
-                                borderColor: isActive ? accent : inactiveBorder,
-                                backgroundColor: isActive ? selectedBackground : t.subtle
+                                borderColor: isSelected ? accent : inactiveBorder,
+                                backgroundColor: isSelected ? selectedBackground : t.subtle
                               }
                             ]}
-                            onPress={() => setCostOption(option)}
+                            onPress={() => toggleInclusion(option)}
                           >
-                            <Text style={[createRideWizardStyles.costButtonText, { color: isActive ? accent : t.text }]}>{option}</Text>
+                            <MaterialCommunityIcons name={iconName} size={20} color={t.text} />
+                            <Text style={[createRideWizardStyles.inclusionChipText, { color: t.text }]}>{option}</Text>
                           </TouchableOpacity>
                         );
                       })}
                     </View>
                   </View>
+                )}
 
-                  {costOption === 'Paid' && (
+                <View style={createRideWizardStyles.fieldBlock}>
+                  <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Ride Note</Text>
+                  <TextInput
+                    style={[createRideWizardStyles.rideNoteInput, { borderColor: t.muted, color: t.text }]}
+                    value={rideNote}
+                    onChangeText={(value) => setRideNote(value.slice(0, 700))}
+                    placeholder="Add ride rules and safety notes"
+                    placeholderTextColor={`${t.muted}99`}
+                    multiline
+                  />
+                  <Text style={[createRideWizardStyles.charCount, { color: t.muted }]}>({rideNote.length})</Text>
+                </View>
+              </View>
+
+              {/* ── Section divider ── */}
+              <View style={[createRideWizardStyles.sectionDivider, { borderBottomColor: t.border }]} />
+
+              {/* ── Section: Preferences ── */}
+              <View style={createRideWizardStyles.stepSection}>
+                <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Preferences</Text>
+
+                <View style={createRideWizardStyles.inviteModeRow}>
+                  <TouchableOpacity
+                    style={[
+                      createRideWizardStyles.inviteModeButton,
+                      {
+                        borderColor: inviteAudience === 'groups' ? accent : inactiveBorder,
+                        backgroundColor: inviteAudience === 'groups' ? selectedBackground : t.subtle
+                      }
+                    ]}
+                    onPress={() => setInviteAudience('groups')}
+                  >
+                    <Text style={[createRideWizardStyles.inviteModeText, { color: inviteAudience === 'groups' ? accent : inactiveText }]}>Groups</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      createRideWizardStyles.inviteModeButton,
+                      {
+                        borderColor: inviteAudience === 'riders' ? accent : inactiveBorder,
+                        backgroundColor: inviteAudience === 'riders' ? selectedBackground : t.subtle
+                      }
+                    ]}
+                    onPress={() => setInviteAudience('riders')}
+                  >
+                    <Text style={[createRideWizardStyles.inviteModeText, { color: inviteAudience === 'riders' ? accent : inactiveText }]}>Riders</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={[createRideWizardStyles.preferenceCard, { borderTopColor: t.border }]}>
+                  <View style={createRideWizardStyles.preferenceRow}>
+                    <View style={styles.flex1}>
+                      <Text style={[createRideWizardStyles.preferenceTitle, { color: t.text }]}>Make ride private</Text>
+                      <Text style={[createRideWizardStyles.preferenceText, { color: t.text }]}>
+                        Riders outside your group cannot request to join.
+                      </Text>
+                    </View>
+                    <Switch
+                      value={isPrivateRide}
+                      onValueChange={setIsPrivateRide}
+                      trackColor={{ false: inactiveBorder, true: `${accent}77` }}
+                      thumbColor={isPrivateRide ? accent : switchThumbOff}
+                    />
+                  </View>
+
+                  <View style={createRideWizardStyles.preferenceRow}>
+                    <View style={styles.flex1}>
+                      <Text style={[createRideWizardStyles.preferenceTitle, { color: t.text }]}>Limit number of riders</Text>
+                      <Text style={[createRideWizardStyles.preferenceText, { color: t.text }]}>
+                        Set a threshold to ensure ride safety.
+                      </Text>
+                    </View>
+                    <Switch
+                      value={hasRiderLimit}
+                      onValueChange={setHasRiderLimit}
+                      trackColor={{ false: inactiveBorder, true: `${accent}77` }}
+                      thumbColor={hasRiderLimit ? accent : switchThumbOff}
+                    />
+                  </View>
+
+                  {hasRiderLimit && (
                     <View style={createRideWizardStyles.fieldBlock}>
-                      <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>How much will you charge per person:</Text>
+                      <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Maximum riders</Text>
                       <TextInput
-                        style={[createRideWizardStyles.lineInput, { borderBottomColor: t.muted, color: t.text }]}
-                        value={pricePerPerson}
-                        onChangeText={(value) => setPricePerPerson(value.replace(/[^\d]/g, '').slice(0, 5))}
-                        placeholder="Enter amount"
+                        style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, color: t.text }]}
+                        value={maxParticipants}
+                        onChangeText={(value) => setMaxParticipants(value.replace(/[^\d]/g, '').slice(0, 2))}
+                        placeholder="5"
                         placeholderTextColor={`${t.muted}99`}
                         keyboardType="number-pad"
                       />
-
-                      <Text style={[createRideWizardStyles.inclusionHeader, { color: t.text }]}>
-                        What all is included: {inclusions.length} selected inclusions
-                      </Text>
-                      <View style={styles.wrapRow}>
-                        {inclusionOptions.map((option) => {
-                          const isSelected = inclusions.includes(option);
-                          const iconName =
-                            option === 'Drinks' ? 'glass-cocktail' : option === 'Breakfast' ? 'coffee' : 'silverware-fork-knife';
-                          return (
-                            <TouchableOpacity
-                              key={option}
-                              style={[
-                                createRideWizardStyles.inclusionChip,
-                                {
-                                  borderColor: isSelected ? accent : inactiveBorder,
-                                  backgroundColor: isSelected ? selectedBackground : t.subtle
-                                }
-                              ]}
-                              onPress={() => toggleInclusion(option)}
-                            >
-                              <MaterialCommunityIcons name={iconName} size={20} color={t.text} />
-                              <Text style={[createRideWizardStyles.inclusionChipText, { color: t.text }]}>{option}</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
                     </View>
                   )}
-
-                  <View style={createRideWizardStyles.fieldBlock}>
-                    <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Ride Note</Text>
-                    <TextInput
-                      style={[createRideWizardStyles.rideNoteInput, { borderColor: t.muted, color: t.text }]}
-                      value={rideNote}
-                      onChangeText={(value) => setRideNote(value.slice(0, 700))}
-                      placeholder="Add ride rules and safety notes"
-                      placeholderTextColor={`${t.muted}99`}
-                      multiline
-                    />
-                    <Text style={[createRideWizardStyles.charCount, { color: t.muted }]}>({rideNote.length})</Text>
-                  </View>
                 </View>
-              )}
-
-              {step === 5 && (
-                <View style={createRideWizardStyles.stepSection}>
-                  <Text style={[createRideWizardStyles.stepMeta, { color: t.text }]}>Step 5/5: Invite</Text>
-                  <Text style={[createRideWizardStyles.stepTitle, { color: accent }]}>Let&apos;s make this official:</Text>
-
-                  <View style={createRideWizardStyles.inviteModeRow}>
-                    <TouchableOpacity
-                      style={[
-                        createRideWizardStyles.inviteModeButton,
-                        {
-                          borderColor: inviteAudience === 'groups' ? accent : inactiveBorder,
-                          backgroundColor: inviteAudience === 'groups' ? selectedBackground : t.subtle
-                        }
-                      ]}
-                      onPress={() => setInviteAudience('groups')}
-                    >
-                      <Text style={[createRideWizardStyles.inviteModeText, { color: inviteAudience === 'groups' ? accent : inactiveText }]}>Groups</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[
-                        createRideWizardStyles.inviteModeButton,
-                        {
-                          borderColor: inviteAudience === 'riders' ? accent : inactiveBorder,
-                          backgroundColor: inviteAudience === 'riders' ? selectedBackground : t.subtle
-                        }
-                      ]}
-                      onPress={() => setInviteAudience('riders')}
-                    >
-                      <Text style={[createRideWizardStyles.inviteModeText, { color: inviteAudience === 'riders' ? accent : inactiveText }]}>Riders</Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  <Text style={[createRideWizardStyles.emptyInviteState, { color: t.muted }]}>
-                    {inviteAudience === 'groups'
-                      ? 'You are not a part of any groups as of now. When you join groups they will show up here.'
-                      : 'No riders selected yet. You can invite riders once this ride is created.'}
-                  </Text>
-
-                  <View style={[createRideWizardStyles.preferenceCard, { borderTopColor: t.border }]}>
-                    <View style={createRideWizardStyles.preferenceRow}>
-                      <View style={styles.flex1}>
-                        <Text style={[createRideWizardStyles.preferenceTitle, { color: t.text }]}>Make ride private</Text>
-                        <Text style={[createRideWizardStyles.preferenceText, { color: t.text }]}>
-                          If you make ride private, riders outside your group cannot send you a request to join this ride.
-                        </Text>
-                      </View>
-                      <Switch
-                        value={isPrivateRide}
-                        onValueChange={setIsPrivateRide}
-                        trackColor={{ false: inactiveBorder, true: `${accent}77` }}
-                        thumbColor={isPrivateRide ? accent : switchThumbOff}
-                      />
-                    </View>
-
-                    <View style={createRideWizardStyles.preferenceRow}>
-                      <View style={styles.flex1}>
-                        <Text style={[createRideWizardStyles.preferenceTitle, { color: t.text }]}>Limit number of riders</Text>
-                        <Text style={[createRideWizardStyles.preferenceText, { color: t.text }]}>
-                          It is always good to set a threshold to ensure the ride&apos;s safety.
-                        </Text>
-                      </View>
-                      <Switch
-                        value={hasRiderLimit}
-                        onValueChange={setHasRiderLimit}
-                        trackColor={{ false: inactiveBorder, true: `${accent}77` }}
-                        thumbColor={hasRiderLimit ? accent : switchThumbOff}
-                      />
-                    </View>
-
-                    {hasRiderLimit && (
-                      <View style={createRideWizardStyles.fieldBlock}>
-                        <Text style={[createRideWizardStyles.fieldLabel, { color: t.text }]}>Maximum riders</Text>
-                        <TextInput
-                          style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, color: t.text }]}
-                          value={maxParticipants}
-                          onChangeText={(value) => setMaxParticipants(value.replace(/[^\d]/g, '').slice(0, 2))}
-                          placeholder="5"
-                          placeholderTextColor={`${t.muted}99`}
-                          keyboardType="number-pad"
-                        />
-                      </View>
-                    )}
-                  </View>
-                </View>
-              )}
+              </View>
             </ScrollView>
 
             <View
@@ -1349,13 +1279,13 @@ export const CreateRideModal = ({
                 style={[
                   createRideWizardStyles.nextButton,
                   {
-                    backgroundColor: canContinue ? accent : inactiveButtonBackground
+                    backgroundColor: canSubmit ? accent : inactiveButtonBackground
                   }
                 ]}
-                onPress={handleStepContinue}
-                disabled={!canContinue}
+                onPress={submit}
+                disabled={!canSubmit}
               >
-                <Text style={createRideWizardStyles.nextButtonText}>{step === 5 ? 'Preview' : 'Next'}</Text>
+                <Text style={createRideWizardStyles.nextButtonText}>Launch Ride</Text>
               </TouchableOpacity>
             </View>
           </KeyboardAvoidingView>
@@ -1629,6 +1559,10 @@ export const CreateRideModal = ({
 };
 
 const createRideWizardStyles = StyleSheet.create({
+  sectionDivider: {
+    borderBottomWidth: 1,
+    marginVertical: 4
+  },
   headerBackButton: {
     width: 38,
     height: 38,

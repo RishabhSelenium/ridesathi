@@ -62,6 +62,7 @@ cp .env.example .env
 
 ### 2. Enable products in Firebase Console
 
+- Authentication: Email/Password
 - Authentication: Phone
 - Cloud Firestore
 - Realtime Database
@@ -77,18 +78,29 @@ Phone auth is native-only via `@react-native-firebase/auth` (Android dev build/A
 - If Firebase is not configured correctly, OTP will fail instead of switching to prototype mode.
 - User phone number is stored in Firestore `users/{uid}` as `phoneNumber`.
 
-### 4. News feed note
+### 4. Beta default OTP mode (for closed testing)
+
+This build supports beta login with a shared OTP and stable identity per phone number.
+
+- `EXPO_PUBLIC_BETA_MODE=true`
+- `EXPO_PUBLIC_BETA_DEFAULT_OTP=1234`
+- `EXPO_PUBLIC_BETA_ALLOWED_PHONES=` (comma-separated E.164 values, optional)
+- `EXPO_PUBLIC_BETA_AUTH_PASSWORD=ridesathi-beta` (must be at least 6 chars)
+
+When beta mode is enabled, login uses Firebase Email/Password under the hood with a deterministic account per phone number.
+
+### 5. News feed note
 
 - News tab fetches latest articles from external RSS feeds (motorcycle/bike + MotoGP topics).
 - Feed auto-refreshes on app launch, whenever News tab opens, and every 15 minutes while app is running.
 - If network fails, the app keeps showing cached news from AsyncStorage (or mock fallback on first run).
 
-### 5. Security rules (versioned)
+### 6. Security rules (versioned)
 
 This repo now versions Firebase security rules:
 
-- Firestore: `firestore.rules`
-- Realtime Database: `database.rules.json`
+- Firestore: `backend/firebase/firestore.rules`
+- Realtime Database: `backend/firebase/database.rules.json`
 - Firebase config mapping: `firebase.json`
 
 Deploy only security rules:

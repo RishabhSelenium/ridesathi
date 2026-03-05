@@ -71,7 +71,7 @@ import {
   Squad,
   User
 } from './src/types';
-import { signOutFirebase, subscribeToAuthState } from './src/firebase/auth';
+import { signInWithBetaPhoneIdentity, signOutFirebase, subscribeToAuthState } from './src/firebase/auth';
 import { sendChatMessageToRealtime, subscribeChatMessages } from './src/firebase/chat';
 import { getFirebaseServices, isFirebaseConfigured } from './src/firebase/client';
 import {
@@ -105,6 +105,18 @@ const STORAGE_KEYS = {
   locationMode: 'ridesathi.locationMode',
   moderationReports: 'ridesathi.moderationReports'
 } as const;
+
+const SESSION_STORAGE_KEYS = [
+  STORAGE_KEYS.currentUser,
+  STORAGE_KEYS.users,
+  STORAGE_KEYS.notifications,
+  STORAGE_KEYS.rides,
+  STORAGE_KEYS.helpPosts,
+  STORAGE_KEYS.conversations,
+  STORAGE_KEYS.squads,
+  STORAGE_KEYS.locationMode,
+  STORAGE_KEYS.moderationReports
+];
 
 type RootStackParamList = {
   Splash: undefined;
@@ -146,6 +158,42 @@ const CHAT_BURST_MAX_MESSAGES = 6;
 const CHAT_MIN_INTERVAL_MS = 700;
 const CHAT_DUPLICATE_COOLDOWN_MS = 6 * 1000;
 const CHAT_MESSAGE_MAX_LENGTH = 500;
+
+const isEnabledFlag = (value: string | undefined, fallback = false): boolean => {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+};
+
+const normalizePhoneToE164 = (value: string): string => {
+  const digits = value.replace(/\D/g, '');
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
+  if (value.trim().startsWith('+') && digits.length >= 10) return `+${digits}`;
+  return '';
+};
+
+const parseBetaAllowedPhones = (value: string | undefined): string[] => {
+  if (typeof value !== 'string' || value.trim().length === 0) return [];
+
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  value
+    .split(/[,\n]/)
+    .map((item) => normalizePhoneToE164(item.trim()))
+    .filter((item) => item.length > 0)
+    .forEach((item) => {
+      if (seen.has(item)) return;
+      seen.add(item);
+      normalized.push(item);
+    });
+
+  return normalized;
+};
+
+const BETA_MODE_ENABLED = isEnabledFlag(process.env.EXPO_PUBLIC_BETA_MODE, true);
+const BETA_DEFAULT_OTP = (process.env.EXPO_PUBLIC_BETA_DEFAULT_OTP ?? '1234').trim() || '1234';
+const BETA_ALLOWED_PHONES = parseBetaAllowedPhones(process.env.EXPO_PUBLIC_BETA_ALLOWED_PHONES);
 
 const pruneTimestamps = (timestamps: number[], now: number, windowMs: number): number[] =>
   timestamps.filter((timestamp) => now - timestamp < windowMs);
@@ -345,6 +393,97 @@ const AppShell = () => {
   const [chatSyncRetryToken, setChatSyncRetryToken] = useState(0);
   const [activeNewsArticleUrl, setActiveNewsArticleUrl] = useState<string | null>(null);
 
+  const clearPersistedSessionStorage = useCallback(async () => {
+    try {
+      await AsyncStorage.multiRemove(SESSION_STORAGE_KEYS);
+    } catch {
+      // ignore persistence cleanup errors
+    }
+  }, []);
+
+  const resetSessionState = useCallback(() => {
+    setCurrentUser(MOCK_CURRENT_USER);
+    setUsers(MOCK_USERS);
+    setNotifications(MOCK_NOTIFICATIONS);
+    setRides(MOCK_RIDES);
+    setHelpPosts(MOCK_HELP);
+    setConversations(MOCK_CONVERSATIONS);
+    setSquads(MOCK_SQUADS);
+    setLocationMode('auto');
+    setLocationPermissionStatus('undetermined');
+    setNotificationPermissionStatus('undetermined');
+    setIsDetectingLocation(false);
+    setIsNotificationsOpen(false);
+    setIsLocationModalOpen(false);
+    setManualCityInput('');
+    setIsCreateMenuOpen(false);
+    setIsCreateRideModalOpen(false);
+    setIsCreateHelpModalOpen(false);
+    setIsEditProfileOpen(false);
+    setIsRideDetailOpen(false);
+    setSelectedRideId(null);
+    setIsHelpDetailOpen(false);
+    setSelectedHelpPost(null);
+    setActiveConversation(null);
+    setSelectedUserId(null);
+    setIsCreateSquadModalOpen(false);
+    setSelectedSquadId(null);
+    setSquadSearchQuery('');
+    setFeedFilter('rides');
+    setActiveTab('feed');
+    setSyncState(INITIAL_SYNC_STATE);
+    setChatSyncRetryToken(0);
+    setActiveNewsArticleUrl(null);
+
+    lastSyncedUsersRef.current = null;
+    friendRequestTimestampsRef.current = [];
+    friendRequestCooldownByUserRef.current = new Map();
+    helpReplyTimestampsRef.current = [];
+    helpReplyMetaByPostRef.current = new Map();
+    chatTimestampsByConversationRef.current = new Map();
+    chatLastMessageByConversationRef.current = new Map();
+    lastGuardrailNotificationRef.current = null;
+  }, [
+    setActiveConversation,
+    setActiveNewsArticleUrl,
+    setActiveTab,
+    setChatSyncRetryToken,
+    setConversations,
+    setCurrentUser,
+    setFeedFilter,
+    setHelpPosts,
+    setIsCreateHelpModalOpen,
+    setIsCreateMenuOpen,
+    setIsCreateRideModalOpen,
+    setIsCreateSquadModalOpen,
+    setIsDetectingLocation,
+    setIsEditProfileOpen,
+    setIsHelpDetailOpen,
+    setIsLocationModalOpen,
+    setIsNotificationsOpen,
+    setIsRideDetailOpen,
+    setLocationMode,
+    setLocationPermissionStatus,
+    setManualCityInput,
+    setNotificationPermissionStatus,
+    setNotifications,
+    setRides,
+    setSelectedHelpPost,
+    setSelectedRideId,
+    setSelectedSquadId,
+    setSelectedUserId,
+    setSquadSearchQuery,
+    setSquads,
+    setSyncState,
+    setUsers
+  ]);
+
+  const clearSession = useCallback(() => {
+    setIsLoggedIn(false);
+    resetSessionState();
+    void clearPersistedSessionStorage();
+  }, [clearPersistedSessionStorage, resetSessionState, setIsLoggedIn]);
+
   const startSync = useCallback((channel: SyncChannel) => {
     setSyncState((prev) => ({
       ...prev,
@@ -459,8 +598,10 @@ const AppShell = () => {
   const applyAuthenticatedSession = useCallback(
     async (payload: { uid: string; phoneNumber?: string }) => {
       let remoteUser: User | null = null;
+      const authUser = FIREBASE_ENABLED ? getFirebaseServices()?.auth.currentUser ?? null : null;
+      const canSyncCloud = FIREBASE_ENABLED && Boolean(authUser);
 
-      if (FIREBASE_ENABLED) {
+      if (canSyncCloud) {
         try {
           remoteUser = await fetchUserByIdFromFirestore(payload.uid);
         } catch {
@@ -474,8 +615,55 @@ const AppShell = () => {
       });
       setUsers((prev) => prev.filter((user) => user.id !== payload.uid));
       setIsLoggedIn(true);
+
+      if (!canSyncCloud) {
+        return;
+      }
+
+      startSync('rides');
+      startSync('help');
+
+      const [remoteUsersResult, remoteRidesResult, remoteHelpPostsResult, remoteSquadsResult] = await Promise.allSettled([
+        fetchUsersFromFirestore(),
+        fetchRidesFromFirestore(),
+        fetchHelpPostsFromFirestore(),
+        fetchSquadsFromFirestore()
+      ]);
+
+      if (remoteUsersResult.status === 'fulfilled' && remoteUsersResult.value.length > 0) {
+        const me = remoteUsersResult.value.find((user) => user.id === payload.uid);
+        if (me) {
+          setCurrentUser((prev) => ({
+            ...prev,
+            ...me,
+            friendRequests: {
+              ...prev.friendRequests,
+              ...me.friendRequests
+            }
+          }));
+        }
+        setUsers(remoteUsersResult.value.filter((user) => user.id !== payload.uid));
+      }
+
+      if (remoteRidesResult.status === 'fulfilled') {
+        setRides(normalizeRides(remoteRidesResult.value));
+        markSyncSuccess('rides');
+      } else {
+        markSyncFailure('rides', remoteRidesResult.reason);
+      }
+
+      if (remoteHelpPostsResult.status === 'fulfilled') {
+        setHelpPosts(remoteHelpPostsResult.value);
+        markSyncSuccess('help');
+      } else {
+        markSyncFailure('help', remoteHelpPostsResult.reason);
+      }
+
+      if (remoteSquadsResult.status === 'fulfilled' && remoteSquadsResult.value.length > 0) {
+        setSquads(remoteSquadsResult.value);
+      }
     },
-    [setCurrentUser, setUsers, setIsLoggedIn]
+    [markSyncFailure, markSyncSuccess, setCurrentUser, setHelpPosts, setIsLoggedIn, setRides, setSquads, setUsers, startSync]
   );
 
   useEffect(() => {
@@ -498,13 +686,16 @@ const AppShell = () => {
 
         const nextCurrentUser = await getCurrentUserFromStorage();
         const authUser = FIREBASE_ENABLED ? getFirebaseServices()?.auth.currentUser ?? null : null;
+        const hasAuthenticatedSession = FIREBASE_ENABLED ? Boolean(authUser) : true;
         const effectiveCurrentUser = authUser
           ? buildAuthenticatedUser(
             authUser.uid,
             authUser.phoneNumber ?? undefined,
             nextCurrentUser.id === authUser.uid ? nextCurrentUser : undefined
           )
-          : nextCurrentUser;
+          : hasAuthenticatedSession
+            ? nextCurrentUser
+            : MOCK_CURRENT_USER;
 
         if (!mounted) return;
 
@@ -513,16 +704,20 @@ const AppShell = () => {
         if (authUser) {
           setIsLoggedIn(true);
         }
-        setUsers(safeParse<User[]>(savedUsers, MOCK_USERS));
-        setNotifications(safeParse<Notification[]>(savedNotifications, MOCK_NOTIFICATIONS));
-        setRides(normalizeRides(safeParse<RidePost[]>(savedRides, MOCK_RIDES)));
-        setHelpPosts(safeParse<HelpPost[]>(savedHelpPosts, MOCK_HELP));
-        setConversations(safeParse<Conversation[]>(savedConversations, MOCK_CONVERSATIONS));
+        setUsers(hasAuthenticatedSession ? safeParse<User[]>(savedUsers, MOCK_USERS) : MOCK_USERS);
+        setNotifications(hasAuthenticatedSession ? safeParse<Notification[]>(savedNotifications, MOCK_NOTIFICATIONS) : MOCK_NOTIFICATIONS);
+        setRides(hasAuthenticatedSession ? normalizeRides(safeParse<RidePost[]>(savedRides, MOCK_RIDES)) : MOCK_RIDES);
+        setHelpPosts(hasAuthenticatedSession ? safeParse<HelpPost[]>(savedHelpPosts, MOCK_HELP) : MOCK_HELP);
+        setConversations(hasAuthenticatedSession ? safeParse<Conversation[]>(savedConversations, MOCK_CONVERSATIONS) : MOCK_CONVERSATIONS);
         setNewsArticles(safeParse<NewsArticle[]>(savedNews, MOCK_NEWS));
-        setSquads(safeParse<Squad[]>(savedSquads, MOCK_SQUADS));
-        setLocationMode(safeParse<LocationMode>(savedLocationMode, 'auto'));
+        setSquads(hasAuthenticatedSession ? safeParse<Squad[]>(savedSquads, MOCK_SQUADS) : MOCK_SQUADS);
+        setLocationMode(hasAuthenticatedSession ? safeParse<LocationMode>(savedLocationMode, 'auto') : 'auto');
 
-        if (FIREBASE_ENABLED) {
+        if (FIREBASE_ENABLED && !hasAuthenticatedSession) {
+          void clearPersistedSessionStorage();
+        }
+
+        if (FIREBASE_ENABLED && hasAuthenticatedSession) {
           startSync('rides');
           startSync('help');
 
@@ -587,7 +782,7 @@ const AppShell = () => {
     if (!FIREBASE_ENABLED) return;
     const unsubscribe = subscribeToAuthState((user) => {
       if (!user) {
-        setIsLoggedIn(false);
+        clearSession();
         return;
       }
 
@@ -597,7 +792,7 @@ const AppShell = () => {
       });
     });
     return unsubscribe;
-  }, [applyAuthenticatedSession, setIsLoggedIn]);
+  }, [applyAuthenticatedSession, clearSession]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -605,22 +800,22 @@ const AppShell = () => {
   }, [hydrated, theme]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !isLoggedIn) return;
     saveToStorage(STORAGE_KEYS.currentUser, currentUser);
-  }, [hydrated, currentUser]);
+  }, [hydrated, isLoggedIn, currentUser]);
 
   useEffect(() => {
-    if (!hydrated || !FIREBASE_ENABLED) return;
+    if (!hydrated || !isLoggedIn || !FIREBASE_ENABLED) return;
     void upsertUserInFirestore(currentUser);
-  }, [hydrated, currentUser]);
+  }, [hydrated, isLoggedIn, currentUser]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !isLoggedIn) return;
     saveToStorage(STORAGE_KEYS.users, users);
-  }, [hydrated, users]);
+  }, [hydrated, isLoggedIn, users]);
 
   useEffect(() => {
-    if (!hydrated || !FIREBASE_ENABLED) return;
+    if (!hydrated || !isLoggedIn || !FIREBASE_ENABLED) return;
 
     const nextSignatures = new Map<string, string>();
     users.forEach((user) => {
@@ -640,27 +835,27 @@ const AppShell = () => {
     });
 
     lastSyncedUsersRef.current = nextSignatures;
-  }, [hydrated, users]);
+  }, [hydrated, isLoggedIn, users]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !isLoggedIn) return;
     saveToStorage(STORAGE_KEYS.notifications, notifications);
-  }, [hydrated, notifications]);
+  }, [hydrated, isLoggedIn, notifications]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !isLoggedIn) return;
     saveToStorage(STORAGE_KEYS.rides, rides);
-  }, [hydrated, rides]);
+  }, [hydrated, isLoggedIn, rides]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !isLoggedIn) return;
     saveToStorage(STORAGE_KEYS.helpPosts, helpPosts);
-  }, [hydrated, helpPosts]);
+  }, [hydrated, isLoggedIn, helpPosts]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !isLoggedIn) return;
     saveToStorage(STORAGE_KEYS.conversations, conversations);
-  }, [hydrated, conversations]);
+  }, [hydrated, isLoggedIn, conversations]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -693,14 +888,14 @@ const AppShell = () => {
   }, [hydrated, activeTab, refreshNewsFeed]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !isLoggedIn) return;
     saveToStorage(STORAGE_KEYS.squads, squads);
-  }, [hydrated, squads]);
+  }, [hydrated, isLoggedIn, squads]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !isLoggedIn) return;
     saveToStorage(STORAGE_KEYS.locationMode, locationMode);
-  }, [hydrated, locationMode]);
+  }, [hydrated, isLoggedIn, locationMode]);
 
   const usersById = useMemo(() => {
     const byId = new Map<string, User>();
@@ -1840,15 +2035,15 @@ const AppShell = () => {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     if (FIREBASE_ENABLED) {
-      void signOutFirebase();
+      try {
+        await signOutFirebase();
+      } catch {
+        // ignore sign-out errors and still clear local session state
+      }
     }
-    setIsLoggedIn(false);
-    setActiveTab('feed');
-    setIsCreateMenuOpen(false);
-    setActiveConversation(null);
-    setSelectedUserId(null);
+    clearSession();
   };
 
   if (!hydrated) {
@@ -2213,13 +2408,28 @@ const AppShell = () => {
           {({ navigation }) => (
             <LoginScreen
               onLogin={async (payload: LoginPayload) => {
-                if (payload.uid) {
+                const normalizedPhone = normalizePhoneToE164(payload.phoneNumber);
+                if (!normalizedPhone) {
+                  throw new Error('Please enter a valid phone number.');
+                }
+
+                if (BETA_MODE_ENABLED) {
+                  if (BETA_ALLOWED_PHONES.length > 0 && !BETA_ALLOWED_PHONES.includes(normalizedPhone)) {
+                    throw new Error('This number is not enabled for this beta build.');
+                  }
+
+                  const betaUser = await signInWithBetaPhoneIdentity(normalizedPhone);
+                  await applyAuthenticatedSession({
+                    uid: betaUser.uid,
+                    phoneNumber: normalizedPhone
+                  });
+                } else if (payload.uid) {
                   await applyAuthenticatedSession({
                     uid: payload.uid,
-                    phoneNumber: payload.phoneNumber
+                    phoneNumber: normalizedPhone
                   });
                 } else {
-                  setCurrentUser((prev) => ({ ...prev, phoneNumber: payload.phoneNumber || prev.phoneNumber }));
+                  setCurrentUser((prev) => ({ ...prev, phoneNumber: normalizedPhone || prev.phoneNumber }));
                   setIsLoggedIn(true);
                 }
                 navigation.replace('Main');
@@ -2227,14 +2437,18 @@ const AppShell = () => {
               theme={theme}
               onToggleTheme={setTheme}
               firebaseEnabled={FIREBASE_ENABLED}
+              betaModeEnabled={BETA_MODE_ENABLED}
+              betaDefaultOtp={BETA_DEFAULT_OTP}
+              betaAllowedPhones={BETA_ALLOWED_PHONES}
             />
           )}
         </RootStack.Screen>
         <RootStack.Screen name="Main">
           {({ navigation }) =>
             renderMainScreen(() => {
-              handleLogout();
-              navigation.replace('Login');
+              void handleLogout().finally(() => {
+                navigation.replace('Login');
+              });
             })
           }
         </RootStack.Screen>

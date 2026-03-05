@@ -82,12 +82,18 @@ export const LoginScreen = ({
   onLogin,
   theme,
   onToggleTheme,
-  firebaseEnabled
+  firebaseEnabled,
+  betaModeEnabled,
+  betaDefaultOtp,
+  betaAllowedPhones
 }: {
   onLogin: (payload: { uid?: string; phoneNumber: string }) => Promise<void>;
   theme: Theme;
   onToggleTheme: (next: Theme) => void;
   firebaseEnabled: boolean;
+  betaModeEnabled: boolean;
+  betaDefaultOtp: string;
+  betaAllowedPhones: string[];
 }) => {
   const [step, setStep] = useState<'phone' | 'otp'>('phone');
   const [phoneNumber, setPhoneNumber] = useState('');
@@ -99,8 +105,9 @@ export const LoginScreen = ({
 
   const e164Phone = phoneNumber.length === 10 ? `+91${phoneNumber}` : '';
   const maskedPhone = phoneNumber.length >= 4 ? `+91******${phoneNumber.slice(-4)}` : '+91******0000';
-  const otpLength = 4;
+  const otpLength = betaModeEnabled ? Math.max(4, betaDefaultOtp.length) : 4;
   const expectedOtp = phoneNumber.slice(-4);
+  const isNumberAllowedForBeta = betaAllowedPhones.length === 0 || betaAllowedPhones.includes(e164Phone);
 
   const readError = (value: unknown) => {
     const rawMessage = value instanceof Error ? value.message : 'Unable to continue right now.';
@@ -131,6 +138,11 @@ export const LoginScreen = ({
       return;
     }
 
+    if (betaModeEnabled && !isNumberAllowedForBeta) {
+      setError('This number is not enabled for this beta build.');
+      return;
+    }
+
     setError('');
     setStep('otp');
   };
@@ -141,7 +153,12 @@ export const LoginScreen = ({
       return;
     }
 
-    if (otp !== expectedOtp) {
+    if (betaModeEnabled) {
+      if (otp !== betaDefaultOtp) {
+        setError('Incorrect beta OTP. Please use the OTP shared for this beta.');
+        return;
+      }
+    } else if (otp !== expectedOtp) {
       setError('Incorrect PIN. Enter the last 4 digits of your phone number.');
       return;
     }
@@ -150,11 +167,14 @@ export const LoginScreen = ({
     setIsSubmitting(true);
 
     try {
-      const uid = `user-${phoneNumber}`;
-      await onLogin({ uid, phoneNumber: e164Phone });
+      if (betaModeEnabled) {
+        await onLogin({ phoneNumber: e164Phone });
+      } else {
+        const uid = `user-${phoneNumber}`;
+        await onLogin({ uid, phoneNumber: e164Phone });
+      }
     } catch (verifyError) {
-      const rawMessage = verifyError instanceof Error ? verifyError.message : 'Unable to log in. Try again.';
-      setError(rawMessage);
+      setError(readError(verifyError));
     } finally {
       setIsSubmitting(false);
     }
@@ -196,7 +216,7 @@ export const LoginScreen = ({
             <Text style={[styles.loginTitle, { color: t.text }]}>{step === 'phone' ? 'Ride Connected' : 'Enter Your PIN'}</Text>
             {step !== 'phone' && (
               <Text style={[styles.loginSubtitle, { color: t.muted }]}>
-                {`Enter the last 4 digits of ${maskedPhone}`}
+                {betaModeEnabled ? `Enter the beta OTP for ${maskedPhone}` : `Enter the last 4 digits of ${maskedPhone}`}
               </Text>
             )}
 
@@ -216,6 +236,11 @@ export const LoginScreen = ({
                     setError('');
                   }}
                 />
+                {betaModeEnabled && (
+                  <Text style={[styles.metaText, { color: t.muted }]}>
+                    Beta mode active: use the shared OTP to continue.
+                  </Text>
+                )}
                 <TouchableOpacity
                   style={[styles.primaryButton, { backgroundColor: t.primary }]}
                   onPress={handleGetOtp}
@@ -231,7 +256,7 @@ export const LoginScreen = ({
                   keyboardType="number-pad"
                   maxLength={otpLength}
                   value={otp}
-                  placeholder={`Last 4 digits of your number`}
+                  placeholder={betaModeEnabled ? 'Enter shared beta OTP' : 'Last 4 digits of your number'}
                   placeholderTextColor={t.muted}
                   onChangeText={(value) => {
                     setOtp(value.replace(/\D/g, '').slice(0, otpLength));
