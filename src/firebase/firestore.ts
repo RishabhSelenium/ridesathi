@@ -1,13 +1,16 @@
 import {
+  arrayUnion,
   collection,
   deleteDoc,
   doc,
   getDoc,
   getDocs,
+  onSnapshot,
   orderBy,
   query,
   setDoc,
-  type DocumentData
+  type DocumentData,
+  type Unsubscribe
 } from 'firebase/firestore';
 
 import {
@@ -17,6 +20,7 @@ import {
   ModerationReport,
   RideCostType,
   RideInviteAudience,
+  RideJoinPermission,
   RidePaymentMethod,
   RidePaymentStatus,
   RidePost,
@@ -34,13 +38,32 @@ const SQUADS_COLLECTION = 'squads';
 const MODERATION_REPORTS_COLLECTION = 'moderationReports';
 const RIDE_VISIBILITY_OPTIONS: RideVisibility[] = ['Nearby', 'City', 'Friends'];
 const SQUAD_JOIN_PERMISSION_OPTIONS: SquadJoinPermission[] = ['anyone', 'request_to_join'];
+const RIDE_JOIN_PERMISSION_OPTIONS: RideJoinPermission[] = ['anyone', 'request_to_join'];
 
 const asString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
 const asBoolean = (value: unknown, fallback = false): boolean => (typeof value === 'boolean' ? value : fallback);
 const asNumber = (value: unknown, fallback = 0): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+const parseCoordinateNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+};
 const asStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+const asStringMap = (value: unknown): Record<string, string> | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+
+  const entries = Object.entries(value as Record<string, unknown>)
+    .map(([key, item]) => [key.trim(), typeof item === 'string' ? item.trim() : ''] as const)
+    .filter(([key, item]) => key.length > 0 && item.length > 0);
+
+  if (entries.length === 0) return undefined;
+  return Object.fromEntries(entries);
+};
 const normalizeSosContacts = (value: unknown): string[] =>
   Array.from(new Set(asStringArray(value).map((item) => item.trim()).filter(Boolean)));
 
@@ -59,12 +82,36 @@ const normalizeVisibility = (value: unknown): RideVisibility[] => {
   return ['City'];
 };
 
+const normalizeRideJoinPermission = (value: unknown): RideJoinPermission =>
+  typeof value === 'string' && RIDE_JOIN_PERMISSION_OPTIONS.includes(value as RideJoinPermission)
+    ? (value as RideJoinPermission)
+    : 'request_to_join';
+
 const normalizePoint = (item: unknown): MapPoint | null => {
   if (!item || typeof item !== 'object') return null;
-  const point = item as { lat?: unknown; lng?: unknown; label?: unknown };
-  const lat = asNumber(point.lat, NaN);
-  const lng = asNumber(point.lng, NaN);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const point = item as {
+    lat?: unknown;
+    lng?: unknown;
+    latitude?: unknown;
+    longitude?: unknown;
+    _latitude?: unknown;
+    _longitude?: unknown;
+    _lat?: unknown;
+    _long?: unknown;
+    label?: unknown;
+  };
+  const lat =
+    parseCoordinateNumber(point.lat) ??
+    parseCoordinateNumber(point.latitude) ??
+    parseCoordinateNumber(point._latitude) ??
+    parseCoordinateNumber(point._lat);
+  const lng =
+    parseCoordinateNumber(point.lng) ??
+    parseCoordinateNumber(point.longitude) ??
+    parseCoordinateNumber(point._longitude) ??
+    parseCoordinateNumber(point._long);
+  if (lat === null || lng === null) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
 
   return {
     lat,
@@ -155,7 +202,13 @@ const normalizeUser = (id: string, raw: DocumentData): User => {
     sosContacts: normalizedSosContacts.length > 0 ? normalizedSosContacts : legacySosNumber ? [legacySosNumber] : undefined,
     dob: typeof raw.dob === 'string' ? raw.dob : undefined,
     bloodGroup: typeof raw.bloodGroup === 'string' ? raw.bloodGroup : undefined,
-    profileComplete: typeof raw.profileComplete === 'boolean' ? raw.profileComplete : undefined
+    profileComplete: typeof raw.profileComplete === 'boolean' ? raw.profileComplete : undefined,
+    bikePhotosByName: asStringMap(raw.bikePhotosByName),
+    expoPushTokens: Array.from(
+      new Set(
+        asStringArray(raw.expoPushTokens).filter((token) => /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(token))
+      )
+    )
   };
 };
 
@@ -181,6 +234,8 @@ const normalizeRide = (id: string, raw: DocumentData): RidePost => {
     route: asString(raw.route),
     routePoints: Array.isArray(raw.routePoints) ? raw.routePoints.map(normalizePoint).filter((item): item is MapPoint => item !== null) : [],
     date: asString(raw.date),
+    startDate: asString(raw.startDate) || undefined,
+    returnDate: asString(raw.returnDate) || undefined,
     startTime: asString(raw.startTime),
     maxParticipants: asNumber(raw.maxParticipants, 5),
     currentParticipants: asStringArray(raw.currentParticipants),
@@ -207,7 +262,8 @@ const normalizeRide = (id: string, raw: DocumentData): RidePost => {
     inclusions: asStringArray(raw.inclusions),
     rideNote: asString(raw.rideNote) || undefined,
     inviteAudience,
-    isPrivate: typeof raw.isPrivate === 'boolean' ? raw.isPrivate : undefined
+    isPrivate: typeof raw.isPrivate === 'boolean' ? raw.isPrivate : undefined,
+    joinPermission: normalizeRideJoinPermission(raw.joinPermission)
   };
 };
 
@@ -295,6 +351,47 @@ export const fetchRidesFromFirestore = async (): Promise<RidePost[]> => {
   }
 };
 
+export const subscribeRidesFromFirestore = ({
+  onChange,
+  onError
+}: {
+  onChange: (rides: RidePost[]) => void;
+  onError?: (error: unknown) => void;
+}): Unsubscribe => {
+  const services = getFirebaseServices();
+  if (!services) {
+    onChange([]);
+    return () => undefined;
+  }
+
+  const ridesRef = collection(services.firestore, RIDES_COLLECTION);
+  let fallbackUnsubscribe: Unsubscribe | null = null;
+
+  const orderedUnsubscribe = onSnapshot(
+    query(ridesRef, orderBy('createdAt', 'desc')),
+    (snapshot) => {
+      onChange(snapshot.docs.map((item) => normalizeRide(item.id, item.data())));
+    },
+    () => {
+      if (fallbackUnsubscribe) return;
+      fallbackUnsubscribe = onSnapshot(
+        ridesRef,
+        (snapshot) => {
+          onChange(snapshot.docs.map((item) => normalizeRide(item.id, item.data())));
+        },
+        (fallbackError) => {
+          onError?.(fallbackError);
+        }
+      );
+    }
+  );
+
+  return () => {
+    orderedUnsubscribe();
+    fallbackUnsubscribe?.();
+  };
+};
+
 export const fetchHelpPostsFromFirestore = async (): Promise<HelpPost[]> => {
   const services = getFirebaseServices();
   if (!services) return [];
@@ -307,6 +404,47 @@ export const fetchHelpPostsFromFirestore = async (): Promise<HelpPost[]> => {
     const snapshot = await getDocs(helpRef);
     return snapshot.docs.map((item) => normalizeHelpPost(item.id, item.data()));
   }
+};
+
+export const subscribeHelpPostsFromFirestore = ({
+  onChange,
+  onError
+}: {
+  onChange: (helpPosts: HelpPost[]) => void;
+  onError?: (error: unknown) => void;
+}): Unsubscribe => {
+  const services = getFirebaseServices();
+  if (!services) {
+    onChange([]);
+    return () => undefined;
+  }
+
+  const helpRef = collection(services.firestore, HELP_COLLECTION);
+  let fallbackUnsubscribe: Unsubscribe | null = null;
+
+  const orderedUnsubscribe = onSnapshot(
+    query(helpRef, orderBy('createdAt', 'desc')),
+    (snapshot) => {
+      onChange(snapshot.docs.map((item) => normalizeHelpPost(item.id, item.data())));
+    },
+    () => {
+      if (fallbackUnsubscribe) return;
+      fallbackUnsubscribe = onSnapshot(
+        helpRef,
+        (snapshot) => {
+          onChange(snapshot.docs.map((item) => normalizeHelpPost(item.id, item.data())));
+        },
+        (fallbackError) => {
+          onError?.(fallbackError);
+        }
+      );
+    }
+  );
+
+  return () => {
+    orderedUnsubscribe();
+    fallbackUnsubscribe?.();
+  };
 };
 
 export const fetchSquadsFromFirestore = async (): Promise<Squad[]> => {
@@ -323,6 +461,47 @@ export const fetchSquadsFromFirestore = async (): Promise<Squad[]> => {
   }
 };
 
+export const subscribeSquadsFromFirestore = ({
+  onChange,
+  onError
+}: {
+  onChange: (squads: Squad[]) => void;
+  onError?: (error: unknown) => void;
+}): Unsubscribe => {
+  const services = getFirebaseServices();
+  if (!services) {
+    onChange([]);
+    return () => undefined;
+  }
+
+  const squadsRef = collection(services.firestore, SQUADS_COLLECTION);
+  let fallbackUnsubscribe: Unsubscribe | null = null;
+
+  const orderedUnsubscribe = onSnapshot(
+    query(squadsRef, orderBy('createdAt', 'desc')),
+    (snapshot) => {
+      onChange(snapshot.docs.map((item) => normalizeSquad(item.id, item.data())));
+    },
+    () => {
+      if (fallbackUnsubscribe) return;
+      fallbackUnsubscribe = onSnapshot(
+        squadsRef,
+        (snapshot) => {
+          onChange(snapshot.docs.map((item) => normalizeSquad(item.id, item.data())));
+        },
+        (fallbackError) => {
+          onError?.(fallbackError);
+        }
+      );
+    }
+  );
+
+  return () => {
+    orderedUnsubscribe();
+    fallbackUnsubscribe?.();
+  };
+};
+
 export const upsertUserInFirestore = async (user: User): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
@@ -330,11 +509,43 @@ export const upsertUserInFirestore = async (user: User): Promise<void> => {
   await setDoc(doc(services.firestore, USERS_COLLECTION, user.id), user, { merge: true });
 };
 
+export const addExpoPushTokenToUser = async (userId: string, expoPushToken: string): Promise<void> => {
+  const services = getFirebaseServices();
+  if (!services) return;
+  if (!expoPushToken || !/^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(expoPushToken)) return;
+
+  await setDoc(
+    doc(services.firestore, USERS_COLLECTION, userId),
+    {
+      expoPushTokens: arrayUnion(expoPushToken)
+    },
+    { merge: true }
+  );
+};
+
 export const upsertRideInFirestore = async (ride: RidePost): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
 
   await setDoc(doc(services.firestore, RIDES_COLLECTION, ride.id), ride, { merge: true });
+};
+
+export const updateRideJoinStateInFirestore = async (
+  rideId: string,
+  updates: Pick<RidePost, 'currentParticipants' | 'requests'> & Partial<Pick<RidePost, 'joinPermission'>>
+): Promise<void> => {
+  const services = getFirebaseServices();
+  if (!services) return;
+
+  await setDoc(
+    doc(services.firestore, RIDES_COLLECTION, rideId),
+    {
+      currentParticipants: updates.currentParticipants,
+      requests: updates.requests,
+      ...(updates.joinPermission ? { joinPermission: updates.joinPermission } : {})
+    },
+    { merge: true }
+  );
 };
 
 export const deleteRideInFirestore = async (rideId: string): Promise<void> => {

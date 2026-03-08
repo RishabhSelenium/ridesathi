@@ -44,6 +44,8 @@ export const RideCard = ({
   const t = TOKENS[theme];
   const isCreator = ride.creatorId === currentUserId;
   const isJoined = ride.currentParticipants.includes(currentUserId);
+  const requiresJoinApproval = ride.joinPermission !== 'anyone';
+  const joinModeLabel = requiresJoinApproval ? 'Request approval' : 'Open join';
   const hasRouteStats =
     typeof ride.routeEtaMinutes === 'number' || typeof ride.routeDistanceKm === 'number' || typeof ride.tollEstimateInr === 'number';
   const paymentSummary = getRidePaymentSummary(ride);
@@ -61,6 +63,14 @@ export const RideCard = ({
               <Badge color="blue" theme={theme}>
                 Organizing
               </Badge>
+              {ride.requests.length > 0 && (
+                <>
+                  <View style={{ width: 6 }} />
+                  <Badge color="orange" theme={theme}>
+                    {ride.requests.length} requests
+                  </Badge>
+                </>
+              )}
               <View style={{ width: 6 }} />
             </>
           )}
@@ -118,6 +128,10 @@ export const RideCard = ({
           <Text style={[styles.pillTagText, { color: t.text }]}>{paymentSummary}</Text>
         </View>
       )}
+
+      <View style={[styles.pillTag, { alignSelf: 'flex-start', borderColor: t.border, backgroundColor: t.subtle }]}>
+        <Text style={[styles.pillTagText, { color: t.muted }]}>{joinModeLabel}</Text>
+      </View>
 
       <View style={[styles.routePreview, { borderColor: t.border, backgroundColor: t.subtle }]}> 
         <Text style={[styles.inputLabel, { color: t.muted }]}>Route</Text>

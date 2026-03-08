@@ -50,7 +50,7 @@ The app now includes Firebase service modules:
 - Cloud Firestore sync for users/rides/help posts (`src/firebase/firestore.ts`)
 - Realtime Database chat sync (`src/firebase/chat.ts`)
 - Cloud Storage upload helpers (`src/firebase/storage.ts`)
-- Cloud Functions call helpers (`src/firebase/functions.ts`)
+- Device push-token registration to Firestore (`users/{uid}.expoPushTokens`)
 
 ### 1. Add environment variables
 
@@ -60,10 +60,30 @@ Copy `.env.example` to `.env` and fill your Firebase project values.
 cp .env.example .env
 ```
 
+Optional: use Cloudflare R2 for image uploads (instead of Firebase Storage):
+
+- `EXPO_PUBLIC_IMAGE_STORAGE_PROVIDER=r2`
+- `EXPO_PUBLIC_R2_UPLOAD_BASE_URL=https://<your-worker-subdomain>.workers.dev`
+- `EXPO_PUBLIC_R2_UPLOAD_TOKEN=<upload-token>`
+- `EXPO_PUBLIC_PUSH_FANOUT_BASE_URL=https://<your-worker-subdomain>.workers.dev`
+- `EXPO_PUBLIC_PUSH_FANOUT_TOKEN=<push-fanout-token>`
+
+Worker template: `backend/cloudflare/`
+
 For map-style location suggestions in Create Ride, also set one of:
 
 - `EXPO_PUBLIC_GOOGLE_PLACES_API_KEY` (preferred)
 - `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` (used as fallback)
+
+For Android in-app maps (Add Route on Map / ride route preview), the native build also needs a Maps SDK key.
+This project now reads it from, in order:
+
+- `GOOGLE_MAPS_API_KEY`
+- `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY`
+- `EXPO_PUBLIC_GOOGLE_PLACES_API_KEY`
+
+After setting the key, rebuild the Android app (`npx expo run:android`) so the manifest metadata is updated.
+Also make sure **Maps SDK for Android** is enabled for that key in Google Cloud Console.
 
 ### 2. Enable products in Firebase Console
 
@@ -106,18 +126,26 @@ This repo now versions Firebase security rules:
 
 - Firestore: `backend/firebase/firestore.rules`
 - Realtime Database: `backend/firebase/database.rules.json`
+- Cloud Storage: `backend/firebase/storage.rules`
 - Firebase config mapping: `firebase.json`
 
 Deploy only security rules:
 
 ```bash
-firebase deploy --only firestore:rules,database
+firebase deploy --only firestore:rules,database,storage
 ```
 
 If you use a specific Firebase project id:
 
 ```bash
-firebase deploy --project <your-project-id> --only firestore:rules,database
+firebase deploy --project <your-project-id> --only firestore:rules,database,storage
+```
+
+Deploy Cloudflare worker updates (for Spark-compatible push fanout):
+
+```bash
+cd backend/cloudflare
+wrangler deploy
 ```
 
 ## Notes

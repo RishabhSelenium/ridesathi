@@ -4,5 +4,8 @@
   },
   "database": {
     "rules": "backend/firebase/database.rules.json"
+  },
+  "storage": {
+    "rules": "backend/firebase/storage.rules"
   }
 }

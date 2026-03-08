@@ -16,7 +16,8 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.reinagain.throttleup"
     },
     "android": {
       "package": "com.reinagain.throttleup",
@@ -36,6 +37,12 @@
         "expo-location",
         {
           "locationWhenInUsePermission": "Allow ThrottleUp to use your location to auto-update your city."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow ThrottleUp to access your photos so you can upload profile, squad, and bike images."
         }
       ],
       "expo-notifications"

@@ -9,7 +9,10 @@ const NEWS_FEED_URLS = [
 const MAX_NEWS_ITEMS = 24;
 const FETCH_TIMEOUT_MS = 12000;
 const ARTICLE_IMAGE_FETCH_TIMEOUT_MS = 6000;
+const GOOGLE_NEWS_ARTICLE_FETCH_TIMEOUT_MS = 7000;
 const ARTICLE_IMAGE_ENRICH_LIMIT = MAX_NEWS_ITEMS;
+const ARTICLE_URL_RESOLVE_LIMIT = MAX_NEWS_ITEMS;
+const GOOGLE_NEWS_BATCH_EXECUTE_URL = 'https://news.google.com/_/DotsSplashUi/data/batchexecute';
 
 type ParsedNewsItem = {
   title: string;
@@ -22,6 +25,8 @@ type ParsedNewsItem = {
 };
 
 const articleImageCache = new Map<string, string | null>();
+const resolvedArticleUrlCache = new Map<string, string | null>();
+let googleNewsDecodeCooldownUntil = 0;
 
 const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -117,6 +122,17 @@ const isGoogleNewsHost = (hostname: string): boolean => /^news\.google\./i.test(
 const isGoogleOwnedHost = (hostname: string): boolean =>
   /^(.+\.)?google\./i.test(hostname) || hostname.endsWith('gstatic.com') || hostname.endsWith('googleusercontent.com');
 
+const extractGoogleNewsArticleId = (value: string): string | undefined => {
+  try {
+    const parsed = new URL(value);
+    if (!isGoogleNewsHost(parsed.hostname.toLowerCase())) return undefined;
+    const match = parsed.pathname.match(/\/(?:rss\/articles|articles|read)\/([^/?#]+)/i);
+    return match?.[1] ? normalizeWhitespace(match[1]) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const extractHttpLinksFromHtml = (value: string): string[] => {
   if (!value) return [];
   const links: string[] = [];
@@ -166,7 +182,9 @@ const isLikelyGenericGoogleNewsImage = (imageUrl: string): boolean => {
     const hostname = parsed.hostname.toLowerCase();
     const path = parsed.pathname.toLowerCase();
     if (!isGoogleOwnedHost(hostname)) return false;
-    if (hostname.includes('blogspot') || hostname.includes('ggpht')) return false;
+    if (hostname.includes('blogspot') || hostname.includes('ggpht') || /^lh\d+\.googleusercontent\.com$/i.test(hostname)) {
+      return false;
+    }
     return (
       path.includes('/images/branding/product') ||
       path.includes('news_') ||
@@ -175,11 +193,137 @@ const isLikelyGenericGoogleNewsImage = (imageUrl: string): boolean => {
       path.includes('/logos/') ||
       path.includes('/favicon') ||
       path.includes('/branding/') ||
-      hostname.endsWith('gstatic.com') ||
-      hostname.endsWith('googleusercontent.com')
+      hostname.endsWith('gstatic.com')
     );
   } catch {
     return false;
+  }
+};
+
+const shouldDiscardImageForArticle = (articleUrl: string, imageUrl: string): boolean => {
+  const imageHost = getUrlHostname(imageUrl);
+  if (!imageHost) return true;
+
+  const articleHost = getUrlHostname(articleUrl);
+  if (isGoogleNewsHost(articleHost) && isGoogleOwnedHost(imageHost)) return true;
+
+  return isLikelyGenericGoogleNewsImage(imageUrl);
+};
+
+const decodeGoogleNewsArticleUrl = async (url: string): Promise<string | undefined> => {
+  if (Date.now() < googleNewsDecodeCooldownUntil) return undefined;
+
+  const articleId = extractGoogleNewsArticleId(url);
+  if (!articleId) return url;
+
+  if (resolvedArticleUrlCache.has(url)) {
+    const cached = resolvedArticleUrlCache.get(url);
+    return cached ?? undefined;
+  }
+
+  const articleController = new AbortController();
+  const articleTimeout = setTimeout(() => articleController.abort(), GOOGLE_NEWS_ARTICLE_FETCH_TIMEOUT_MS);
+
+  try {
+    const articleResponse = await fetch(`https://news.google.com/articles/${articleId}`, {
+      signal: articleController.signal,
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        Referer: 'https://news.google.com/'
+      }
+    });
+
+    if (!articleResponse.ok) {
+      if (articleResponse.status === 429) {
+        googleNewsDecodeCooldownUntil = Date.now() + 10 * 60 * 1000;
+      }
+      resolvedArticleUrlCache.set(url, null);
+      return undefined;
+    }
+
+    const articleHtml = await articleResponse.text();
+    const articleIdMatch = articleHtml.match(/data-n-a-id="([^"]+)"/);
+    const signatureMatch = articleHtml.match(/data-n-a-sg="([^"]+)"/);
+    const timestampMatch = articleHtml.match(/data-n-a-ts="([^"]+)"/);
+    const articleRequestId = articleIdMatch?.[1] ? normalizeWhitespace(articleIdMatch[1]) : articleId;
+    const signature = signatureMatch?.[1] ? normalizeWhitespace(signatureMatch[1]) : '';
+    const timestamp = timestampMatch?.[1] ? normalizeWhitespace(timestampMatch[1]) : '';
+
+    if (!articleRequestId || !signature || !timestamp || !/^\d+$/.test(timestamp)) {
+      resolvedArticleUrlCache.set(url, null);
+      return undefined;
+    }
+
+    const decodeController = new AbortController();
+    const decodeTimeout = setTimeout(() => decodeController.abort(), GOOGLE_NEWS_ARTICLE_FETCH_TIMEOUT_MS);
+    try {
+      const requestParams =
+        `["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],` +
+        `"X","X",1,[1,1,1],1,1,null,0,0,null,0],"${articleRequestId}",${timestamp},"${signature}"]`;
+      const requestPayload = JSON.stringify([[['Fbv4je', requestParams, null, 'generic']]]);
+      const decodeResponse = await fetch(GOOGLE_NEWS_BATCH_EXECUTE_URL, {
+        method: 'POST',
+        signal: decodeController.signal,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          Referer: 'https://news.google.com/'
+        },
+        body: `f.req=${encodeURIComponent(requestPayload)}`
+      });
+
+      if (!decodeResponse.ok) {
+        if (decodeResponse.status === 429) {
+          googleNewsDecodeCooldownUntil = Date.now() + 10 * 60 * 1000;
+        }
+        resolvedArticleUrlCache.set(url, null);
+        return undefined;
+      }
+
+      const responseText = await decodeResponse.text();
+      const chunk = responseText
+        .split('\n\n')
+        .find((part) => part.trim().startsWith('[[') && part.includes('"wrb.fr"') && part.includes('"Fbv4je"'));
+      if (!chunk) {
+        resolvedArticleUrlCache.set(url, null);
+        return undefined;
+      }
+
+      const parsedChunk = JSON.parse(chunk) as unknown[];
+      const decodeRow = parsedChunk.find(
+        (row): row is [string, string, string] =>
+          Array.isArray(row) &&
+          row.length >= 3 &&
+          row[0] === 'wrb.fr' &&
+          row[1] === 'Fbv4je' &&
+          typeof row[2] === 'string'
+      );
+      if (!decodeRow) {
+        if (responseText.includes('[3]')) {
+          googleNewsDecodeCooldownUntil = Date.now() + 5 * 60 * 1000;
+        }
+        resolvedArticleUrlCache.set(url, null);
+        return undefined;
+      }
+
+      const parsedDecodePayload = JSON.parse(decodeRow[2]) as unknown[];
+      const decodedUrl = Array.isArray(parsedDecodePayload) && typeof parsedDecodePayload[1] === 'string'
+        ? normalizeImageUrl(parsedDecodePayload[1])
+        : undefined;
+      if (!decodedUrl) {
+        resolvedArticleUrlCache.set(url, null);
+        return undefined;
+      }
+
+      resolvedArticleUrlCache.set(url, decodedUrl);
+      return decodedUrl;
+    } finally {
+      clearTimeout(decodeTimeout);
+    }
+  } catch {
+    resolvedArticleUrlCache.set(url, null);
+    return undefined;
+  } finally {
+    clearTimeout(articleTimeout);
   }
 };
 
@@ -233,7 +377,10 @@ const fetchArticlePreviewImage = async (url: string): Promise<string | undefined
     const inlineImage = extractImageFromHtml(html);
     const image = metaImage || (inlineImage ? resolveImageUrl(inlineImage, pageUrl) : undefined);
     const pageHost = getUrlHostname(pageUrl);
-    const sanitizedImage = image && isGoogleNewsHost(pageHost) && isLikelyGenericGoogleNewsImage(image) ? undefined : image;
+    const imageHost = image ? getUrlHostname(image) : '';
+    const sanitizedImage = image && isGoogleNewsHost(pageHost) && (isLikelyGenericGoogleNewsImage(image) || isGoogleOwnedHost(imageHost))
+      ? undefined
+      : image;
     articleImageCache.set(url, sanitizedImage ?? null);
     return sanitizedImage;
   } catch {
@@ -257,6 +404,21 @@ const getHostnameSource = (url: string): string => {
     return hostname || 'News';
   } catch {
     return 'News';
+  }
+};
+
+const normalizeUrlForDedup = (value: string): string => {
+  try {
+    const parsed = new URL(value);
+    parsed.hash = '';
+    ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'fbclid', 'ref', 'ref_src'].forEach((param) =>
+      parsed.searchParams.delete(param)
+    );
+    const normalizedPath = parsed.pathname.replace(/\/+$/, '') || '/';
+    parsed.pathname = normalizedPath;
+    return parsed.toString();
+  } catch {
+    return value.trim();
   }
 };
 
@@ -326,7 +488,7 @@ const parseItemFromRss = (block: string): ParsedNewsItem | null => {
   const image = imageCandidates
     .map((candidate) => normalizeImageUrl(candidate ?? ''))
     .filter((candidate): candidate is string => Boolean(candidate))
-    .find((candidate) => !isLikelyGenericGoogleNewsImage(candidate));
+    .find((candidate) => !shouldDiscardImageForArticle(url, candidate));
 
   return {
     title,
@@ -407,6 +569,7 @@ const mergeAndRankArticles = (items: ParsedNewsItem[]): NewsArticle[] => {
       source: item.source,
       url: item.url,
       image: item.image,
+      imageDebugSource: item.image ? 'feed' : 'fallback',
       publishedAt: item.publishedAt,
       summary: item.summary,
       tags: item.tags,
@@ -416,7 +579,7 @@ const mergeAndRankArticles = (items: ParsedNewsItem[]): NewsArticle[] => {
     };
   });
 
-  return result
+  const ranked = result
     .sort((a, b) => {
       const timeDiff = new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
       if (timeDiff !== 0) return timeDiff;
@@ -424,13 +587,51 @@ const mergeAndRankArticles = (items: ParsedNewsItem[]): NewsArticle[] => {
       if (relevanceDiff !== 0) return relevanceDiff;
       return b.viralityScore - a.viralityScore;
     })
-    .slice(0, MAX_NEWS_ITEMS);
+    .slice(0, MAX_NEWS_ITEMS * 2);
+
+  // Final dedupe guard: some feeds repeat the same story with tracking URL variants.
+  const seenDedupKeys = new Set<string>();
+  const deduped: NewsArticle[] = [];
+  for (const article of ranked) {
+    const normalizedUrl = normalizeUrlForDedup(article.url);
+    const titleKey = titleToKey(article.title);
+    const timeKey = new Date(article.publishedAt).getTime();
+    const dedupKeys = [`url:${normalizedUrl}`, `title_time:${titleKey}:${timeKey}`];
+    const isDuplicate = dedupKeys.some((key) => seenDedupKeys.has(key));
+    if (isDuplicate) continue;
+    dedupKeys.forEach((key) => seenDedupKeys.add(key));
+    deduped.push(article);
+    if (deduped.length >= MAX_NEWS_ITEMS) break;
+  }
+
+  return deduped;
 };
 
 const enrichArticleImages = async (articles: NewsArticle[]): Promise<NewsArticle[]> => {
-  const imageCandidateIndexes = articles
+  const resolveCandidates = articles
     .map((article, index) => ({ article, index }))
-    .filter(({ article }) => !article.image || isLikelyGenericGoogleNewsImage(article.image))
+    .filter(({ article }) => isGoogleNewsHost(getUrlHostname(article.url)))
+    .slice(0, ARTICLE_URL_RESOLVE_LIMIT);
+
+  const resolvedUpdates = await Promise.all(
+    resolveCandidates.map(async ({ article, index }) => ({
+      index,
+      resolvedUrl: await decodeGoogleNewsArticleUrl(article.url)
+    }))
+  );
+
+  const resolvedArticles = [...articles];
+  resolvedUpdates.forEach(({ index, resolvedUrl }) => {
+    if (!resolvedUrl || resolvedUrl === resolvedArticles[index].url) return;
+    resolvedArticles[index] = {
+      ...resolvedArticles[index],
+      url: resolvedUrl
+    };
+  });
+
+  const imageCandidateIndexes = resolvedArticles
+    .map((article, index) => ({ article, index }))
+    .filter(({ article }) => !article.image || shouldDiscardImageForArticle(article.url, article.image))
     .slice(0, ARTICLE_IMAGE_ENRICH_LIMIT);
 
   const updates = await Promise.all(
@@ -440,21 +641,23 @@ const enrichArticleImages = async (articles: NewsArticle[]): Promise<NewsArticle
     }))
   );
 
-  const nextArticles = [...articles];
+  const nextArticles = [...resolvedArticles];
   updates.forEach(({ index, image }) => {
     if (!image) return;
     nextArticles[index] = {
       ...nextArticles[index],
-      image
+      image,
+      imageDebugSource: 'enriched'
     };
   });
 
   return nextArticles.map((article) =>
-    article.image && !isLikelyGenericGoogleNewsImage(article.image)
+    article.image && !shouldDiscardImageForArticle(article.url, article.image)
       ? article
       : {
           ...article,
-          image: undefined
+          image: undefined,
+          imageDebugSource: 'fallback'
         }
   );
 };

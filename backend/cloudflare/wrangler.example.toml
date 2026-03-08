@@ -1,0 +1,12 @@
+name = "ridesathi-r2-upload"
+main = "r2-upload-worker.js"
+compatibility_date = "2026-03-06"
+
+[vars]
+# Set PUSH_FANOUT_TOKEN as a secret via `wrangler secret put PUSH_FANOUT_TOKEN`
+# Set UPLOAD_TOKEN as a secret via `wrangler secret put UPLOAD_TOKEN`
+
+[[r2_buckets]]
+binding = "IMAGE_BUCKET"
+bucket_name = "replace-with-your-r2-bucket-name"
+preview_bucket_name = "replace-with-your-r2-bucket-name"

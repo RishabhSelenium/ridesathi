@@ -49,9 +49,11 @@ service cloud.firestore {
           'dob',
           'bloodGroup',
           'profileComplete',
+          'bikePhotosByName',
           'friends',
           'friendRequests',
-          'blockedUserIds'
+          'blockedUserIds',
+          'expoPushTokens'
         ]) &&
         data.id == userId &&
         (data.phoneNumber == null || data.phoneNumber is string) &&
@@ -75,12 +77,14 @@ service cloud.firestore {
         (data.dob == null || data.dob is string) &&
         (data.bloodGroup == null || data.bloodGroup is string) &&
         (data.profileComplete == null || data.profileComplete is bool) &&
+        (data.bikePhotosByName == null || data.bikePhotosByName is map) &&
         data.friends is list &&
         data.friendRequests is map &&
         data.friendRequests.keys().hasOnly(['sent', 'received']) &&
         data.friendRequests.sent is list &&
         data.friendRequests.received is list &&
-        (data.blockedUserIds == null || data.blockedUserIds is list);
+        (data.blockedUserIds == null || data.blockedUserIds is list) &&
+        (data.expoPushTokens == null || data.expoPushTokens is list);
     }
 
     function validRide(data, rideId) {
@@ -101,6 +105,25 @@ service cloud.firestore {
         data.visibility is list &&
         data.visibility.size() > 0 &&
         data.createdAt is string;
+    }
+
+    function canSelfJoinOpenRide() {
+      return (
+          resource.data.joinPermission == 'anyone' ||
+          (
+            !(resource.data.joinPermission is string) &&
+            request.resource.data.joinPermission == 'anyone'
+          )
+        ) &&
+        (
+          (resource.data.requests is list && request.resource.data.requests == resource.data.requests) ||
+          (!(resource.data.requests is list) && request.resource.data.requests is list && request.resource.data.requests.size() == 0)
+        ) &&
+        !resource.data.currentParticipants.hasAny([request.auth.uid]) &&
+        request.resource.data.currentParticipants.hasAll(resource.data.currentParticipants) &&
+        request.resource.data.currentParticipants.hasAll([request.auth.uid]) &&
+        request.resource.data.currentParticipants.size() == resource.data.currentParticipants.size() + 1 &&
+        request.resource.data.currentParticipants.size() <= resource.data.maxParticipants;
     }
 
     function validHelpPost(data, postId) {
@@ -246,13 +269,35 @@ service cloud.firestore {
         request.resource.data.creatorId == request.auth.uid;
 
       allow update: if isSignedIn() &&
-        validRide(request.resource.data, rideId) &&
         request.resource.data.id == resource.data.id &&
         request.resource.data.creatorId == resource.data.creatorId &&
         request.resource.data.createdAt == resource.data.createdAt &&
         (
-          request.auth.uid == resource.data.creatorId ||
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['requests'])
+          (
+            request.auth.uid == resource.data.creatorId &&
+            validRide(request.resource.data, rideId)
+          ) ||
+          (
+            request.auth.uid == resource.data.creatorId &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentParticipants', 'requests']) &&
+            request.resource.data.currentParticipants is list &&
+            request.resource.data.requests is list
+          ) ||
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['requests']) &&
+            request.resource.data.currentParticipants == resource.data.currentParticipants &&
+            request.resource.data.requests is list
+          ) ||
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'currentParticipants',
+              'requests',
+              'joinPermission'
+            ]) &&
+            request.resource.data.currentParticipants is list &&
+            request.resource.data.requests is list &&
+            canSelfJoinOpenRide()
+          )
         );
 
       allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;

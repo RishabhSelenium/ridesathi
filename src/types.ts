@@ -5,6 +5,7 @@ export type RideCostType = 'Paid' | 'Split' | 'Free';
 export type RidePaymentMethod = 'UPI_LINK';
 export type RidePaymentState = 'pending' | 'paid';
 export type RideInviteAudience = 'groups' | 'riders';
+export type RideJoinPermission = 'anyone' | 'request_to_join';
 export type SquadJoinPermission = 'anyone' | 'request_to_join';
 export type SquadRole = 'owner' | 'admin' | 'member';
 
@@ -46,6 +47,8 @@ export interface User {
   dob?: string;
   bloodGroup?: string;
   profileComplete?: boolean;
+  bikePhotosByName?: Record<string, string>;
+  expoPushTokens?: string[];
 }
 
 export interface MapPoint {
@@ -101,6 +104,8 @@ export interface RidePost {
   route: string;
   routePoints?: MapPoint[];
   date: string;
+  startDate?: string;
+  returnDate?: string;
   startTime: string;
   maxParticipants: number;
   currentParticipants: string[];
@@ -128,6 +133,7 @@ export interface RidePost {
   rideNote?: string;
   inviteAudience?: RideInviteAudience;
   isPrivate?: boolean;
+  joinPermission?: RideJoinPermission;
 }
 
 export interface HelpPost {
@@ -162,6 +168,7 @@ export interface NewsArticle {
   source: string;
   url: string;
   image?: string;
+  imageDebugSource?: 'feed' | 'enriched' | 'fallback';
   publishedAt: string;
   summary: string;
   tags: string[];

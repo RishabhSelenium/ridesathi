@@ -1,8 +1,10 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { StatusBar as ExpoStatusBar } from 'expo-status-bar';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -437,36 +439,50 @@ export const FeedTab = ({
 export const NewsTab = ({
   theme,
   newsArticles,
+  totalNewsCount,
   syncError,
   isSyncing,
   onRetrySync,
+  hasMoreItems,
   onOpenArticle
 }: {
   theme: Theme;
   newsArticles: NewsArticle[];
+  totalNewsCount: number;
   syncError: string | null;
   isSyncing: boolean;
   onRetrySync: () => void;
+  hasMoreItems: boolean;
   onOpenArticle: (url: string) => void;
 }) => {
   const t = TOKENS[theme];
-  const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const [failedImages, setFailedImages] = useState<Record<string, { url: string; failedAt: number }>>({});
 
   useEffect(() => {
     setFailedImages((previous) => {
-      const previousIds = Object.keys(previous);
-      if (previousIds.length === 0) return previous;
+      const previousEntries = Object.entries(previous);
+      if (previousEntries.length === 0) return previous;
 
-      const validIds = new Set(newsArticles.map((article) => article.id));
+      const currentImageByKey = new Map(newsArticles.map((article) => [`${article.id}-${article.url}`, article.image ?? '']));
       let changed = false;
-      const next: Record<string, boolean> = {};
+      const next: Record<string, { url: string; failedAt: number }> = {};
 
-      previousIds.forEach((id) => {
-        if (!validIds.has(id)) {
+      previousEntries.forEach(([articleKey, failed]) => {
+        const currentUrl = currentImageByKey.get(articleKey);
+        if (!currentUrl) {
           changed = true;
           return;
         }
-        next[id] = previous[id];
+        if (currentUrl !== failed.url) {
+          changed = true;
+          return;
+        }
+        if (Date.now() - failed.failedAt > 90_000) {
+          changed = true;
+          return;
+        }
+
+        next[articleKey] = failed;
       });
 
       return changed ? next : previous;
@@ -485,6 +501,26 @@ export const NewsTab = ({
         />
       ) : null}
 
+      {totalNewsCount > 0 ? (
+        <View
+          style={[
+            {
+              borderWidth: 1,
+              borderRadius: 10,
+              minHeight: 34,
+              paddingHorizontal: 10,
+              alignItems: 'center',
+              justifyContent: 'center'
+            },
+            { borderColor: t.border, backgroundColor: t.subtle }
+          ]}
+        >
+          <Text style={[styles.metaText, { color: t.muted }]}>
+            Showing {newsArticles.length} of {totalNewsCount} news items
+          </Text>
+        </View>
+      ) : null}
+
       {newsArticles.length === 0 ? (
         <View style={styles.emptyWrap}>
           <MaterialCommunityIcons name="newspaper-variant-outline" size={48} color={t.muted} />
@@ -494,23 +530,36 @@ export const NewsTab = ({
           </Text>
         </View>
       ) : (
-        newsArticles.map((item) => {
+        newsArticles.map((item, index) => {
+          const failedImageKey = `${item.id}-${item.url}`;
           const primaryTag = item.tags[0] ?? 'Motorcycles';
+          const imageUrl = item.image ?? '';
+          const failed = failedImages[failedImageKey];
+          const shouldRenderImage = Boolean(imageUrl) && (!failed || failed.url !== imageUrl || Date.now() - failed.failedAt > 90_000);
+          const imageDebugSource = shouldRenderImage ? (item.imageDebugSource === 'enriched' ? 'enriched' : 'feed') : 'fallback';
 
           return (
             <TouchableOpacity
-              key={item.id}
+              key={`${item.id}-${item.url}-${index}`}
               style={[styles.newsCard, { backgroundColor: t.card, borderColor: t.border }]}
               onPress={() => onOpenArticle(item.url)}
             >
-              {item.image && !failedImages[item.id] ? (
+              {shouldRenderImage ? (
                 <Image
-                  source={{ uri: item.image }}
+                  source={{ uri: imageUrl }}
                   style={styles.newsImage}
                   resizeMode="cover"
-                  onError={() =>
-                    setFailedImages((previous) => (previous[item.id] ? previous : { ...previous, [item.id]: true }))
-                  }
+                  onError={() => {
+                    if (!imageUrl) return;
+                    setFailedImages((previous) => {
+                      const previousEntry = previous[failedImageKey];
+                      if (previousEntry && previousEntry.url === imageUrl && Date.now() - previousEntry.failedAt < 1_500) return previous;
+                      return {
+                        ...previous,
+                        [failedImageKey]: { url: imageUrl, failedAt: Date.now() }
+                      };
+                    });
+                  }}
                 />
               ) : (
                 <View style={[styles.newsImageFallback, { backgroundColor: t.subtle, borderColor: t.border }]}>
@@ -539,6 +588,10 @@ export const NewsTab = ({
                   <Text style={[styles.metaText, { color: t.muted }]}>AI Enriched</Text>
                 </View>
               </View>
+
+              {__DEV__ ? (
+                <Text style={[styles.metaText, { color: t.muted }]}>image: {imageDebugSource}</Text>
+              ) : null}
 
               <Text style={[styles.newsTitle, { color: t.text }]}>{item.title}</Text>
 
@@ -575,6 +628,26 @@ export const NewsTab = ({
           );
         })
       )}
+
+      {hasMoreItems ? (
+        <View
+          style={[
+            {
+              borderWidth: 1,
+              borderRadius: 12,
+              minHeight: 40,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 6
+            },
+            { borderColor: t.border, backgroundColor: t.subtle }
+          ]}
+        >
+          <MaterialCommunityIcons name="chevron-double-down" size={16} color={t.muted} />
+          <Text style={[styles.metaText, { color: t.muted }]}>Scroll down to load more news</Text>
+        </View>
+      ) : null}
     </View>
   );
 };
@@ -1096,9 +1169,11 @@ const BLOOD_GROUPS = ['A+', 'A−', 'B+', 'B−', 'O+', 'O−', 'AB+', 'AB−'] 
 
 export const CompleteProfileScreen = ({
   theme,
+  phoneNumber,
   onSubmit
 }: {
   theme: Theme;
+  phoneNumber?: string;
   onSubmit: (data: {
     firstName: string;
     lastName: string;
@@ -1111,28 +1186,46 @@ export const CompleteProfileScreen = ({
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [sosNumber, setSosNumber] = useState('');
-  const [secondarySosNumber, setSecondarySosNumber] = useState('');
-  const [thirdSosNumber, setThirdSosNumber] = useState('');
   const [dob, setDob] = useState('');
+  const [dobDate, setDobDate] = useState<Date | null>(null);
+  const [showDobPicker, setShowDobPicker] = useState(false);
   const [bloodGroup, setBloodGroup] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const t = TOKENS[theme];
 
   const sanitizeEmergencyNumber = (value: string): string => value.replace(/\D/g, '').slice(0, 15);
-
-  const handleDobChange = (value: string) => {
+  const normalizeComparablePhone = (value: string): string => {
     const digits = value.replace(/\D/g, '');
-    let formatted = '';
-    if (digits.length <= 2) {
-      formatted = digits;
-    } else if (digits.length <= 4) {
-      formatted = `${digits.slice(0, 2)}/${digits.slice(2)}`;
-    } else {
-      formatted = `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4, 8)}`;
-    }
-    setDob(formatted);
+    return digits.length > 10 ? digits.slice(-10) : digits;
+  };
+  const formatDate = (value: Date): string => {
+    const day = `${value.getDate()}`.padStart(2, '0');
+    const month = `${value.getMonth() + 1}`.padStart(2, '0');
+    const year = value.getFullYear();
+    return `${day}/${month}/${year}`;
+  };
+
+  const handleDobPickerChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
+    if (event.type === 'dismissed' || !selectedDate) return;
+    setDobDate(selectedDate);
+    setDob(formatDate(selectedDate));
     setError('');
+  };
+
+  const openDobPicker = () => {
+    setError('');
+    if (Platform.OS === 'android') {
+      DateTimePickerAndroid.open({
+        value: dobDate ?? new Date(2000, 0, 1),
+        mode: 'date',
+        display: 'calendar',
+        maximumDate: new Date(),
+        onChange: handleDobPickerChange
+      });
+      return;
+    }
+    setShowDobPicker(true);
   };
 
   const handleSubmit = () => {
@@ -1144,14 +1237,13 @@ export const CompleteProfileScreen = ({
       setError('Please enter your last name.');
       return;
     }
-    if (!dob || dob.length < 10) {
-      setError('Please enter a valid date of birth (DD/MM/YYYY).');
+    if (!dobDate || !dob || dob.length < 10) {
+      setError('Please select your date of birth.');
       return;
     }
     const primaryContact = sanitizeEmergencyNumber(sosNumber);
-    const secondaryContact = sanitizeEmergencyNumber(secondarySosNumber);
-    const thirdContact = sanitizeEmergencyNumber(thirdSosNumber);
-    const candidateContacts = [primaryContact, secondaryContact, thirdContact].filter((contact) => contact.length > 0);
+    const currentUserPhone = normalizeComparablePhone(phoneNumber ?? '');
+    const candidateContacts = [primaryContact].filter((contact) => contact.length > 0);
     const invalidContact = candidateContacts.find((contact) => contact.length < 10);
 
     if (!primaryContact || primaryContact.length < 10) {
@@ -1160,6 +1252,15 @@ export const CompleteProfileScreen = ({
     }
     if (invalidContact) {
       setError('Each emergency contact should be at least 10 digits.');
+      return;
+    }
+    const comparableContacts = candidateContacts.map(normalizeComparablePhone);
+    if (new Set(comparableContacts).size !== comparableContacts.length) {
+      setError('SOS contacts must be different.');
+      return;
+    }
+    if (currentUserPhone.length >= 10 && comparableContacts.includes(currentUserPhone)) {
+      setError('SOS contacts cannot be the same as your phone number.');
       return;
     }
     if (!bloodGroup) {
@@ -1186,10 +1287,6 @@ export const CompleteProfileScreen = ({
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.fullScreen}>
         <ScrollView contentContainerStyle={styles.loginScroll} keyboardShouldPersistTaps="always">
           <View style={[styles.loginCard, { backgroundColor: t.surface, borderColor: t.border }]}>
-            <View style={[styles.brandIconWrap, { backgroundColor: t.primary }]}>
-              <MaterialCommunityIcons name="account-check" size={20} color="#fff" />
-            </View>
-
             <Text style={[styles.profileCompleteTitle, { color: t.text }]}>Complete Your Profile</Text>
             <Text style={[styles.loginSubtitle, { color: t.muted }]}>
               We need a few details before you hit the road.
@@ -1220,15 +1317,33 @@ export const CompleteProfileScreen = ({
               />
 
               <Text style={[styles.inputLabel, { color: t.muted }]}>Date of Birth</Text>
-              <TextInput
-                style={[styles.input, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
-                placeholder="DD/MM/YYYY"
-                placeholderTextColor={t.muted}
-                keyboardType="number-pad"
-                maxLength={10}
-                value={dob}
-                onChangeText={handleDobChange}
-              />
+              <TouchableOpacity
+                style={[styles.input, { backgroundColor: t.subtle, borderColor: t.border, justifyContent: 'center' }]}
+                onPress={openDobPicker}
+              >
+                <Text style={{ color: dob ? t.text : t.muted }}>
+                  {dob || 'Select your date of birth'}
+                </Text>
+              </TouchableOpacity>
+              {Platform.OS === 'ios' && showDobPicker && (
+                <View style={{ marginTop: 8 }}>
+                  <DateTimePicker
+                    value={dobDate ?? new Date(2000, 0, 1)}
+                    mode="date"
+                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                    maximumDate={new Date()}
+                    onChange={handleDobPickerChange}
+                  />
+                  {Platform.OS === 'ios' && (
+                    <TouchableOpacity
+                      style={[styles.primaryCompactButton, { borderColor: t.border, backgroundColor: t.subtle, alignSelf: 'flex-end', marginTop: 6 }]}
+                      onPress={() => setShowDobPicker(false)}
+                    >
+                      <Text style={[styles.primaryCompactButtonText, { color: t.primary, marginLeft: 0 }]}>Done</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
             </View>
 
             {/* Emergency Details */}
@@ -1244,28 +1359,6 @@ export const CompleteProfileScreen = ({
                 maxLength={15}
                 value={sosNumber}
                 onChangeText={(v) => { setSosNumber(sanitizeEmergencyNumber(v)); setError(''); }}
-              />
-
-              <Text style={[styles.inputLabel, { color: t.muted }]}>Secondary Contact (Optional)</Text>
-              <TextInput
-                style={[styles.input, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
-                placeholder="Secondary emergency number"
-                placeholderTextColor={t.muted}
-                keyboardType="number-pad"
-                maxLength={15}
-                value={secondarySosNumber}
-                onChangeText={(v) => { setSecondarySosNumber(sanitizeEmergencyNumber(v)); setError(''); }}
-              />
-
-              <Text style={[styles.inputLabel, { color: t.muted }]}>Third Contact (Optional)</Text>
-              <TextInput
-                style={[styles.input, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
-                placeholder="Third emergency number"
-                placeholderTextColor={t.muted}
-                keyboardType="number-pad"
-                maxLength={15}
-                value={thirdSosNumber}
-                onChangeText={(v) => { setThirdSosNumber(sanitizeEmergencyNumber(v)); setError(''); }}
               />
             </View>
 
