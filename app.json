@@ -5,27 +5,36 @@
     "scheme": "throttleup",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./src/assets/logo2.png",
+    "icon": "./src/assets/litelogo.png",
     "userInterfaceStyle": "automatic",
     "splash": {
-      "image": "./src/assets/logo2.png",
+      "image": "./src/assets/logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#020617"
+      "backgroundColor": "#ffffff",
+      "dark": {
+        "image": "./src/assets/logo.png",
+        "backgroundColor": "#020617"
+      }
     },
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.reinagain.throttleup"
+      "bundleIdentifier": "com.reinagain.throttleup",
+      "icon": {
+        "light": "./src/assets/litelogo.png",
+        "dark": "./src/assets/darklogo.png"
+      }
     },
     "android": {
       "package": "com.reinagain.throttleup",
       "softwareKeyboardLayoutMode": "resize",
       "googleServicesFile": "./android/app/google-services.json",
       "adaptiveIcon": {
-        "foregroundImage": "./src/assets/adaptive-logo.png",
-        "backgroundColor": "#F97316"
+        "foregroundImage": "./src/assets/litelogo.png",
+        "backgroundColor": "#ffffff",
+        "monochromeImage": "./src/assets/darklogo.png"
       }
     },
     "updates": {

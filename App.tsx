@@ -40,6 +40,18 @@ import {
 } from './src/app/ui';
 import { parseRideJoinIdFromUrl } from './src/app/deep-links';
 import { canUserViewRideInFeed } from './src/app/feed-visibility';
+import {
+  buildStoredNotification,
+  buildStoredNotificationFromExpo,
+  configureForegroundNotificationHandler,
+  ensureNotificationPermission as ensureDeviceNotificationPermission,
+  getExpoPushToken,
+  getNotificationResponseKey,
+  mergeNotification,
+  scheduleImmediateNotification,
+  setupNotificationChannel as registerNotificationChannel,
+  subscribeToNotificationEvents
+} from './src/app/notifications';
 import { triggerRideRequestOwnerFanout } from './src/app/push-fanout';
 import { TabButton } from './src/components/common';
 import {
@@ -1901,15 +1913,8 @@ const AppShell = () => {
   };
 
   const setupNotificationChannel = useCallback(async () => {
-    if (isExpoGo || Platform.OS !== 'android') return;
     try {
-      const Notifications = await import('expo-notifications');
-      await Notifications.setNotificationChannelAsync('throttleup-alerts', {
-        name: 'ThrottleUp Alerts',
-        importance: Notifications.AndroidImportance.HIGH,
-        vibrationPattern: [0, 250, 200, 250],
-        lightColor: '#F97316'
-      });
+      await registerNotificationChannel(isExpoGo);
     } catch {
       // ignore channel setup failures
     }
@@ -1929,28 +1934,17 @@ const AppShell = () => {
       }
 
       try {
-        const Notifications = await import('expo-notifications');
-        const existing = await Notifications.getPermissionsAsync();
-        let status = existing.status;
+        const permission = await ensureDeviceNotificationPermission(isExpoGo);
+        setNotificationPermissionStatus(permission.status);
+        if (permission.granted) void setupNotificationChannel();
 
-        if (status !== 'granted') {
-          const asked = await Notifications.requestPermissionsAsync();
-          status = asked.status;
-        }
-
-        const mapped: PermissionStatus = status === 'granted' ? 'granted' : 'denied';
-        setNotificationPermissionStatus(mapped);
-        if (mapped === 'granted') {
-          void setupNotificationChannel();
-        }
-
-        if (mapped === 'denied' && showAlertOnDeny) {
+        if (!permission.granted && showAlertOnDeny) {
           Alert.alert(
             'Notifications Disabled',
             'You can enable notifications later in app settings to receive ride and chat alerts.'
           );
         }
-        return mapped === 'granted';
+        return permission.granted;
       } catch {
         setNotificationPermissionStatus('denied');
         return false;
@@ -1961,17 +1955,13 @@ const AppShell = () => {
 
   const scheduleDevicePushNotification = useCallback(
     async (title: string, body: string, data?: Record<string, unknown>) => {
-      if (notificationPermissionStatus !== 'granted' || isExpoGo) return;
       try {
-        const Notifications = await import('expo-notifications');
-        await Notifications.scheduleNotificationAsync({
-          content: {
-            title,
-            body,
-            data,
-            sound: true
-          },
-          trigger: null
+        await scheduleImmediateNotification({
+          title,
+          body,
+          data,
+          isExpoGo,
+          permissionStatus: notificationPermissionStatus
         });
       } catch {
         // ignore local push scheduling failures
@@ -1981,21 +1971,14 @@ const AppShell = () => {
   );
 
   const lastRegisteredPushTokenRef = useRef<string | null>(null);
+  const handledNotificationResponseIdsRef = useRef<Set<string>>(new Set());
   const syncExpoPushToken = useCallback(async () => {
     if (isExpoGo || notificationPermissionStatus !== 'granted') return;
     if (!FIREBASE_ENABLED || !hydrated || !isLoggedIn || !currentUser.id) return;
 
     try {
-      const Notifications = await import('expo-notifications');
-      const easProjectId =
-        Constants.easConfig?.projectId ??
-        ((Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)?.eas?.projectId ?? undefined) ??
-        process.env.EXPO_PUBLIC_EAS_PROJECT_ID;
-      const tokenResponse = easProjectId
-        ? await Notifications.getExpoPushTokenAsync({ projectId: easProjectId })
-        : await Notifications.getExpoPushTokenAsync();
-      const expoPushToken = tokenResponse.data;
-      if (!/^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(expoPushToken)) return;
+      const expoPushToken = await getExpoPushToken();
+      if (!expoPushToken) return;
       if (lastRegisteredPushTokenRef.current === expoPushToken) return;
 
       await addExpoPushTokenToUser(currentUser.id, expoPushToken);
@@ -2015,25 +1998,29 @@ const AppShell = () => {
 
   const pushAppNotification = useCallback(
     (payload: AppNotificationPayload) => {
-      const senderName = payload.senderName ?? 'ThrottleUp';
-      const notification: Notification = {
-        id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        type: payload.type ?? 'message',
-        senderId: payload.senderId ?? 'system',
-        senderName,
-        senderAvatar: payload.senderAvatar ?? avatarFallback,
+      const notification = buildStoredNotification({
+        type: payload.type,
+        senderId: payload.senderId,
+        senderName: payload.senderName,
+        senderAvatar: payload.senderAvatar,
         content: payload.content,
-        timestamp: new Date().toISOString(),
-        read: false,
         data: payload.data
-      };
+      });
 
-      setNotifications((prev) => [notification, ...prev]);
+      setNotifications((prev) => mergeNotification(prev, notification));
       if (payload.openCenter) {
         setIsNotificationsOpen(true);
       }
       if (payload.sendPush) {
-        void scheduleDevicePushNotification(payload.pushTitle ?? senderName, payload.pushBody ?? payload.content, payload.data);
+        void scheduleDevicePushNotification(payload.pushTitle ?? notification.senderName, payload.pushBody ?? payload.content, {
+          ...(payload.data ?? {}),
+          appNotificationId: notification.id,
+          type: notification.type,
+          senderId: notification.senderId,
+          senderName: notification.senderName,
+          senderAvatar: notification.senderAvatar,
+          content: notification.content
+        });
       }
     },
     [scheduleDevicePushNotification, setIsNotificationsOpen, setNotifications]
@@ -2045,16 +2032,8 @@ const AppShell = () => {
 
     const configureHandler = async () => {
       try {
-        const Notifications = await import('expo-notifications');
         if (!active) return;
-        Notifications.setNotificationHandler({
-          handleNotification: async () => ({
-            shouldShowBanner: true,
-            shouldShowList: true,
-            shouldPlaySound: true,
-            shouldSetBadge: false
-          })
-        });
+        await configureForegroundNotificationHandler(isExpoGo);
       } catch {
         // ignore handler setup failures
       }
@@ -2303,6 +2282,11 @@ const AppShell = () => {
       senderName: sender?.name ?? 'Rider',
       senderAvatar: sender?.avatar ?? avatarFallback,
       content: `triggered SOS on "${rideTitle}"`,
+      data: {
+        target: 'ride',
+        rideId: effectiveRideTrackingSession.rideId,
+        userId: latestSos.userId
+      },
       openCenter: true,
       sendPush: true,
       pushTitle: 'SOS Alert',
@@ -2361,6 +2345,11 @@ const AppShell = () => {
             senderName: requester.senderName,
             senderAvatar: requester.senderAvatar,
             content: `requested to join "${ride.title}"`,
+            data: {
+              target: 'ride',
+              rideId: ride.id,
+              requesterId
+            },
             sendPush: true,
             pushTitle: 'Request received',
             pushBody: `${requester.senderName} requested to join "${ride.title}".`
@@ -2381,6 +2370,10 @@ const AppShell = () => {
           senderName,
           senderAvatar,
           content: `${wasApproved ? 'approved' : 'rejected'} your join request for "${ride.title}"`,
+          data: {
+            target: 'ride',
+            rideId: ride.id
+          },
           sendPush: true,
           pushTitle: wasApproved ? 'Request approved' : 'Request rejected',
           pushBody: wasApproved
@@ -2406,6 +2399,11 @@ const AppShell = () => {
           senderName: participant.senderName,
           senderAvatar: participant.senderAvatar,
           content: `joined "${ride.title}"`,
+          data: {
+            target: 'ride',
+            rideId: ride.id,
+            userId: participantId
+          },
           sendPush: true,
           pushTitle: 'New member joined',
           pushBody: `${participant.senderName} joined "${ride.title}".`
@@ -2459,6 +2457,11 @@ const AppShell = () => {
             senderName: requester.senderName,
             senderAvatar: requester.senderAvatar,
             content: `requested to join squad "${squad.name}"`,
+            data: {
+              target: 'squad',
+              squadId: squad.id,
+              requesterId
+            },
             sendPush: true,
             pushTitle: 'Request received',
             pushBody: `${requester.senderName} requested to join squad "${squad.name}".`
@@ -2477,6 +2480,10 @@ const AppShell = () => {
           senderName: creator.senderName,
           senderAvatar: creator.senderAvatar,
           content: `${wasApproved ? 'approved' : 'rejected'} your join request for squad "${squad.name}"`,
+          data: {
+            target: 'squad',
+            squadId: squad.id
+          },
           sendPush: true,
           pushTitle: wasApproved ? 'Request approved' : 'Request rejected',
           pushBody: wasApproved
@@ -2498,6 +2505,11 @@ const AppShell = () => {
           senderName: member.senderName,
           senderAvatar: member.senderAvatar,
           content: `joined squad "${squad.name}"`,
+          data: {
+            target: 'squad',
+            squadId: squad.id,
+            userId: memberId
+          },
           sendPush: true,
           pushTitle: 'New member joined',
           pushBody: `${member.senderName} joined squad "${squad.name}".`
@@ -2702,6 +2714,166 @@ const AppShell = () => {
     setSelectedUserId(null);
     setActiveTab('chats');
   };
+
+  const handleNotificationNavigation = useCallback(
+    (data?: Record<string, unknown>) => {
+      const payload = data ?? {};
+      const target = typeof payload.target === 'string' ? payload.target.trim() : '';
+      const rideId = typeof payload.rideId === 'string' ? payload.rideId.trim() : '';
+      const helpPostId = typeof payload.helpPostId === 'string' ? payload.helpPostId.trim() : '';
+      const squadId = typeof payload.squadId === 'string' ? payload.squadId.trim() : '';
+      const userIdCandidates = [payload.userId, payload.senderId, payload.requesterId]
+        .map((value) => (typeof value === 'string' ? value.trim() : ''))
+        .filter(Boolean);
+      const userId = userIdCandidates[0] ?? '';
+
+      if ((target === 'chat' || target === 'conversation') && userId) {
+        if (blockedUserIds.has(userId)) {
+          pushSystemNotification('This rider is blocked.');
+          setIsNotificationsOpen(true);
+          return;
+        }
+        openOrCreateConversation(userId);
+        return;
+      }
+
+      if (rideId) {
+        const ride = ridesById.get(rideId);
+        if (!ride) {
+          setIsNotificationsOpen(true);
+          return;
+        }
+        if (blockedUserIds.has(ride.creatorId)) {
+          pushSystemNotification('This ride is from a blocked rider.');
+          setIsNotificationsOpen(true);
+          return;
+        }
+        setActiveTab('feed');
+        setFeedFilter('rides');
+        setSelectedRideId(rideId);
+        setIsRideDetailOpen(true);
+        return;
+      }
+
+      if (helpPostId) {
+        const post = helpPostsById.get(helpPostId);
+        if (!post) {
+          setIsNotificationsOpen(true);
+          return;
+        }
+        if (blockedUserIds.has(post.creatorId)) {
+          pushSystemNotification('This help post is from a blocked rider.');
+          setIsNotificationsOpen(true);
+          return;
+        }
+        setActiveTab('feed');
+        setFeedFilter('help');
+        setSelectedHelpPost(post);
+        setIsHelpDetailOpen(true);
+        return;
+      }
+
+      if (squadId) {
+        if (!squadsById.has(squadId)) {
+          setIsNotificationsOpen(true);
+          return;
+        }
+        setActiveTab('squad');
+        if (target === 'squad_chat') {
+          setSelectedSquadId(null);
+          setActiveSquadChatId(squadId);
+          return;
+        }
+        setSelectedSquadId(squadId);
+        return;
+      }
+
+      setIsNotificationsOpen(true);
+    },
+    [
+      blockedUserIds,
+      helpPostsById,
+      openOrCreateConversation,
+      pushSystemNotification,
+      ridesById,
+      setActiveSquadChatId,
+      setFeedFilter,
+      setIsHelpDetailOpen,
+      setIsNotificationsOpen,
+      setIsRideDetailOpen,
+      setSelectedHelpPost,
+      setSelectedRideId,
+      setSelectedSquadId,
+      setActiveTab,
+      squadsById
+    ]
+  );
+
+  useEffect(() => {
+    if (isExpoGo || !hydrated || !isLoggedIn) return;
+
+    let active = true;
+    let cleanup: () => void = () => undefined;
+
+    const handleIncomingNotification = (incoming: Awaited<ReturnType<typeof buildStoredNotificationFromExpo>>) => {
+      if (!incoming) return;
+      setNotifications((prev) => mergeNotification(prev, incoming));
+    };
+
+    const handleNotificationResponse = (
+      response: import('expo-notifications').NotificationResponse,
+      markRead = true
+    ) => {
+      const responseKey = getNotificationResponseKey(response);
+      if (handledNotificationResponseIdsRef.current.has(responseKey)) return;
+      handledNotificationResponseIdsRef.current.add(responseKey);
+
+      const incoming = buildStoredNotificationFromExpo(response.notification);
+      if (incoming) {
+        handleIncomingNotification(markRead ? { ...incoming, read: true } : incoming);
+      }
+
+      const responseData = response.notification.request.content.data;
+      const fallbackData =
+        responseData && typeof responseData === 'object' && !Array.isArray(responseData)
+          ? (responseData as Record<string, unknown>)
+          : undefined;
+      handleNotificationNavigation(incoming?.data ?? fallbackData);
+    };
+
+    const subscribe = async () => {
+      try {
+        const subscription = await subscribeToNotificationEvents({
+          onReceived: (notification) => {
+            handleIncomingNotification(buildStoredNotificationFromExpo(notification));
+          },
+          onResponse: (response) => {
+            handleNotificationResponse(response);
+          }
+        });
+
+        if (!active) {
+          subscription.cleanup();
+          return;
+        }
+
+        cleanup = subscription.cleanup;
+
+        if (subscription.lastResponse) {
+          handleNotificationResponse(subscription.lastResponse);
+        }
+      } catch {
+        // ignore listener registration failures
+      }
+    };
+
+    void subscribe();
+
+    return () => {
+      active = false;
+      cleanup();
+    };
+  }, [handleNotificationNavigation, hydrated, isExpoGo, isLoggedIn, setNotifications]);
 
   const handleViewProfile = (userId: string) => {
     if (blockedUserIds.has(userId)) {
@@ -3046,6 +3218,10 @@ const AppShell = () => {
         senderName: currentUser.name,
         senderAvatar: currentUser.avatar,
         content: `SOS sent for "${rideToTrack.title}"`,
+        data: {
+          target: 'ride',
+          rideId
+        },
         openCenter: true,
         sendPush: true,
         pushTitle: 'SOS Sent',
@@ -4468,11 +4644,6 @@ const AppShell = () => {
     return (
       <SafeAreaView style={[styles.fullScreen, { backgroundColor: TOKENS.dark.bg }]}>
         <ExpoStatusBar style="light" translucent={false} backgroundColor={TOKENS.dark.bg} />
-        <View style={styles.centered}>
-          <MaterialCommunityIcons name="bike-fast" size={46} color={TOKENS.dark.primary} />
-          <Text style={[styles.brandTitle, { marginTop: 12, color: TOKENS.dark.text }]}>ThrottleUp</Text>
-          <Text style={[styles.mutedSmall, { marginTop: 6, color: TOKENS.dark.muted }]}>Loading workspace...</Text>
-        </View>
       </SafeAreaView>
     );
   }

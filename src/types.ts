@@ -194,7 +194,7 @@ export interface Notification {
   content: string;
   timestamp: string;
   read: boolean;
-  data?: unknown;
+  data?: Record<string, unknown>;
 }
 
 export interface ChatMessage {

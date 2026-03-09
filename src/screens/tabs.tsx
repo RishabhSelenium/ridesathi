@@ -93,7 +93,7 @@ export const SplashScreen = ({ theme }: { theme: Theme }) => {
       <View style={styles.centered}>
         <Image
           source={require('../assets/logo.png')}
-          style={{ width: 80, height: 80, marginBottom: 16 }}
+          style={{ width: 140, height: 140, marginBottom: 16 }}
           resizeMode="contain"
         />
         <Text style={[styles.splashBrand, { color: t.text }]}>ThrottleUp</Text>
