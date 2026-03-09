@@ -98,7 +98,7 @@ export const SplashScreen = ({ theme }: { theme: Theme }) => {
         />
         <Text style={[styles.splashBrand, { color: t.text }]}>ThrottleUp</Text>
         <Text style={{ color: t.muted, fontSize: 13, marginTop: 12, marginBottom: 20 }}>
-          Loading workspace...
+          Warming up the engine...
         </Text>
         <View style={{ width: 140, height: 4, backgroundColor: t.border, borderRadius: 2, overflow: 'hidden' }}>
           <Animated.View
