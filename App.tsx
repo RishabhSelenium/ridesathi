@@ -48,6 +48,7 @@ import {
   getExpoPushToken,
   getNotificationResponseKey,
   mergeNotification,
+  NotificationSoundKind,
   scheduleImmediateNotification,
   setupNotificationChannel as registerNotificationChannel,
   subscribeToNotificationEvents
@@ -194,6 +195,7 @@ type AppNotificationPayload = {
   senderAvatar?: string;
   content: string;
   data?: Record<string, unknown>;
+  soundKind?: NotificationSoundKind;
   openCenter?: boolean;
   sendPush?: boolean;
   pushTitle?: string;
@@ -1954,14 +1956,15 @@ const AppShell = () => {
   );
 
   const scheduleDevicePushNotification = useCallback(
-    async (title: string, body: string, data?: Record<string, unknown>) => {
+    async (title: string, body: string, data: Record<string, unknown> | undefined, soundKind: NotificationSoundKind) => {
       try {
         await scheduleImmediateNotification({
           title,
           body,
           data,
           isExpoGo,
-          permissionStatus: notificationPermissionStatus
+          permissionStatus: notificationPermissionStatus,
+          soundKind
         });
       } catch {
         // ignore local push scheduling failures
@@ -2012,6 +2015,10 @@ const AppShell = () => {
         setIsNotificationsOpen(true);
       }
       if (payload.sendPush) {
+        const target = typeof payload.data?.target === 'string' ? payload.data.target.trim().toLowerCase() : '';
+        const soundKind: NotificationSoundKind =
+          payload.soundKind ?? (target === 'chat' || target === 'conversation' ? 'message' : 'ride');
+
         void scheduleDevicePushNotification(payload.pushTitle ?? notification.senderName, payload.pushBody ?? payload.content, {
           ...(payload.data ?? {}),
           appNotificationId: notification.id,
@@ -2020,7 +2027,7 @@ const AppShell = () => {
           senderName: notification.senderName,
           senderAvatar: notification.senderAvatar,
           content: notification.content
-        });
+        }, soundKind);
       }
     },
     [scheduleDevicePushNotification, setIsNotificationsOpen, setNotifications]

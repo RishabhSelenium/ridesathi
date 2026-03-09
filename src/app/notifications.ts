@@ -4,8 +4,16 @@ import { Platform } from 'react-native';
 import { Notification } from '../types';
 import { PermissionStatus, avatarFallback } from './ui';
 
-const NOTIFICATION_CHANNEL_ID = 'throttleup-alerts';
-const NOTIFICATION_SOUND = 'default';
+export type NotificationSoundKind = 'ride' | 'message';
+
+const NOTIFICATION_CHANNEL_IDS: Record<NotificationSoundKind, string> = {
+  ride: 'throttleup-ride-alerts',
+  message: 'throttleup-message-alerts'
+};
+const NOTIFICATION_SOUNDS: Record<NotificationSoundKind, string> = {
+  ride: 'Ride_notification.mp3',
+  message: 'msg_notification.mp3'
+};
 const EXPO_PUSH_TOKEN_REGEX = /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/;
 const VALID_NOTIFICATION_TYPES: Notification['type'][] = [
   'friend_request',
@@ -75,11 +83,19 @@ export const mergeNotification = (items: Notification[], notification: Notificat
 export const setupNotificationChannel = async (isExpoGo: boolean): Promise<void> => {
   if (isExpoGo || Platform.OS !== 'android') return;
   const Notifications = await loadNotificationsModule();
-  await Notifications.setNotificationChannelAsync(NOTIFICATION_CHANNEL_ID, {
-    name: 'ThrottleUp Alerts',
+
+  await Notifications.setNotificationChannelAsync(NOTIFICATION_CHANNEL_IDS.ride, {
+    name: 'ThrottleUp Ride Alerts',
     importance: Notifications.AndroidImportance.HIGH,
-    sound: NOTIFICATION_SOUND,
+    sound: NOTIFICATION_SOUNDS.ride,
     vibrationPattern: [0, 250, 200, 250],
+    lightColor: '#F97316'
+  });
+  await Notifications.setNotificationChannelAsync(NOTIFICATION_CHANNEL_IDS.message, {
+    name: 'ThrottleUp Message Alerts',
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: NOTIFICATION_SOUNDS.message,
+    vibrationPattern: [0, 120, 100, 120],
     lightColor: '#F97316'
   });
 };
@@ -124,13 +140,15 @@ export const scheduleImmediateNotification = async ({
   body,
   data,
   isExpoGo,
-  permissionStatus
+  permissionStatus,
+  soundKind
 }: {
   title: string;
   body: string;
   data?: Record<string, unknown>;
   isExpoGo: boolean;
   permissionStatus: PermissionStatus;
+  soundKind: NotificationSoundKind;
 }): Promise<void> => {
   if (isExpoGo || permissionStatus !== 'granted') return;
 
@@ -140,7 +158,8 @@ export const scheduleImmediateNotification = async ({
       title,
       body,
       data,
-      sound: NOTIFICATION_SOUND
+      sound: NOTIFICATION_SOUNDS[soundKind],
+      ...(Platform.OS === 'android' ? { channelId: NOTIFICATION_CHANNEL_IDS[soundKind] } : {})
     },
     trigger: null
   });

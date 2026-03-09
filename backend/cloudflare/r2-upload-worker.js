@@ -116,7 +116,7 @@ export default {
 
       const messages = validOwnerPushTokens.map((token) => ({
         to: token,
-        sound: 'default',
+        sound: 'Ride_notification.mp3',
         title: 'Request received',
         body: `${requesterName} requested to join "${rideTitle}".`,
         data: {

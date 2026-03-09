@@ -57,7 +57,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./src/assets/logo.png",
+          "icon": "./src/assets/notification-icon.png",
           "color": "#F97316",
           "sounds": [
             "./src/assets/Ride_notification.mp3",
