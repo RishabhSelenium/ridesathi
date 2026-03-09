@@ -5,6 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -66,16 +67,52 @@ const SyncErrorBanner = ({
 
 export const SplashScreen = ({ theme }: { theme: Theme }) => {
   const t = TOKENS[theme];
+  // Simple animated progress bar logic
+  const progressAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(progressAnim, {
+          toValue: 1,
+          duration: 1500,
+          useNativeDriver: false
+        }),
+        Animated.timing(progressAnim, {
+          toValue: 0,
+          duration: 0,
+          useNativeDriver: false
+        })
+      ])
+    ).start();
+  }, [progressAnim]);
 
   return (
     <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg }]}>
       <ExpoStatusBar style={theme === 'light' ? 'dark' : 'light'} translucent={false} backgroundColor={t.bg} />
       <View style={styles.centered}>
-        <View style={[styles.splashIcon, { backgroundColor: t.primary }]}>
-          <MaterialCommunityIcons name="flash" size={56} color="#fff" />
-        </View>
+        <Image
+          source={require('../assets/logo.png')}
+          style={{ width: 80, height: 80, marginBottom: 16 }}
+          resizeMode="contain"
+        />
         <Text style={[styles.splashBrand, { color: t.text }]}>ThrottleUp</Text>
-        <Text style={[styles.splashSubtitle, { color: t.primary }]}>COMMUNITY GRID</Text>
+        <Text style={{ color: t.muted, fontSize: 13, marginTop: 12, marginBottom: 20 }}>
+          Loading workspace...
+        </Text>
+        <View style={{ width: 140, height: 4, backgroundColor: t.border, borderRadius: 2, overflow: 'hidden' }}>
+          <Animated.View
+            style={{
+              height: '100%',
+              backgroundColor: t.primary,
+              borderRadius: 2,
+              width: progressAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: ['0%', '100%']
+              })
+            }}
+          />
+        </View>
       </View>
     </SafeAreaView>
   );
