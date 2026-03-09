@@ -118,6 +118,7 @@ import { getFirebaseServices, isFirebaseConfigured } from './src/firebase/client
 import {
   addExpoPushTokenToUser,
   createModerationReportInFirestore,
+  deleteSquadInFirestore,
   deleteRideInFirestore,
   fetchUserByIdFromFirestore,
   fetchHelpPostsFromFirestore,
@@ -408,6 +409,23 @@ const waitForAuthSession = async (timeoutMs = 1200, pollMs = 80): Promise<boolea
   return false;
 };
 
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+  try {
+    return await Promise.race<T>([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+};
+
 const normalizeRideVisibility = (value: unknown): RideVisibility[] => {
   if (Array.isArray(value)) {
     const normalized = value.filter((item): item is RideVisibility => typeof item === 'string' && isRideVisibility(item));
@@ -552,6 +570,7 @@ const normalizeSquad = (squad: LegacySquad): Squad => {
     members: memberIds,
     adminIds,
     avatar: squad.avatar,
+    avatarAsset: squad.avatarAsset,
     city: squad.city,
     rideStyles: normalizeSquadRideStyles(squad),
     joinPermission: normalizeSquadJoinPermission(squad.joinPermission),
@@ -561,30 +580,51 @@ const normalizeSquad = (squad: LegacySquad): Squad => {
 };
 
 const normalizeSquads = (items: LegacySquad[]): Squad[] => items.map(normalizeSquad);
+const isRuntimeCreatedSquadId = (squadId: string): boolean => /^sq-\d{10,}$/.test(squadId);
+
+const getCurrentUserIdAliases = (currentUserId: string, currentUserPhoneNumber?: string): Set<string> => {
+  const aliases = new Set<string>();
+  if (currentUserId) {
+    aliases.add(currentUserId);
+  }
+
+  const normalizedPhoneDigits = (currentUserPhoneNumber ?? '').replace(/\D/g, '');
+  if (normalizedPhoneDigits.length >= 10) {
+    aliases.add(`user-${normalizedPhoneDigits.slice(-10)}`);
+  }
+
+  return aliases;
+};
+
 const mergeSquadsPreservingLocalMembership = (
   remoteSquads: Squad[],
   localSquads: Squad[],
-  currentUserId: string
+  currentUserId: string,
+  currentUserPhoneNumber?: string
 ): Squad[] => {
   if (!currentUserId) return remoteSquads;
 
+  const currentUserAliases = getCurrentUserIdAliases(currentUserId, currentUserPhoneNumber);
+  const hasUserAlias = (ids: string[]): boolean => ids.some((id) => currentUserAliases.has(id));
+
   const localById = new Map(localSquads.map((squad) => [squad.id, squad]));
+  const remoteIds = new Set(remoteSquads.map((squad) => squad.id));
   const mergedRemoteSquads = remoteSquads.map((remoteSquad) => {
     const localSquad = localById.get(remoteSquad.id);
     if (!localSquad) return remoteSquad;
 
-    const localIsMember = localSquad.members.includes(currentUserId);
-    const remoteIsMember = remoteSquad.members.includes(currentUserId);
+    const localIsMember = hasUserAlias(localSquad.members);
+    const remoteIsMember = hasUserAlias(remoteSquad.members);
     if (localIsMember && !remoteIsMember) {
       return {
         ...remoteSquad,
         members: uniqueStrings([...remoteSquad.members, currentUserId]),
-        joinRequests: remoteSquad.joinRequests.filter((id) => id !== currentUserId)
+        joinRequests: remoteSquad.joinRequests.filter((id) => !currentUserAliases.has(id))
       };
     }
 
-    const localHasPendingRequest = localSquad.joinRequests.includes(currentUserId);
-    const remoteHasPendingRequest = remoteSquad.joinRequests.includes(currentUserId);
+    const localHasPendingRequest = hasUserAlias(localSquad.joinRequests);
+    const remoteHasPendingRequest = hasUserAlias(remoteSquad.joinRequests);
     if (localHasPendingRequest && !remoteHasPendingRequest && !remoteIsMember) {
       return {
         ...remoteSquad,
@@ -594,7 +634,23 @@ const mergeSquadsPreservingLocalMembership = (
 
     return remoteSquad;
   });
-  return mergedRemoteSquads;
+
+  // Keep optimistic local squads (e.g., newly created) until they appear in cloud snapshots.
+  const localOnlyRelevantSquads = localSquads.filter((localSquad) => {
+    if (remoteIds.has(localSquad.id)) return false;
+    return currentUserAliases.has(localSquad.creatorId) || hasUserAlias(localSquad.members);
+  });
+
+  if (localOnlyRelevantSquads.length === 0) {
+    return mergedRemoteSquads;
+  }
+
+  return [...localOnlyRelevantSquads, ...mergedRemoteSquads].sort((a, b) => {
+    const aTime = Date.parse(a.createdAt);
+    const bTime = Date.parse(b.createdAt);
+    if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0;
+    return bTime - aTime;
+  });
 };
 
 const safeParse = <T,>(value: string | null, fallback: T): T => {
@@ -841,6 +897,7 @@ const AppShell = () => {
   const previousSquadsForNotificationRef = useRef<Squad[] | null>(null);
   const rideNotificationUserRef = useRef<string | null>(null);
   const squadNotificationUserRef = useRef<string | null>(null);
+  const attemptedSquadCloudSyncIdsRef = useRef<Set<string>>(new Set());
   const hasLoggedAppOpenRef = useRef(false);
   const [syncState, setSyncState] = useState<SyncState>(INITIAL_SYNC_STATE);
   const [chatSyncRetryToken, setChatSyncRetryToken] = useState(0);
@@ -861,6 +918,7 @@ const AppShell = () => {
   const [isUploadingProfilePhoto, setIsUploadingProfilePhoto] = useState(false);
   const [uploadingBikeName, setUploadingBikeName] = useState<string | null>(null);
   const [isCreatingSquad, setIsCreatingSquad] = useState(false);
+  const [editingSquadId, setEditingSquadId] = useState<string | null>(null);
   const rideTrackingLocationAlertShownRef = useRef(false);
   const lastNewsLoadTriggerHeightRef = useRef(0);
   const hasFirebaseAuthSession = FIREBASE_ENABLED && Boolean(getFirebaseServices()?.auth.currentUser);
@@ -929,6 +987,7 @@ const AppShell = () => {
     setIsUploadingProfilePhoto(false);
     setUploadingBikeName(null);
     setIsCreatingSquad(false);
+    setEditingSquadId(null);
 
     lastSyncedUsersRef.current = null;
     friendRequestTimestampsRef.current = [];
@@ -1312,7 +1371,9 @@ const AppShell = () => {
 
       if (remoteSquadsResult.status === 'fulfilled') {
         const normalizedRemoteSquads = normalizeSquads(remoteSquadsResult.value);
-        setSquads((prev) => mergeSquadsPreservingLocalMembership(normalizedRemoteSquads, prev, payload.uid));
+        setSquads((prev) =>
+          mergeSquadsPreservingLocalMembership(normalizedRemoteSquads, prev, payload.uid, payload.phoneNumber)
+        );
       }
 
       return resolvedUser ?? buildAuthenticatedUser(payload.uid, payload.phoneNumber, remoteUser ?? undefined);
@@ -1444,7 +1505,12 @@ const AppShell = () => {
           if (remoteSquadsResult.status === 'fulfilled') {
             const normalizedRemoteSquads = normalizeSquads(remoteSquadsResult.value);
             setSquads((prev) =>
-              mergeSquadsPreservingLocalMembership(normalizedRemoteSquads, prev, effectiveCurrentUser.id)
+              mergeSquadsPreservingLocalMembership(
+                normalizedRemoteSquads,
+                prev,
+                effectiveCurrentUser.id,
+                effectiveCurrentUser.phoneNumber
+              )
             );
           }
         }
@@ -1568,7 +1634,14 @@ const AppShell = () => {
         onChange: (remoteSquads) => {
           if (disposed) return;
           const normalizedRemoteSquads = normalizeSquads(remoteSquads);
-          setSquads((prev) => mergeSquadsPreservingLocalMembership(normalizedRemoteSquads, prev, currentUser.id));
+          setSquads((prev) =>
+            mergeSquadsPreservingLocalMembership(
+              normalizedRemoteSquads,
+              prev,
+              currentUser.id,
+              currentUser.phoneNumber
+            )
+          );
         },
         onError: () => {
           // Squads do not currently expose a dedicated sync status channel.
@@ -1723,6 +1796,10 @@ const AppShell = () => {
     if (!selectedSquadId) return null;
     return squadsById.get(selectedSquadId) ?? null;
   }, [selectedSquadId, squadsById]);
+  const editingSquad = useMemo(() => {
+    if (!editingSquadId) return null;
+    return squadsById.get(editingSquadId) ?? null;
+  }, [editingSquadId, squadsById]);
 
   const activeSquadChat = useMemo(() => {
     if (!activeSquadChatId) return null;
@@ -3845,6 +3922,77 @@ const AppShell = () => {
     }
   };
 
+  const syncSquadToCloud = useCallback(
+    async (squad: Squad): Promise<void> => {
+      if (!FIREBASE_ENABLED) return;
+
+      const hasAuthSession = await ensureFirebaseAuthSession(currentUser.phoneNumber);
+      if (!hasAuthSession) {
+        throw new Error('Squad sync requires an authenticated Firebase session.');
+      }
+
+      const authUid = getFirebaseServices()?.auth.currentUser?.uid;
+      if (!authUid) {
+        throw new Error('No Firebase auth user is available for squad sync.');
+      }
+
+      const authAliases = getCurrentUserIdAliases(authUid, currentUser.phoneNumber);
+      // Include in-memory app identity as an alias (can differ from auth uid during migrations).
+      authAliases.add(currentUser.id);
+      const replaceAliasWithAuthUid = (ids: string[]): string[] =>
+        uniqueStrings(
+          ids
+            .map((id) => (authAliases.has(id) ? authUid : id))
+            .filter((id) => id.trim().length > 0)
+        );
+
+      const normalizedSquadForCloud: Squad = {
+        ...squad,
+        creatorId: authAliases.has(squad.creatorId) ? authUid : squad.creatorId,
+        members: uniqueStrings([...replaceAliasWithAuthUid(squad.members), authUid]),
+        adminIds: replaceAliasWithAuthUid(squad.adminIds).filter((id) => id !== authUid),
+        joinRequests: replaceAliasWithAuthUid(squad.joinRequests).filter((id) => id !== authUid)
+      };
+
+      await upsertSquadInFirestore(normalizedSquadForCloud);
+    },
+    [currentUser.phoneNumber, ensureFirebaseAuthSession]
+  );
+
+  const syncSquadToCloudInBackground = useCallback(
+    (squad: Squad) => {
+      if (!FIREBASE_ENABLED) return;
+      void syncSquadToCloud(squad).catch((error) => {
+        console.warn('[squad-sync] Failed to upsert squad to cloud:', error);
+      });
+    },
+    [syncSquadToCloud]
+  );
+
+  useEffect(() => {
+    if (!FIREBASE_ENABLED || !hydrated || !isLoggedIn || !currentUser.id) return;
+
+    const userAliases = getCurrentUserIdAliases(currentUser.id, currentUser.phoneNumber);
+    squads.forEach((squad) => {
+      if (attemptedSquadCloudSyncIdsRef.current.has(squad.id)) return;
+      // Avoid trying to backfill static/mock squads like "sq-1", "sq-2", etc.
+      if (!isRuntimeCreatedSquadId(squad.id)) return;
+      if (!userAliases.has(squad.creatorId)) return;
+      attemptedSquadCloudSyncIdsRef.current.add(squad.id);
+      void syncSquadToCloud(squad).catch((error) => {
+        const errorCode = error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
+        console.warn('[squad-sync] Background backfill failed:', {
+          error,
+          code: errorCode,
+          squadId: squad.id,
+          squadCreatorId: squad.creatorId,
+          currentUserId: currentUser.id,
+          authUid: getFirebaseServices()?.auth.currentUser?.uid ?? null
+        });
+      });
+    });
+  }, [currentUser.id, currentUser.phoneNumber, hydrated, isLoggedIn, squads, syncSquadToCloud]);
+
   const handleCreateSquad = async (data: {
     name: string;
     description: string;
@@ -3855,6 +4003,15 @@ const AppShell = () => {
     if (isCreatingSquad) return;
     setIsCreatingSquad(true);
     try {
+      let creatorId = currentUser.id;
+      if (FIREBASE_ENABLED) {
+        const hasAuthSession = await ensureFirebaseAuthSession(currentUser.phoneNumber);
+        const authUid = getFirebaseServices()?.auth.currentUser?.uid;
+        if (hasAuthSession && authUid) {
+          creatorId = authUid;
+        }
+      }
+
       const rideStyles = uniqueStrings(data.rideStyles.map((style) => style.trim()).filter(Boolean));
       const squadId = `sq-${Date.now()}`;
       let squadAvatar = `https://api.dicebear.com/7.x/identicon/png?seed=${encodeURIComponent(data.name)}`;
@@ -3863,7 +4020,11 @@ const AppShell = () => {
       if (data.avatarUri) {
         try {
           const uploadedAvatar = FIREBASE_ENABLED
-            ? await uploadSquadPhoto(squadId, currentUser.id, data.avatarUri)
+            ? await withTimeout(
+              uploadSquadPhoto(squadId, creatorId, data.avatarUri),
+              20_000,
+              'Squad photo upload timed out.'
+            )
             : {
               objectKey: data.avatarUri,
               signedUrl: data.avatarUri,
@@ -3880,8 +4041,8 @@ const AppShell = () => {
         id: squadId,
         name: data.name,
         description: data.description,
-        creatorId: currentUser.id,
-        members: [currentUser.id],
+        creatorId,
+        members: [creatorId],
         adminIds: [],
         avatar: squadAvatar,
         avatarAsset: squadAvatarAsset,
@@ -3897,8 +4058,85 @@ const AppShell = () => {
         return next;
       });
       if (FIREBASE_ENABLED) {
-        void upsertSquadInFirestore(newSquad);
+        try {
+          await syncSquadToCloud(newSquad);
+        } catch {
+          Alert.alert('Saved on this device only', 'Squad was created locally but could not sync to cloud yet. Please check login/connectivity and try again.');
+        }
       }
+      setIsCreateSquadModalOpen(false);
+    } finally {
+      setIsCreatingSquad(false);
+    }
+  };
+
+  const handleUpdateSquad = async (data: {
+    name: string;
+    description: string;
+    rideStyles: string[];
+    joinPermission: SquadJoinPermission;
+    avatarUri?: string;
+  }) => {
+    if (!editingSquadId) return;
+    if (isCreatingSquad) return;
+
+    const existing = squadsById.get(editingSquadId);
+    if (!existing) {
+      setEditingSquadId(null);
+      setIsCreateSquadModalOpen(false);
+      return;
+    }
+
+    setIsCreatingSquad(true);
+    try {
+      const rideStyles = uniqueStrings(data.rideStyles.map((style) => style.trim()).filter(Boolean));
+      let avatar = existing.avatar;
+      let avatarAsset = existing.avatarAsset;
+      if (data.avatarUri && data.avatarUri.startsWith('file')) {
+        try {
+          const uploadedAvatar = FIREBASE_ENABLED
+            ? await withTimeout(
+              uploadSquadPhoto(existing.id, existing.creatorId, data.avatarUri),
+              20_000,
+              'Squad photo upload timed out.'
+            )
+            : {
+              objectKey: data.avatarUri,
+              signedUrl: data.avatarUri,
+              expiresAt: '2099-12-31T23:59:59.000Z'
+            };
+          avatar = uploadedAvatar.signedUrl;
+          avatarAsset = uploadedAvatar;
+        } catch {
+          Alert.alert('Upload failed', 'Could not update squad photo. Keeping previous photo.');
+        }
+      }
+
+      const promotedMembers = data.joinPermission === 'anyone'
+        ? uniqueStrings([...existing.members, ...existing.joinRequests])
+        : existing.members;
+
+      const updatedSquad: Squad = {
+        ...existing,
+        name: data.name,
+        description: data.description,
+        avatar,
+        avatarAsset,
+        rideStyles: rideStyles.length > 0 ? rideStyles : ['Touring'],
+        joinPermission: data.joinPermission,
+        members: promotedMembers,
+        joinRequests: data.joinPermission === 'anyone' ? [] : existing.joinRequests
+      };
+
+      setSquads((prev) => {
+        const next = prev.map((item) => (item.id === updatedSquad.id ? updatedSquad : item));
+        persistSquadsSnapshot(next);
+        return next;
+      });
+      if (FIREBASE_ENABLED) {
+        syncSquadToCloudInBackground(updatedSquad);
+      }
+      setEditingSquadId(null);
       setIsCreateSquadModalOpen(false);
     } finally {
       setIsCreatingSquad(false);
@@ -3928,7 +4166,7 @@ const AppShell = () => {
       persistSquadsSnapshot(next);
 
       if (updatedSquad && FIREBASE_ENABLED) {
-        void upsertSquadInFirestore(updatedSquad);
+        syncSquadToCloudInBackground(updatedSquad);
       }
 
       return next;
@@ -3956,7 +4194,7 @@ const AppShell = () => {
       persistSquadsSnapshot(next);
 
       if (updatedSquad && FIREBASE_ENABLED) {
-        void upsertSquadInFirestore(updatedSquad);
+        syncSquadToCloudInBackground(updatedSquad);
       }
 
       return next;
@@ -3983,7 +4221,7 @@ const AppShell = () => {
       persistSquadsSnapshot(next);
 
       if (updatedSquad && FIREBASE_ENABLED) {
-        void upsertSquadInFirestore(updatedSquad);
+        syncSquadToCloudInBackground(updatedSquad);
       }
 
       return next;
@@ -4009,7 +4247,7 @@ const AppShell = () => {
       persistSquadsSnapshot(next);
 
       if (updatedSquad && FIREBASE_ENABLED) {
-        void upsertSquadInFirestore(updatedSquad);
+        syncSquadToCloudInBackground(updatedSquad);
       }
 
       return next;
@@ -4036,7 +4274,7 @@ const AppShell = () => {
       persistSquadsSnapshot(next);
 
       if (updatedSquad && FIREBASE_ENABLED) {
-        void upsertSquadInFirestore(updatedSquad);
+        syncSquadToCloudInBackground(updatedSquad);
       }
 
       return next;
@@ -4061,7 +4299,7 @@ const AppShell = () => {
       persistSquadsSnapshot(next);
 
       if (updatedSquad && FIREBASE_ENABLED) {
-        void upsertSquadInFirestore(updatedSquad);
+        syncSquadToCloudInBackground(updatedSquad);
       }
 
       return next;
@@ -4070,6 +4308,63 @@ const AppShell = () => {
 
   const handleOpenSquadDetail = (squadId: string) => {
     setSelectedSquadId(squadId);
+  };
+
+  const handleDeleteSquad = (squadId: string) => {
+    const squad = squadsById.get(squadId);
+    if (!squad || squad.creatorId !== currentUser.id) return;
+
+    Alert.alert('Delete Squad', 'This will permanently delete the squad for all members.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          setSquads((prev) => {
+            const next = prev.filter((item) => item.id !== squadId);
+            persistSquadsSnapshot(next);
+            return next;
+          });
+          if (FIREBASE_ENABLED) {
+            void deleteSquadInFirestore(squadId);
+          }
+          if (selectedSquadId === squadId) {
+            setSelectedSquadId(null);
+          }
+          if (activeSquadChatId === squadId) {
+            setActiveSquadChatId(null);
+          }
+        }
+      }
+    ]);
+  };
+
+  const handleRemoveSquadMember = (squadId: string, memberId: string) => {
+    if (!memberId || memberId === currentUser.id) return;
+
+    setSquads((prev) => {
+      let updatedSquad: Squad | null = null;
+      const next = prev.map((squad) => {
+        if (squad.id !== squadId) return squad;
+        if (squad.creatorId !== currentUser.id) return squad;
+        if (memberId === squad.creatorId) return squad;
+        if (!squad.members.includes(memberId)) return squad;
+
+        updatedSquad = {
+          ...squad,
+          members: squad.members.filter((id) => id !== memberId),
+          adminIds: squad.adminIds.filter((id) => id !== memberId),
+          joinRequests: squad.joinRequests.filter((id) => id !== memberId)
+        };
+        return updatedSquad;
+      });
+
+      persistSquadsSnapshot(next);
+      if (updatedSquad && FIREBASE_ENABLED) {
+        syncSquadToCloudInBackground(updatedSquad);
+      }
+      return next;
+    });
   };
 
   const handleOpenSquadChat = (squadId: string) => {
@@ -4801,7 +5096,10 @@ const AppShell = () => {
               users={visibleUsers}
               searchQuery={squadSearchQuery}
               onSearchChange={setSquadSearchQuery}
-              onCreateSquad={() => setIsCreateSquadModalOpen(true)}
+              onCreateSquad={() => {
+                setEditingSquadId(null);
+                setIsCreateSquadModalOpen(true);
+              }}
               onOpenSquadDetail={handleOpenSquadDetail}
               onJoinSquad={handleJoinSquad}
               onLeaveSquad={handleLeaveSquad}
@@ -5018,8 +5316,13 @@ const AppShell = () => {
       <CreateSquadModal
         visible={isCreateSquadModalOpen}
         theme={theme}
-        onClose={() => setIsCreateSquadModalOpen(false)}
-        onSubmit={handleCreateSquad}
+        mode={editingSquad ? 'edit' : 'create'}
+        initialData={editingSquad}
+        onClose={() => {
+          setIsCreateSquadModalOpen(false);
+          setEditingSquadId(null);
+        }}
+        onSubmit={editingSquad ? handleUpdateSquad : handleCreateSquad}
         isSubmitting={isCreatingSquad}
       />
 
@@ -5037,6 +5340,12 @@ const AppShell = () => {
         onRejectJoinRequest={handleRejectSquadJoinRequest}
         onPromoteAdmin={handlePromoteSquadAdmin}
         onDemoteAdmin={handleDemoteSquadAdmin}
+        onEditSquad={(squadId) => {
+          setEditingSquadId(squadId);
+          setIsCreateSquadModalOpen(true);
+        }}
+        onDeleteSquad={handleDeleteSquad}
+        onRemoveMember={handleRemoveSquadMember}
         onViewProfile={handleViewProfile}
       />
     </SafeAreaView>

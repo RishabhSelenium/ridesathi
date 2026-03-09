@@ -1,8 +1,10 @@
 const express = require('express');
+const os = require('os');
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const PORT = Number.parseInt(process.env.PORT ?? '8788', 10);
+const HOST = (process.env.HOST ?? '0.0.0.0').trim();
 const R2_ACCOUNT_ID = (process.env.R2_ACCOUNT_ID ?? '').trim();
 const R2_ACCESS_KEY_ID = (process.env.R2_ACCESS_KEY_ID ?? '').trim();
 const R2_SECRET_ACCESS_KEY = (process.env.R2_SECRET_ACCESS_KEY ?? '').trim();
@@ -117,6 +119,23 @@ app.post('/api/images/sign', ensureAuthorized, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+const resolveLanIpv4 = () => {
+  const interfaces = os.networkInterfaces();
+  for (const values of Object.values(interfaces)) {
+    if (!values) continue;
+    for (const details of values) {
+      if (details.family === 'IPv4' && !details.internal) {
+        return details.address;
+      }
+    }
+  }
+  return null;
+};
+
+app.listen(PORT, HOST, () => {
+  const lanIp = resolveLanIpv4();
   console.log(`R2 signer listening on http://localhost:${PORT}`);
+  if (lanIp) {
+    console.log(`R2 signer LAN URL: http://${lanIp}:${PORT}`);
+  }
 });

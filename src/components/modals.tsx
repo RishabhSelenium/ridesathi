@@ -6010,12 +6010,16 @@ export const CreateSquadModal = ({
   onClose,
   onSubmit,
   isSubmitting,
+  mode = 'create',
+  initialData,
   theme
 }: {
   visible: boolean;
   onClose: () => void;
   onSubmit: (data: { name: string; description: string; rideStyles: string[]; joinPermission: SquadJoinPermission; avatarUri?: string }) => void;
   isSubmitting: boolean;
+  mode?: 'create' | 'edit';
+  initialData?: Squad | null;
   theme: Theme;
 }) => {
   const t = TOKENS[theme];
@@ -6038,13 +6042,30 @@ export const CreateSquadModal = ({
   };
 
   useEffect(() => {
-    if (visible) return;
+    if (!visible) {
+      setName('');
+      setDescription('');
+      setRideStyles(['Touring']);
+      setJoinPermission('anyone');
+      setAvatarUri(null);
+      return;
+    }
+
+    if (mode === 'edit' && initialData) {
+      setName(initialData.name);
+      setDescription(initialData.description);
+      setRideStyles(initialData.rideStyles.length > 0 ? [...initialData.rideStyles] : ['Touring']);
+      setJoinPermission(initialData.joinPermission);
+      setAvatarUri(initialData.avatar || null);
+      return;
+    }
+
     setName('');
     setDescription('');
     setRideStyles(['Touring']);
     setJoinPermission('anyone');
     setAvatarUri(null);
-  }, [visible]);
+  }, [initialData, mode, visible]);
 
   const handlePickSquadPhoto = async () => {
     if (isSubmitting) return;
@@ -6072,7 +6093,7 @@ export const CreateSquadModal = ({
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <View style={[styles.bottomSheet, { backgroundColor: t.surface, borderTopColor: t.primary }]}>
             <View style={styles.rowBetween}>
-              <Text style={[styles.modalTitle, { color: t.text }]}>Create Squad</Text>
+              <Text style={[styles.modalTitle, { color: t.text }]}>{mode === 'edit' ? 'Edit Squad' : 'Create Squad'}</Text>
               <TouchableOpacity onPress={onClose}>
                 <MaterialCommunityIcons name="close" size={24} color={t.muted} />
               </TouchableOpacity>
@@ -6171,7 +6192,11 @@ export const CreateSquadModal = ({
                 ) : (
                   <MaterialCommunityIcons name="account-group" size={18} color="#fff" />
                 )}
-                <Text style={styles.primaryButtonText}>{isSubmitting ? 'Uploading...' : 'Create Squad'}</Text>
+                <Text style={styles.primaryButtonText}>
+                  {isSubmitting
+                    ? (mode === 'edit' ? 'Saving...' : 'Uploading...')
+                    : (mode === 'edit' ? 'Save Changes' : 'Create Squad')}
+                </Text>
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -6194,6 +6219,9 @@ export const SquadDetailModal = ({
   onRejectJoinRequest,
   onPromoteAdmin,
   onDemoteAdmin,
+  onEditSquad,
+  onDeleteSquad,
+  onRemoveMember,
   onViewProfile,
   theme
 }: {
@@ -6209,6 +6237,9 @@ export const SquadDetailModal = ({
   onRejectJoinRequest: (squadId: string, userId: string) => void;
   onPromoteAdmin: (squadId: string, userId: string) => void;
   onDemoteAdmin: (squadId: string, userId: string) => void;
+  onEditSquad: (squadId: string) => void;
+  onDeleteSquad: (squadId: string) => void;
+  onRemoveMember: (squadId: string, userId: string) => void;
   onViewProfile: (userId: string) => void;
   theme: Theme;
 }) => {
@@ -6291,6 +6322,25 @@ export const SquadDetailModal = ({
                 <MaterialCommunityIcons name="account-group-outline" size={18} color="#fff" />
                 <Text style={styles.primaryButtonText}>Open Squad Chat</Text>
               </TouchableOpacity>
+            )}
+
+            {isOwner && (
+              <View style={styles.rowAligned}>
+                <TouchableOpacity
+                  style={[styles.primaryCompactButton, { borderColor: t.border, backgroundColor: t.subtle, flex: 1 }]}
+                  onPress={() => onEditSquad(squad.id)}
+                >
+                  <MaterialCommunityIcons name="pencil-outline" size={14} color={t.primary} />
+                  <Text style={[styles.primaryCompactButtonText, { color: t.primary }]}>Edit Squad</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.primaryCompactButton, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}12`, flex: 1 }]}
+                  onPress={() => onDeleteSquad(squad.id)}
+                >
+                  <MaterialCommunityIcons name="trash-can-outline" size={14} color={TOKENS[theme].red} />
+                  <Text style={[styles.primaryCompactButtonText, { color: TOKENS[theme].red }]}>Delete Squad</Text>
+                </TouchableOpacity>
+              </View>
             )}
 
             {!isMember ? (
@@ -6396,21 +6446,30 @@ export const SquadDetailModal = ({
                   <Text style={[styles.metaText, { color: t.muted }]}>
                     {member.name.split(' ')[0]} role: {isTargetAdmin ? 'Admin' : 'Member'}
                   </Text>
-                  <TouchableOpacity
-                    style={[styles.primaryCompactButton, { borderColor: t.border, backgroundColor: t.subtle }]}
-                    onPress={() =>
-                      isTargetAdmin ? onDemoteAdmin(squad.id, memberId) : onPromoteAdmin(squad.id, memberId)
-                    }
-                  >
-                    <MaterialCommunityIcons
-                      name={isTargetAdmin ? 'account-arrow-down-outline' : 'account-arrow-up-outline'}
-                      size={14}
-                      color={t.primary}
-                    />
-                    <Text style={[styles.primaryCompactButtonText, { color: t.primary }]}>
-                      {isTargetAdmin ? 'Set as Member' : 'Set as Admin'}
-                    </Text>
-                  </TouchableOpacity>
+                  <View style={styles.rowAligned}>
+                    <TouchableOpacity
+                      style={[styles.primaryCompactButton, { borderColor: t.border, backgroundColor: t.subtle }]}
+                      onPress={() =>
+                        isTargetAdmin ? onDemoteAdmin(squad.id, memberId) : onPromoteAdmin(squad.id, memberId)
+                      }
+                    >
+                      <MaterialCommunityIcons
+                        name={isTargetAdmin ? 'account-arrow-down-outline' : 'account-arrow-up-outline'}
+                        size={14}
+                        color={t.primary}
+                      />
+                      <Text style={[styles.primaryCompactButtonText, { color: t.primary }]}>
+                        {isTargetAdmin ? 'Set as Member' : 'Set as Admin'}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.primaryCompactButton, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}12` }]}
+                      onPress={() => onRemoveMember(squad.id, memberId)}
+                    >
+                      <MaterialCommunityIcons name="account-remove-outline" size={14} color={TOKENS[theme].red} />
+                      <Text style={[styles.primaryCompactButtonText, { color: TOKENS[theme].red }]}>Remove</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               );
             })}

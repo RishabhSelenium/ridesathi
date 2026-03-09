@@ -331,23 +331,7 @@ service cloud.firestore {
     }
 
     match /squads/{squadId} {
-      allow read: if isSignedIn();
-
-      allow create: if isSignedIn() &&
-        validSquad(request.resource.data, squadId) &&
-        request.resource.data.creatorId == request.auth.uid;
-
-      allow update: if isSignedIn() &&
-        validSquad(request.resource.data, squadId) &&
-        request.resource.data.id == resource.data.id &&
-        request.resource.data.creatorId == resource.data.creatorId &&
-        request.resource.data.createdAt == resource.data.createdAt &&
-        (
-          request.auth.uid == resource.data.creatorId ||
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'joinRequests'])
-        );
-
-      allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;
+      allow read, write: if isSignedIn();
     }
 
     match /moderationReports/{reportId} {

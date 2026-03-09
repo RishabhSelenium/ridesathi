@@ -669,7 +669,57 @@ export const upsertSquadInFirestore = async (squad: Squad): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
 
-  await setDoc(doc(services.firestore, SQUADS_COLLECTION, squad.id), squad, { merge: true });
+  const squadRef = doc(services.firestore, SQUADS_COLLECTION, squad.id);
+  const getErrorCode = (error: unknown): string =>
+    error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
+  const isPermissionDenied = (error: unknown): boolean => getErrorCode(error).includes('permission-denied');
+
+  const payloadWithAvatarAsset = {
+    ...squad,
+    // Newer rules require this key to exist even when no uploaded asset is present.
+    avatarAsset: squad.avatarAsset ?? null
+  };
+
+  try {
+    await setDoc(squadRef, payloadWithAvatarAsset, { merge: true });
+    return;
+  } catch (error) {
+    if (!isPermissionDenied(error)) {
+      throw error;
+    }
+  }
+
+  // Backward-compat retry for projects still using older squad rules without avatarAsset.
+  const { avatarAsset: _ignoredAvatarAsset, ...legacyPayload } = payloadWithAvatarAsset;
+  try {
+    await setDoc(squadRef, legacyPayload, { merge: true });
+    return;
+  } catch (error) {
+    if (!isPermissionDenied(error)) {
+      throw error;
+    }
+  }
+
+  // Legacy schema fallback (older projects may validate a smaller squad shape).
+  const legacyMinimalPayload = {
+    id: squad.id,
+    name: squad.name,
+    description: squad.description,
+    creatorId: squad.creatorId,
+    members: squad.members,
+    avatar: squad.avatar,
+    city: squad.city,
+    rideStyle: squad.rideStyles[0] ?? 'Touring',
+    createdAt: squad.createdAt
+  };
+  await setDoc(squadRef, legacyMinimalPayload, { merge: true });
+};
+
+export const deleteSquadInFirestore = async (squadId: string): Promise<void> => {
+  const services = getFirebaseServices();
+  if (!services) return;
+
+  await deleteDoc(doc(services.firestore, SQUADS_COLLECTION, squadId));
 };
 
 export const createModerationReportInFirestore = async (report: ModerationReport): Promise<void> => {

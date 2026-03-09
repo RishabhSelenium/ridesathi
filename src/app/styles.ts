@@ -1108,6 +1108,29 @@ export const styles = StyleSheet.create({
     fontWeight: '800',
     textTransform: 'uppercase'
   },
+  squadFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8
+  },
+  squadFooterMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    minWidth: 0
+  },
+  squadRideStyleTag: {
+    flexShrink: 1,
+    minWidth: 0
+  },
+  squadJoinModeTag: {
+    flexShrink: 0
+  },
+  squadFooterAction: {
+    flexShrink: 0
+  },
   headerProfileButton: {
     width: 34,
     height: 34,
