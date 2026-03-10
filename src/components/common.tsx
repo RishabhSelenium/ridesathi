@@ -1,6 +1,6 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import React from 'react';
-import { Image, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { Animated, Image, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import {
   colorForBadge,
@@ -8,6 +8,7 @@ import {
   formatRideDistance,
   formatRideEta,
   getRideLifecycleStatus,
+  getRideStartDateTime,
   TOKENS,
   Theme,
   avatarFallback
@@ -51,114 +52,144 @@ export const RideCard = ({
   theme: Theme;
 }) => {
   const t = TOKENS[theme];
-  const isCreator = ride.creatorId === currentUserId;
-  const isJoined = ride.currentParticipants.includes(currentUserId);
-  const requiresJoinApproval = ride.joinPermission !== 'anyone';
-  const rideLifecycle = getRideLifecycleStatus(ride);
-  const isRideClosed = rideLifecycle.joinClosed;
-  const joinModeLabel = isRideClosed ? 'Closed' : requiresJoinApproval ? 'Request approval' : 'Open join';
-  const hasRouteStats =
-    typeof ride.routeEtaMinutes === 'number' || typeof ride.routeDistanceKm === 'number' || typeof ride.tollEstimateInr === 'number';
   const paymentSummary = getRidePaymentSummary(ride);
 
+  const startLoc = ride.startLocation || ride.city || 'Start';
+  const endLoc = ride.endLocation || ride.primaryDestination || 'Destination';
+  const durationLabel = ride.rideDuration || '1 Day';
+  const participantCount = ride.currentParticipants.length;
+
+  const rideLifecycle = getRideLifecycleStatus(ride);
+  const rideStartDt = getRideStartDateTime(ride);
+  const now = Date.now();
+  const startsAtTime = rideStartDt?.getTime() ?? rideLifecycle.startsAt?.getTime();
+  const isUpcomingSoon = !!startsAtTime && (startsAtTime - now) > 0 && (startsAtTime - now) < 24 * 60 * 60 * 1000;
+
+  const dateLabel = rideStartDt
+    ? rideStartDt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })
+    : (ride.startDate?.trim() || ride.date?.trim() || '');
+
+  const glowAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (isUpcomingSoon) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(glowAnim, {
+            toValue: 1,
+            duration: 1200,
+            useNativeDriver: false
+          }),
+          Animated.timing(glowAnim, {
+            toValue: 0,
+            duration: 1200,
+            useNativeDriver: false
+          })
+        ])
+      ).start();
+    }
+  }, [isUpcomingSoon, glowAnim]);
+
+  const animatedBorderColor = glowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [t.border, t.primary]
+  });
+
+  const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
+
   return (
-    <TouchableOpacity style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]} onPress={() => onOpenDetail(ride)}>
-      <View style={styles.rowBetween}>
-        <TouchableOpacity style={styles.rowAligned} onPress={() => onViewProfile?.(ride.creatorId)}>
-          <Image source={{ uri: ride.creatorAvatar || avatarFallback }} style={styles.avatarSmall} />
-          <Text style={[styles.boldText, { color: t.text }]}>{ride.creatorName}</Text>
-        </TouchableOpacity>
-        <View style={styles.rowAligned}>
-          {isCreator && (
-            <>
-              <Badge color="blue" theme={theme}>
-                Organizing
-              </Badge>
-              {ride.requests.length > 0 && (
-                <>
-                  <View style={{ width: 6 }} />
-                  <Badge color="orange" theme={theme}>
-                    {ride.requests.length} requests
-                  </Badge>
-                </>
-              )}
-              <View style={{ width: 6 }} />
-            </>
-          )}
-          {isJoined && !isCreator && (
-            <>
-              <Badge color="green" theme={theme}>
-                Joined
-              </Badge>
-              <View style={{ width: 6 }} />
-            </>
-          )}
-          {isRideClosed && (
-            <>
-              <Badge color="red" theme={theme}>
-                Closed
-              </Badge>
-              <View style={{ width: 6 }} />
-            </>
-          )}
-          <Badge color="orange" theme={theme}>
-            {ride.type}
-          </Badge>
-        </View>
-      </View>
+    <AnimatedTouchableOpacity
+      style={[
+        styles.rideCard,
+        { backgroundColor: t.card },
+        isUpcomingSoon ? {
+          borderColor: animatedBorderColor,
+          elevation: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 4] }),
+          shadowColor: t.primary,
+          shadowOffset: { width: 0, height: 0 },
+          shadowOpacity: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.4] }),
+          shadowRadius: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 8] })
+        } : { borderColor: t.border }
+      ]}
+      onPress={() => onOpenDetail(ride)}
+    >
 
-      <Text style={[styles.cardTitle, { color: t.text }]}>{ride.title}</Text>
+      <View style={styles.rideCardCover}>
+        <Image
+          source={{ uri: `https://picsum.photos/seed/${encodeURIComponent(endLoc)}/800/400` }}
+          style={styles.rideCardCoverImage}
+        />
 
-      <View style={styles.metaRow}>
-        <View style={styles.rowAligned}>
-          <MaterialCommunityIcons name="clock-outline" size={14} color={t.primary} />
-          <Text style={[styles.metaText, { color: t.muted }]}>{ride.startTime}</Text>
+        <View style={styles.rideCardCoverOverlayTopLeft}>
+          <View style={styles.rideCardDurationPill}>
+            <Text style={styles.rideCardDurationText}>{durationLabel}</Text>
+          </View>
         </View>
-        <View style={styles.rowAligned}>
-          <MaterialCommunityIcons name="account-group-outline" size={14} color={t.primary} />
-          <Text style={[styles.metaText, { color: t.muted }]}>
-            {ride.currentParticipants.length}/{ride.maxParticipants}
+
+        <View style={styles.rideCardCoverOverlayTopRight}>
+          <MaterialCommunityIcons name="share" size={28} color="#fff" style={{ textShadowColor: 'rgba(0,0,0,0.5)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 }} />
+        </View>
+
+        <View style={styles.rideCardCoverOverlayBottomLeft}>
+          <MaterialCommunityIcons name="map-marker-outline" size={16} color="#fff" />
+          <Text style={styles.rideCardCoverOverlayBottomText} numberOfLines={1}>
+            {endLoc}
           </Text>
         </View>
       </View>
 
-      {hasRouteStats && (
-        <View style={styles.wrapRow}>
-          {typeof ride.routeEtaMinutes === 'number' && (
-            <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <Text style={[styles.pillTagText, { color: t.text }]}>ETA {formatRideEta(ride.routeEtaMinutes)}</Text>
-            </View>
-          )}
+      <View style={styles.rideCardBody}>
+        <View style={styles.rideCardTitleRow}>
+          <Text style={[styles.rideCardTitle, { color: t.text }]} numberOfLines={1}>{ride.title}</Text>
+        </View>
+
+        <View style={styles.rideCardRouteRow}>
+          <Text style={[styles.rideCardRoutePointText, { color: t.text }]} numberOfLines={1}>{startLoc}</Text>
+          <View style={styles.rideCardRouteLineContainer}>
+            <View style={[styles.rideCardRouteDot, { backgroundColor: t.primary }]} />
+            <View style={[styles.rideCardRouteLine, { backgroundColor: t.primary }]} />
+            <View style={[styles.rideCardRouteDot, { backgroundColor: t.primary }]} />
+          </View>
+          <Text style={[styles.rideCardRoutePointText, { color: t.text, textAlign: 'right' }]} numberOfLines={2}>{endLoc}</Text>
+        </View>
+
+        <View style={styles.rideCardMetaRow}>
+          <View style={[styles.rideCardMetaChip, { backgroundColor: t.subtle }]}>
+            <MaterialCommunityIcons name="calendar-blank-outline" size={16} color={t.muted} />
+            <Text style={[styles.rideCardMetaChipText, { color: t.muted }]}>{dateLabel}</Text>
+          </View>
+
           {typeof ride.routeDistanceKm === 'number' && (
-            <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <Text style={[styles.pillTagText, { color: t.text }]}>{formatRideDistance(ride.routeDistanceKm)}</Text>
+            <View style={[styles.rideCardMetaChip, { backgroundColor: t.subtle }]}>
+              <MaterialCommunityIcons name="map-marker-distance" size={16} color={t.muted} />
+              <Text style={[styles.rideCardMetaChipText, { color: t.muted }]}>{formatRideDistance(ride.routeDistanceKm)}</Text>
             </View>
           )}
-          {typeof ride.tollEstimateInr === 'number' && (
-            <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <Text style={[styles.pillTagText, { color: t.text }]}>Toll {formatInrAmount(ride.tollEstimateInr)}</Text>
-            </View>
-          )}
+
+          <View style={[styles.rideCardMetaChip, { backgroundColor: t.subtle }]}>
+            <MaterialCommunityIcons name="account-group-outline" size={16} color={t.muted} />
+            <Text style={[styles.rideCardMetaChipText, { color: t.muted }]}>{participantCount}</Text>
+          </View>
         </View>
-      )}
 
-      {paymentSummary && (
-        <View style={[styles.pillTag, { alignSelf: 'flex-start', borderColor: t.border, backgroundColor: t.subtle }]}>
-          <Text style={[styles.pillTagText, { color: t.text }]}>{paymentSummary}</Text>
+        <View style={[styles.rideCardDivider, { backgroundColor: t.border }]} />
+
+        <View style={styles.rideCardFooter}>
+          <View style={styles.rideCardFooterLeft}>
+            <Text style={[styles.rideCardFooterLabel, { color: t.muted }]}>Riding With</Text>
+            <TouchableOpacity onPress={() => onViewProfile?.(ride.creatorId)}>
+              <Text style={[styles.rideCardCreatorName, { color: t.primary }]} numberOfLines={1}>{ride.creatorName}</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.rideCardFooterRight}>
+            <Text style={[styles.rideCardCostValue, { color: t.text }]}>
+              {paymentSummary ? paymentSummary.split(' • ')[0] : (ride.costType || 'Free')}
+            </Text>
+            <Text style={[styles.rideCardCostSub, { color: t.muted }]}>Cost/person</Text>
+          </View>
         </View>
-      )}
-
-      <View style={[styles.pillTag, { alignSelf: 'flex-start', borderColor: t.border, backgroundColor: t.subtle }]}>
-        <Text style={[styles.pillTagText, { color: t.muted }]}>{joinModeLabel}</Text>
       </View>
-
-      <View style={[styles.routePreview, { borderColor: t.border, backgroundColor: t.subtle }]}> 
-        <Text style={[styles.inputLabel, { color: t.muted }]}>Route</Text>
-        <Text style={[styles.bodyText, { color: t.text }]} numberOfLines={2}>
-          {ride.route}
-        </Text>
-      </View>
-    </TouchableOpacity>
+    </AnimatedTouchableOpacity>
   );
 };
 
@@ -174,7 +205,7 @@ export const Badge = ({
   const c = colorForBadge(color, theme);
 
   return (
-    <View style={[styles.badge, { backgroundColor: c.bg, borderColor: c.border }]}> 
+    <View style={[styles.badge, { backgroundColor: c.bg, borderColor: c.border }]}>
       <Text style={[styles.badgeText, { color: c.text }]}>{children}</Text>
     </View>
   );

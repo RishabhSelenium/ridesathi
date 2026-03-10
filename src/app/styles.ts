@@ -123,6 +123,144 @@ export const styles = StyleSheet.create({
     padding: 14,
     gap: 10
   },
+  rideCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginHorizontal: 10,
+    marginTop: 8,
+  },
+  rideCardCover: {
+    width: '100%',
+    height: 150,
+  },
+  rideCardCoverImage: {
+    width: '100%',
+    height: '100%',
+  },
+  rideCardCoverOverlayTopLeft: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+  },
+  rideCardDurationPill: {
+    backgroundColor: '#fff',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  rideCardDurationText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#000',
+  },
+  rideCardCoverOverlayTopRight: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+  },
+  rideCardCoverOverlayBottomLeft: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  },
+  rideCardCoverOverlayBottomText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  rideCardBody: {
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  rideCardTitleRow: {},
+  rideCardTitle: {
+    fontSize: 14,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  rideCardRouteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  rideCardRoutePointText: {
+    fontSize: 11,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  rideCardRouteLineContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  rideCardRouteDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  rideCardRouteLine: {
+    flex: 1,
+    height: 2,
+  },
+  rideCardMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  rideCardMetaChip: {
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  rideCardMetaChipText: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  rideCardDivider: {
+    height: 1,
+    marginVertical: 4,
+  },
+  rideCardFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  rideCardFooterLeft: {
+    flex: 1,
+  },
+  rideCardFooterLabel: {
+    fontSize: 10,
+    marginBottom: 0,
+  },
+  rideCardCreatorName: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  rideCardFooterRight: {
+    alignItems: 'flex-end',
+  },
+  rideCardCostValue: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  rideCardCostSub: {
+    fontSize: 10,
+  },
   cardTitle: {
     fontSize: 18,
     fontWeight: '800'
