@@ -155,11 +155,12 @@ export const RideCard = ({
         { backgroundColor: t.card },
         isUpcomingSoon ? {
           borderColor: animatedBorderColor,
-          elevation: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 4] }),
+          borderWidth: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 2.5] }),
+          elevation: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 6] }),
           shadowColor: t.primary,
           shadowOffset: { width: 0, height: 0 },
-          shadowOpacity: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.4] }),
-          shadowRadius: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 8] })
+          shadowOpacity: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 0.6] }),
+          shadowRadius: glowAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 12] })
         } : { borderColor: t.border }
       ]}
       onPress={() => onOpenDetail(ride)}
