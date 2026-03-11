@@ -71,6 +71,13 @@ R2 upload worker: `backend/cloudflare/`
 
 The app stores signed image URLs plus expiry in Firestore and refreshes them automatically when fetched after expiry.
 
+Optional: use a custom notification backend (instead of Firebase Cloud Functions):
+
+- `EXPO_PUBLIC_NOTIFICATIONS_BACKEND_BASE_URL=https://<your-backend-host>`
+- `EXPO_PUBLIC_NOTIFICATIONS_BACKEND_TOKEN=<backend-token>`
+
+Notification backend in this repo (direct FCM): `backend/notifications/`
+
 For map-style location suggestions in Create Ride, also set one of:
 
 - `EXPO_PUBLIC_GOOGLE_PLACES_API_KEY` (preferred)
@@ -93,7 +100,6 @@ Also make sure **Maps SDK for Android** is enabled for that key in Google Cloud 
 - Cloud Firestore
 - Realtime Database
 - Cloud Storage
-- Cloud Functions
 
 ### 3. Phone OTP note
 
@@ -142,12 +148,6 @@ If you use a specific Firebase project id:
 firebase deploy --project <your-project-id> --only firestore:rules,database,storage
 ```
 
-Deploy Cloud Functions (FCM notification backend):
-
-```bash
-firebase deploy --only functions
-```
-
 Deploy Cloudflare worker updates (R2 image uploads):
 
 ```bash
@@ -155,7 +155,15 @@ cd backend/cloudflare
 wrangler deploy
 ```
 
+Run notification backend locally (direct FCM):
+
+```bash
+cd backend/notifications
+npm install
+npm start
+```
+
 ## Notes
 
 - Data is still partially mock-seeded on first run, then synced with Firebase when enabled.
-- This app has no separate custom backend server in this repo; Firebase is the backend.
+- Push notification fanout now expects a non-Firebase backend endpoint (`EXPO_PUBLIC_NOTIFICATIONS_BACKEND_BASE_URL`).

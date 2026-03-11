@@ -3,7 +3,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAuth, initializeAuth, type Auth } from 'firebase/auth';
 import { type Database, getDatabase } from 'firebase/database';
 import { type Firestore, getFirestore, initializeFirestore } from 'firebase/firestore';
-import { type Functions, getFunctions } from 'firebase/functions';
 import { type FirebaseStorage, getStorage } from 'firebase/storage';
 
 type FirebaseServices = {
@@ -12,7 +11,6 @@ type FirebaseServices = {
   firestore: Firestore;
   realtimeDb: Database;
   storage: FirebaseStorage;
-  functions: Functions;
 };
 
 export const firebaseConfig = {
@@ -25,7 +23,6 @@ export const firebaseConfig = {
   databaseURL: process.env.EXPO_PUBLIC_FIREBASE_DATABASE_URL ?? ''
 };
 
-const functionsRegion = process.env.EXPO_PUBLIC_FIREBASE_FUNCTIONS_REGION ?? 'us-central1';
 const hasFirebaseConfig =
   firebaseConfig.apiKey.length > 0 &&
   firebaseConfig.projectId.length > 0 &&
@@ -79,15 +76,13 @@ const createFirebaseServices = (): FirebaseServices | null => {
 
   const realtimeDb = getDatabase(app);
   const storage = getStorage(app);
-  const functions = getFunctions(app, functionsRegion);
 
   return {
     app,
     auth,
     firestore,
     realtimeDb,
-    storage,
-    functions
+    storage
   };
 };
 

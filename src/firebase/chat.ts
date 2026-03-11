@@ -95,26 +95,45 @@ export const sendChatMessageToRealtime = async (
   conversationId: string,
   message: ChatMessage
 ): Promise<void> => {
+  const services = getFirebaseServices();
+  if (!services) return;
+
+  if (!message.recipientId) {
+    throw new Error('Direct chat recipient is required for realtime sync.');
+  }
+
+  const senderId = services.auth.currentUser?.uid ?? message.senderId;
+  const payload: RealtimeChatMessage = {
+    id: message.id,
+    senderId,
+    recipientId: message.recipientId,
+    text: message.text,
+    timestamp: message.timestamp,
+    timestampEpoch: Date.now()
+  };
+
   const path = messagePathForConversation(conversationId);
-  await sendMessage(path, message);
+  const messageRef = ref(services.realtimeDb, `${path}/${message.id}`);
+  await set(messageRef, payload);
 };
 
 export const sendSquadChatMessageToRealtime = async (
   squadId: string,
   message: ChatMessage
 ): Promise<void> => {
-  const path = messagePathForSquad(squadId);
-  await sendMessage(path, message);
-};
-
-const sendMessage = async (path: string, message: ChatMessage): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
 
-  const messageRef = ref(services.realtimeDb, `${path}/${message.id}`);
+  const senderId = services.auth.currentUser?.uid ?? message.senderId;
   const payload: RealtimeChatMessage = {
-    ...message,
+    id: message.id,
+    senderId,
+    text: message.text,
+    timestamp: message.timestamp,
     timestampEpoch: Date.now()
   };
+
+  const path = messagePathForSquad(squadId);
+  const messageRef = ref(services.realtimeDb, `${path}/${message.id}`);
   await set(messageRef, payload);
 };

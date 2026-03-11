@@ -15,7 +15,8 @@ import {
   TextInput,
   TouchableOpacity,
   View,
-  Pressable
+  Pressable,
+  Modal
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -747,44 +748,113 @@ export const ChatsTab = ({
   currentUser,
   syncError,
   isSyncing,
+  users,
   onRetrySync,
   onOpenChatRoom,
   onOpenSquadChat,
-  onViewProfile
+  onViewProfile,
+  onStartConversation
 }: {
   theme: Theme;
   conversations: Conversation[];
   squads: Squad[];
   currentUser: User;
+  users: User[];
   syncError: string | null;
   isSyncing: boolean;
   onRetrySync: () => void;
   onOpenChatRoom: (conversation: Conversation) => void;
   onOpenSquadChat: (squad: Squad) => void;
   onViewProfile: (userId: string) => void;
+  onStartConversation: (userId: string) => void;
 }) => {
   const t = TOKENS[theme];
-  const [chatTabFilter, setChatTabFilter] = useState<'primary' | 'squads'>('primary');
+  type ChatFilter = 'all' | 'friends' | 'squads' | 'unread';
+  const [activeFilter, setActiveFilter] = useState<ChatFilter>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const friends = useMemo(() => {
+    return currentUser.friends
+      .map(id => users.find(u => u.id === id))
+      .filter((u): u is User => !!u);
+  }, [currentUser.friends, users]);
 
   const mySquads = useMemo(() => squads.filter((sq) => sq.members.includes(currentUser.id)), [squads, currentUser.id]);
 
+  const filteredConversations = useMemo(() => {
+    let result = conversations;
+    
+    // Apply search
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter(c => 
+        c.participantName.toLowerCase().includes(query) || 
+        c.lastMessage.toLowerCase().includes(query)
+      );
+    }
+
+    // Apply pills
+    if (activeFilter === 'unread') {
+      result = result.filter(c => c.unreadCount > 0);
+    }
+    
+    return result;
+  }, [conversations, activeFilter, searchQuery]);
+
+  const filteredSquads = useMemo(() => {
+    let result = mySquads;
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter(s => s.name.toLowerCase().includes(query));
+    }
+    return result;
+  }, [mySquads, searchQuery]);
+
+  const renderFilterPill = (filter: ChatFilter, label: string) => (
+    <TouchableOpacity
+      style={[
+        styles.chatFilterPill,
+        { 
+          backgroundColor: activeFilter === filter ? `${t.primary}22` : t.bg,
+          borderColor: activeFilter === filter ? 'transparent' : t.border 
+        }
+      ]}
+      onPress={() => setActiveFilter(filter)}
+    >
+      <Text style={[
+        styles.chatFilterPillText, 
+        { color: activeFilter === filter ? t.primary : t.muted }
+      ]}>
+        {label}
+      </Text>
+    </TouchableOpacity>
+  );
+
   return (
     <View style={styles.listWrap}>
-      <View style={[styles.feedToggle, { backgroundColor: t.subtle, marginHorizontal: 16, marginTop: 16 }]}>
-        <Pressable
-          style={[styles.feedToggleButton, chatTabFilter === 'primary' && { backgroundColor: t.primary }]}
-          onPress={() => setChatTabFilter('primary')}
+      <View style={styles.chatHeaderContainer}>
+        <View style={[styles.chatSearchContainer, { backgroundColor: t.subtle, borderColor: t.border }]}>
+          <MaterialCommunityIcons name="magnify" size={20} color={t.muted} />
+          <TextInput
+            style={[styles.chatSearchInput, { color: t.text }]}
+            placeholder="Search chats"
+            placeholderTextColor={t.muted}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+        </View>
+
+        <ScrollView 
+          horizontal 
+          showsHorizontalScrollIndicator={false}
+          style={styles.chatFiltersScroll}
+          contentContainerStyle={styles.chatFiltersContainer}
         >
-          <MaterialCommunityIcons name="message-outline" size={14} color={chatTabFilter === 'primary' ? '#fff' : t.muted} />
-          <Text style={[styles.feedToggleText, { color: chatTabFilter === 'primary' ? '#fff' : t.muted }]}>Primary</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.feedToggleButton, chatTabFilter === 'squads' && { backgroundColor: t.primary }]}
-          onPress={() => setChatTabFilter('squads')}
-        >
-          <MaterialCommunityIcons name="account-group-outline" size={14} color={chatTabFilter === 'squads' ? '#fff' : t.muted} />
-          <Text style={[styles.feedToggleText, { color: chatTabFilter === 'squads' ? '#fff' : t.muted }]}>Squads</Text>
-        </Pressable>
+          {renderFilterPill('all', 'All')}
+          {renderFilterPill('friends', 'Friends')}
+          {renderFilterPill('squads', 'Squads')}
+          {renderFilterPill('unread', 'Unread')}
+        </ScrollView>
       </View>
 
       {syncError ? (
@@ -797,71 +867,102 @@ export const ChatsTab = ({
         />
       ) : null}
 
-      {chatTabFilter === 'primary' ? (
-        conversations.length === 0 ? (
+      <View style={{ paddingHorizontal: 0 }}>
+      {activeFilter === 'all' || activeFilter === 'unread' ? (
+        filteredConversations.length === 0 ? (
           <View style={styles.emptyWrap}>
             <MaterialCommunityIcons name="message-outline" size={48} color={t.muted} />
             <Text style={[styles.emptyTitle, { color: t.text }]}>No chats yet.</Text>
             <Text style={[styles.emptySubtitle, { color: t.muted }]}>Connect with riders to start messaging.</Text>
           </View>
         ) : (
-          conversations.map((chat) => (
+          filteredConversations.map((chat) => (
             <TouchableOpacity
               key={chat.id}
-              style={[styles.chatRow, { backgroundColor: t.card, borderColor: t.border }]}
+              style={styles.chatRow}
               onPress={() => onOpenChatRoom(chat)}
             >
               <TouchableOpacity onPress={() => onViewProfile(chat.participantId)}>
                 <View>
-                  <Image source={{ uri: chat.participantAvatar || avatarFallback }} style={styles.avatarMedium} />
-                  {chat.unreadCount > 0 && <View style={[styles.unreadDot, { backgroundColor: t.primary }]} />}
+                  <Image source={{ uri: chat.participantAvatar || avatarFallback }} style={styles.chatAvatar} />
                 </View>
               </TouchableOpacity>
               <View style={styles.chatInfo}>
                 <View style={styles.rowBetween}>
-                  <Text style={[styles.boldText, { color: t.text }]} numberOfLines={1}>
+                  <Text style={[styles.chatParticipantName, { color: t.text }]} numberOfLines={1}>
                     {chat.participantName}
                   </Text>
-                  <Text style={[styles.metaText, { color: t.muted }]}>{chat.timestamp}</Text>
+                  <Text style={[styles.chatTimestamp, { color: chat.unreadCount > 0 ? t.primary : t.muted }]}>{chat.timestamp}</Text>
                 </View>
-                <Text style={[styles.chatPreview, { color: chat.unreadCount > 0 ? t.text : t.muted }]} numberOfLines={1}>
-                  {chat.lastMessage}
-                </Text>
+                <View style={styles.rowBetween}>
+                  <Text style={[styles.chatPreviewText, { color: t.muted, flex: 1, paddingRight: 10 }]} numberOfLines={1}>
+                    {chat.lastMessage}
+                  </Text>
+                  {chat.unreadCount > 0 && (
+                     <View style={[styles.chatUnreadBadge, { backgroundColor: t.primary }]}>
+                        <Text style={styles.chatUnreadBadgeText}>{chat.unreadCount}</Text>
+                     </View>
+                  )}
+                </View>
               </View>
             </TouchableOpacity>
           ))
         )
-      ) : (
-        mySquads.length === 0 ? (
+      ) : activeFilter === 'squads' ? (
+        filteredSquads.length === 0 ? (
           <View style={styles.emptyWrap}>
             <MaterialCommunityIcons name="account-group-outline" size={48} color={t.muted} />
             <Text style={[styles.emptyTitle, { color: t.text }]}>No squads joined.</Text>
             <Text style={[styles.emptySubtitle, { color: t.muted }]}>Join a squad to participate in group chats.</Text>
           </View>
         ) : (
-          mySquads.map((squad) => (
+          filteredSquads.map((squad) => (
             <TouchableOpacity
               key={squad.id}
-              style={[styles.chatRow, { backgroundColor: t.card, borderColor: t.border }]}
+              style={styles.chatRow}
               onPress={() => onOpenSquadChat(squad)}
             >
               <View>
-                <Image source={{ uri: squad.avatar || avatarFallback }} style={styles.avatarMedium} />
+                <Image source={{ uri: squad.avatar || avatarFallback }} style={styles.chatAvatar} />
               </View>
               <View style={styles.chatInfo}>
                 <View style={styles.rowBetween}>
-                  <Text style={[styles.boldText, { color: t.text }]} numberOfLines={1}>
+                  <Text style={[styles.chatParticipantName, { color: t.text }]} numberOfLines={1}>
                     {squad.name}
                   </Text>
                 </View>
-                <Text style={[styles.chatPreview, { color: t.muted }]} numberOfLines={1}>
+                <Text style={[styles.chatPreviewText, { color: t.muted }]} numberOfLines={1}>
                   {squad.members.length} member{squad.members.length === 1 ? '' : 's'}
                 </Text>
               </View>
             </TouchableOpacity>
           ))
         )
+      ) : (
+        friends.length === 0 ? (
+          <View style={styles.emptyWrap}>
+            <MaterialCommunityIcons name="account-search-outline" size={48} color={t.muted} />
+            <Text style={[styles.emptyTitle, { color: t.text }]}>No friends found</Text>
+            <Text style={[styles.emptySubtitle, { color: t.muted }]}>Add friends to start messaging them.</Text>
+          </View>
+        ) : (
+          friends.map(friend => (
+            <TouchableOpacity 
+              key={friend.id} 
+              style={styles.chatRow}
+              onPress={() => onStartConversation(friend.id)}
+            >
+              <Image source={{ uri: friend.avatar || avatarFallback }} style={styles.chatAvatar} />
+              <View style={styles.chatInfo}>
+                <Text style={[styles.chatParticipantName, { color: t.text }]}>{friend.name}</Text>
+                <Text style={[styles.chatPreviewText, { color: t.muted }]}>{friend.bikeType} • {friend.city}</Text>
+              </View>
+              <MaterialCommunityIcons name="message-text-outline" size={24} color={t.primary} />
+            </TouchableOpacity>
+          ))
+        )
       )}
+      </View>
     </View>
   );
 };
@@ -976,43 +1077,6 @@ export const ProfileTab = ({
       </View>
 
       <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
-        <Text style={[styles.cardHeader, { color: t.muted }]}>MY RIDING SQUAD</Text>
-        {squadFriends.length === 0 ? (
-          <Text style={[styles.bodyText, { color: t.muted }]}>No riders in your squad yet.</Text>
-        ) : (
-          squadFriends.map(({ friendId, friend }) => (
-            <TouchableOpacity
-              key={friendId}
-              style={[styles.friendRow, { borderColor: t.border }]}
-              onPress={() => onViewProfile(friendId)}
-            >
-              <View style={styles.rowAligned}>
-                <Image source={{ uri: friend.avatar || avatarFallback }} style={styles.avatarMedium} />
-                <View>
-                  <Text style={[styles.boldText, { color: t.text }]}>{friend.name}</Text>
-                  <Text style={[styles.metaText, { color: t.muted }]}>{friend.garage?.[0] ?? 'Unknown machine'}</Text>
-                </View>
-              </View>
-
-              <TouchableOpacity
-                onPress={() => {
-                  const conversation = conversationsByParticipantId.get(friendId);
-                  if (conversation) {
-                    onOpenConversation(conversation);
-                    return;
-                  }
-                  onStartConversation(friendId);
-                }}
-                style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
-              >
-                <MaterialCommunityIcons name="message-outline" size={18} color={t.primary} />
-              </TouchableOpacity>
-            </TouchableOpacity>
-          ))
-        )}
-      </View>
-
-      <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
         <Text style={[styles.cardHeader, { color: t.muted }]}>PREFERENCES</Text>
         <View style={[styles.preferenceRow, { borderColor: t.border, backgroundColor: t.subtle }]}>
           <View style={styles.rowAligned}>
@@ -1046,6 +1110,7 @@ export const ProfileTab = ({
 export const SquadTab = ({
   theme,
   squads,
+  rides,
   currentUser,
   users,
   searchQuery,
@@ -1057,6 +1122,7 @@ export const SquadTab = ({
 }: {
   theme: Theme;
   squads: Squad[];
+  rides: RidePost[];
   currentUser: User;
   users: User[];
   searchQuery: string;
@@ -1153,96 +1219,88 @@ export const SquadTab = ({
   };
 
   const renderSquadCard = (squad: Squad, isMember: boolean) => {
-    const rideStyleLabel = squad.rideStyles.join(' • ');
     const hasPendingRequest = squad.joinRequests.includes(currentUser.id);
-    const joinModeLabel = squad.joinPermission === 'request_to_join' ? 'Request approval' : 'Open join';
     const isAdmin = squad.adminIds.includes(currentUser.id);
     const canManageRequests = squad.creatorId === currentUser.id || isAdmin;
     const pendingRequestCount = squad.joinRequests.length;
+    const squadRidesCount = rides.filter((r) => r.squadId === squad.id).length;
 
     return (
       <TouchableOpacity
         key={squad.id}
-        style={[styles.squadCard, { backgroundColor: t.card, borderColor: t.border }]}
+        style={[styles.squadCard, { backgroundColor: t.card, borderColor: t.border, padding: 12, borderRadius: 12 }]}
         onPress={() => onOpenSquadDetail(squad.id)}
       >
-        <View style={styles.squadCardHeader}>
-          <Image source={{ uri: squad.avatar || avatarFallback }} style={styles.squadAvatar} />
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.squadName, { color: t.text }]}>{squad.name}</Text>
-            <View style={[styles.rowAligned, { marginTop: 2 }]}>
-              <View style={styles.rowAligned}>
-                <MaterialCommunityIcons name="account-group" size={13} color={t.muted} />
-                <Text style={[styles.metaText, { color: t.muted }]}>{squad.members.length}</Text>
-              </View>
-              <View style={styles.rowAligned}>
-                <MaterialCommunityIcons name="map-marker-outline" size={13} color={t.primary} />
-                <Text style={[styles.metaText, { color: t.muted }]}>{squad.city}</Text>
-              </View>
+        <View style={{ flexDirection: 'row', gap: 14 }}>
+          <Image 
+            source={{ uri: squad.avatar || avatarFallback }} 
+            style={{ width: 84, height: 84, borderRadius: 8, backgroundColor: t.subtle }} 
+            resizeMode="cover"
+          />
+          <View style={{ flex: 1, justifyContent: 'space-between', paddingVertical: 2 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+               <Text style={[styles.squadName, { color: t.text, flex: 1, marginRight: 8, fontSize: 15, textTransform: 'uppercase' }]} numberOfLines={2}>
+                 {squad.name}
+               </Text>
+               {isMember ? (
+                  <TouchableOpacity onPress={(e) => { e.stopPropagation(); onOpenSquadDetail(squad.id); }}>
+                     <MaterialCommunityIcons name="menu" size={22} color={t.muted} />
+                  </TouchableOpacity>
+               ) : (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
+                     <MaterialCommunityIcons name="map-marker" size={14} color={t.muted} />
+                     <Text style={[styles.metaText, { color: t.muted }]}>{squad.city}</Text>
+                  </View>
+               )}
             </View>
+
             {canManageRequests && pendingRequestCount > 0 && (
-              <View style={[styles.pillTag, { borderColor: t.primary, backgroundColor: `${t.primary}18`, marginTop: 6, alignSelf: 'flex-start' }]}>
-                <MaterialCommunityIcons name="account-clock-outline" size={12} color={t.primary} />
-                <Text style={[styles.pillTagText, { color: t.primary }]}>Requests {pendingRequestCount}</Text>
+              <View style={[styles.pillTag, { borderColor: t.primary, backgroundColor: `${t.primary}18`, marginTop: 4, alignSelf: 'flex-start', paddingVertical: 2, paddingHorizontal: 6 }]}>
+                <Text style={[styles.pillTagText, { color: t.primary, fontSize: 10 }]}>Requests: {pendingRequestCount}</Text>
               </View>
             )}
-          </View>
-        </View>
 
-        <Text style={[styles.bodyText, { color: t.muted }]} numberOfLines={2}>
-          {squad.description}
-        </Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 8 }}>
+               <View style={{ flexDirection: 'row', gap: 16 }}>
+                  <View>
+                     <Text style={[styles.profileStatValue, { color: t.text, fontSize: 15, marginBottom: 2 }]}>{squad.members.length}</Text>
+                     <Text style={[styles.metaText, { color: t.muted, fontSize: 11 }]}>Members</Text>
+                  </View>
+                  <View>
+                     <Text style={[styles.profileStatValue, { color: t.text, fontSize: 15, marginBottom: 2 }]}>{squadRidesCount}</Text>
+                     <Text style={[styles.metaText, { color: t.muted, fontSize: 11 }]}>Rides</Text>
+                  </View>
+               </View>
 
-        <View style={styles.squadFooterRow}>
-          <View style={styles.squadFooterMeta}>
-            {renderMemberAvatars(squad.members)}
-            <View style={[styles.pillTag, styles.squadRideStyleTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <Text style={[styles.pillTagText, { color: t.muted }]} numberOfLines={1}>{rideStyleLabel}</Text>
-            </View>
-            <View style={[styles.pillTag, styles.squadJoinModeTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <Text style={[styles.pillTagText, { color: t.muted }]} numberOfLines={1}>{joinModeLabel}</Text>
+               {isMember ? (
+                  <TouchableOpacity
+                     style={[styles.squadActionButton, { borderColor: t.primary, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}
+                     onPress={(e) => { e.stopPropagation?.(); onOpenSquadDetail(squad.id); }}
+                  >
+                     <Text style={[styles.squadActionButtonText, { color: t.primary, fontWeight: '700', textTransform: 'none' }]}>View Details</Text>
+                  </TouchableOpacity>
+               ) : hasPendingRequest ? (
+                  <View style={[styles.squadActionButton, { borderColor: t.border, backgroundColor: t.subtle, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}>
+                     <Text style={[styles.squadActionButtonText, { color: t.muted, fontWeight: '700', textTransform: 'none' }]}>Requested</Text>
+                  </View>
+               ) : squad.joinPermission === 'invite_only' ? (
+                  <View
+                     style={[styles.squadActionButton, { borderColor: t.text, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}
+                  >
+                     <Text style={[styles.squadActionButtonText, { color: t.text, fontWeight: '700', textTransform: 'none' }]}>Invite Only</Text>
+                  </View>
+               ) : (
+                  <TouchableOpacity
+                     style={[styles.squadActionButton, { borderColor: t.primary, backgroundColor: t.primary, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}
+                     onPress={(e) => { e.stopPropagation?.(); onJoinSquad(squad.id); }}
+                  >
+                     <Text style={[styles.squadActionButtonText, { color: '#fff', fontWeight: '700', textTransform: 'none' }]}>
+                        {squad.joinPermission === 'request_to_join' ? 'Send Request' : 'Join'}
+                     </Text>
+                  </TouchableOpacity>
+               )}
             </View>
           </View>
-          {isMember ? (
-            squad.creatorId === currentUser.id ? (
-              <View style={[styles.squadActionButton, styles.squadFooterAction, { borderColor: t.primary, backgroundColor: `${t.primary}15` }]}>
-                <MaterialCommunityIcons name="crown" size={14} color={t.primary} />
-                <Text style={[styles.squadActionButtonText, { color: t.primary }]}>Owner</Text>
-              </View>
-            ) : isAdmin ? (
-              <View style={[styles.squadActionButton, styles.squadFooterAction, { borderColor: t.primary, backgroundColor: `${t.primary}15` }]}>
-                <MaterialCommunityIcons name="shield-account-outline" size={14} color={t.primary} />
-                <Text style={[styles.squadActionButtonText, { color: t.primary }]}>Admin</Text>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={[styles.squadActionButton, styles.squadFooterAction, { borderColor: t.border, backgroundColor: t.subtle }]}
-                onPress={(e) => { e.stopPropagation?.(); onLeaveSquad(squad.id); }}
-              >
-                <MaterialCommunityIcons name="logout" size={14} color={t.red} />
-                <Text style={[styles.squadActionButtonText, { color: t.red }]}>Leave</Text>
-              </TouchableOpacity>
-            )
-          ) : hasPendingRequest ? (
-            <View style={[styles.squadActionButton, styles.squadFooterAction, { borderColor: t.border, backgroundColor: t.subtle }]}>
-              <MaterialCommunityIcons name="clock-outline" size={14} color={t.muted} />
-              <Text style={[styles.squadActionButtonText, { color: t.muted }]}>Requested</Text>
-            </View>
-          ) : (
-            <TouchableOpacity
-              style={[styles.squadActionButton, styles.squadFooterAction, { borderColor: t.primary, backgroundColor: t.primary }]}
-              onPress={(e) => { e.stopPropagation?.(); onJoinSquad(squad.id); }}
-            >
-              <MaterialCommunityIcons
-                name={squad.joinPermission === 'request_to_join' ? 'account-clock-outline' : 'plus'}
-                size={14}
-                color="#fff"
-              />
-              <Text style={[styles.squadActionButtonText, { color: '#fff' }]}>
-                {squad.joinPermission === 'request_to_join' ? 'Request' : 'Join'}
-              </Text>
-            </TouchableOpacity>
-          )}
         </View>
       </TouchableOpacity>
     );

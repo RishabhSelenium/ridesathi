@@ -54,6 +54,7 @@ import {
   RideVisibility,
   Squad,
   SquadJoinPermission,
+  SquadRideCreatePermission,
   SquadRole,
   User
 } from '../types';
@@ -134,6 +135,9 @@ type GooglePlaceDetailsResponse = {
         lng?: number;
       };
     };
+    photos?: Array<{
+      photo_reference?: string;
+    }>;
   };
   error_message?: string;
 };
@@ -149,6 +153,9 @@ type GoogleFindPlaceResponse = {
         lng?: number;
       };
     };
+    photos?: Array<{
+      photo_reference?: string;
+    }>;
   }>;
   error_message?: string;
 };
@@ -163,11 +170,19 @@ type GooglePlaceSuggestion = {
 type GoogleDirectionsRoute = {
   summary?: string;
   warnings?: string[];
+  overview_polyline?: {
+    points?: string;
+  };
   legs?: Array<{
     distance?: { value?: number };
     duration?: { value?: number };
     duration_in_traffic?: { value?: number };
-    steps?: Array<{ html_instructions?: string }>;
+    steps?: Array<{
+      html_instructions?: string;
+      polyline?: {
+        points?: string;
+      };
+    }>;
   }>;
 };
 
@@ -175,6 +190,28 @@ type GoogleDirectionsResponse = {
   status?: string;
   routes?: GoogleDirectionsRoute[];
   error_message?: string;
+};
+
+type OpenStreetMapGeocodeResponse = Array<{
+  lat?: string;
+  lon?: string;
+  display_name?: string;
+  name?: string;
+}>;
+
+type OsrmRouteResponse = {
+  code?: string;
+  routes?: Array<{
+    distance?: number;
+    duration?: number;
+    geometry?: string;
+  }>;
+};
+
+type OsrmRouteData = {
+  distanceKm: number;
+  etaMinutes: number;
+  coordinates: RouteCoordinate[];
 };
 
 type RouteEstimate = {
@@ -553,6 +590,33 @@ const normalizeRouteStopLabels = (points: MapPoint[]): MapPoint[] => {
   });
 };
 
+const mergeIntermediateRoutePoints = ({
+  routePoints,
+  destinationIndex,
+  destinationPoint,
+  destinationLabel
+}: {
+  routePoints: MapPoint[];
+  destinationIndex: number;
+  destinationPoint: MapPoint | null;
+  destinationLabel: string;
+}): MapPoint[] => {
+  const boundedDestinationIndex = Math.max(0, Math.min(routePoints.length, destinationIndex));
+  const outboundStops = routePoints.slice(0, boundedDestinationIndex);
+  const returnStops = routePoints.slice(boundedDestinationIndex);
+  const destinationWaypoint =
+    destinationPoint !== null
+      ? [
+        {
+          ...destinationPoint,
+          label: destinationLabel.trim() || destinationPoint.label?.trim() || 'Destination'
+        }
+      ]
+      : [];
+
+  return dedupeRoutePointsByCoordinate([...outboundStops, ...destinationWaypoint, ...returnStops]);
+};
+
 const TRENDING_DESTINATIONS_FALLBACK = [
   'United Coffee House Rewind',
   'Andhra Pradesh Bhavan',
@@ -724,6 +788,113 @@ const toDirectionsLocationToken = (label: string, point: MapPoint | null): strin
   return normalizedLabel.length > 0 ? normalizedLabel : null;
 };
 
+const decodeGooglePolyline = (encodedPath: string): RouteCoordinate[] => {
+  const normalizedPath = encodedPath.trim();
+  if (!normalizedPath) return [];
+
+  const points: RouteCoordinate[] = [];
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
+
+  while (index < normalizedPath.length) {
+    let result = 0;
+    let shift = 0;
+    let byte = 0;
+
+    do {
+      if (index >= normalizedPath.length) return points;
+      byte = normalizedPath.charCodeAt(index) - 63;
+      index += 1;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+
+    const deltaLat = result & 1 ? ~(result >> 1) : result >> 1;
+    lat += deltaLat;
+
+    result = 0;
+    shift = 0;
+    do {
+      if (index >= normalizedPath.length) return points;
+      byte = normalizedPath.charCodeAt(index) - 63;
+      index += 1;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+
+    const deltaLng = result & 1 ? ~(result >> 1) : result >> 1;
+    lng += deltaLng;
+
+    points.push({
+      latitude: lat / 1e5,
+      longitude: lng / 1e5
+    });
+  }
+
+  return points;
+};
+
+const dedupeRouteCoordinates = (coordinates: RouteCoordinate[]): RouteCoordinate[] =>
+  coordinates.filter((point, index, arr) => {
+    if (index === 0) return true;
+    const previous = arr[index - 1];
+    return Math.abs(previous.latitude - point.latitude) > 0.000001 || Math.abs(previous.longitude - point.longitude) > 0.000001;
+  });
+
+const extractGoogleRoutePathCoordinates = (route: GoogleDirectionsRoute): RouteCoordinate[] => {
+  const overviewPolyline = route.overview_polyline?.points;
+  if (typeof overviewPolyline === 'string' && overviewPolyline.trim().length > 0) {
+    const overviewCoordinates = dedupeRouteCoordinates(decodeGooglePolyline(overviewPolyline));
+    if (overviewCoordinates.length > 1) return overviewCoordinates;
+  }
+
+  const stepCoordinates = (route.legs ?? [])
+    .flatMap((leg) => leg.steps ?? [])
+    .flatMap((step) => decodeGooglePolyline(step.polyline?.points ?? ''));
+  return dedupeRouteCoordinates(stepCoordinates);
+};
+
+const fetchOpenStreetMapGeocodePoint = async (label: string): Promise<MapPoint | null> => {
+  const normalizedLabel = label.trim();
+  if (!normalizedLabel) return null;
+
+  try {
+    const params = new URLSearchParams({
+      q: normalizedLabel,
+      format: 'json',
+      limit: '1'
+    });
+
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+      headers: {
+        Accept: 'application/json',
+        'Accept-Language': 'en',
+        'User-Agent': 'RideSathiReact/1.0'
+      }
+    });
+    if (!response.ok) return null;
+
+    const payload = (await response.json()) as OpenStreetMapGeocodeResponse;
+    const candidate = Array.isArray(payload) ? payload[0] : null;
+    if (!candidate) return null;
+
+    const lat = Number(candidate.lat);
+    const lng = Number(candidate.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+
+    const resolvedLabel = candidate.display_name?.trim() || candidate.name?.trim() || normalizedLabel;
+    return {
+      lat,
+      lng,
+      label: resolvedLabel
+    };
+  } catch {
+    return null;
+  }
+};
+
 const parseGoogleDirectionsEstimate = (route: GoogleDirectionsRoute): RouteEstimate | null => {
   const legs = route.legs ?? [];
   if (legs.length === 0) return null;
@@ -779,7 +950,63 @@ const buildFallbackRouteEstimate = (startPoint: MapPoint | null, endPoint: MapPo
   };
 };
 
-const fetchGoogleDirectionsEstimate = async ({
+const buildRouteEstimateFromOsrmData = (routeData: OsrmRouteData): RouteEstimate => ({
+  distanceKm: routeData.distanceKm,
+  etaMinutes: routeData.etaMinutes,
+  tollEstimateInr: estimateTollFromDistance(routeData.distanceKm, routeData.distanceKm >= 60),
+  source: 'fallback'
+});
+
+const fetchOsrmRouteData = async ({
+  startPoint,
+  endPoint,
+  intermediatePoints
+}: {
+  startPoint: MapPoint | null;
+  endPoint: MapPoint | null;
+  intermediatePoints: MapPoint[];
+}): Promise<OsrmRouteData | null> => {
+  const coordinatePoints = [startPoint, ...intermediatePoints, endPoint].filter((point): point is MapPoint => point !== null);
+  if (coordinatePoints.length < 2) return null;
+
+  const coordinateToken = coordinatePoints.map((point) => `${point.lng},${point.lat}`).join(';');
+
+  try {
+    const params = new URLSearchParams({
+      overview: 'full',
+      geometries: 'polyline',
+      alternatives: 'false',
+      steps: 'true'
+    });
+
+    const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${coordinateToken}?${params.toString()}`);
+    if (!response.ok) return null;
+
+    const payload = (await response.json()) as OsrmRouteResponse;
+    if (payload.code !== 'Ok') return null;
+
+    const route = payload.routes?.[0];
+    if (!route) return null;
+
+    const distanceMeters = Number(route.distance ?? NaN);
+    const durationSeconds = Number(route.duration ?? NaN);
+    if (!Number.isFinite(distanceMeters) || !Number.isFinite(durationSeconds)) return null;
+    if (distanceMeters <= 0 || durationSeconds <= 0) return null;
+
+    const coordinates = dedupeRouteCoordinates(decodeGooglePolyline(route.geometry ?? ''));
+    if (coordinates.length < 2) return null;
+
+    return {
+      distanceKm: distanceMeters / 1000,
+      etaMinutes: durationSeconds / 60,
+      coordinates
+    };
+  } catch {
+    return null;
+  }
+};
+
+const fetchGoogleDirectionsRoute = async ({
   startLabel,
   endLabel,
   startPoint,
@@ -793,7 +1020,7 @@ const fetchGoogleDirectionsEstimate = async ({
   endPoint: MapPoint | null;
   intermediatePoints: MapPoint[];
   apiKey: string;
-}): Promise<RouteEstimate | null> => {
+}): Promise<GoogleDirectionsRoute | null> => {
   if (!apiKey.trim()) return null;
 
   const origin = toDirectionsLocationToken(startLabel, startPoint);
@@ -822,49 +1049,120 @@ const fetchGoogleDirectionsEstimate = async ({
   const payload = (await response.json()) as GoogleDirectionsResponse;
   const status = payload.status ?? 'UNKNOWN_ERROR';
   if (status !== 'OK') {
-    throw new Error(payload.error_message ?? status);
+    return null;
   }
 
-  const route = payload.routes?.[0];
+  return payload.routes?.[0] ?? null;
+};
+
+const fetchGoogleDirectionsEstimate = async ({
+  startLabel,
+  endLabel,
+  startPoint,
+  endPoint,
+  intermediatePoints,
+  apiKey
+}: {
+  startLabel: string;
+  endLabel: string;
+  startPoint: MapPoint | null;
+  endPoint: MapPoint | null;
+  intermediatePoints: MapPoint[];
+  apiKey: string;
+}): Promise<RouteEstimate | null> => {
+  const route = await fetchGoogleDirectionsRoute({
+    startLabel,
+    endLabel,
+    startPoint,
+    endPoint,
+    intermediatePoints,
+    apiKey
+  });
   if (!route) return null;
   return parseGoogleDirectionsEstimate(route);
 };
 
+const fetchGoogleDirectionsPathCoordinates = async ({
+  startLabel,
+  endLabel,
+  startPoint,
+  endPoint,
+  intermediatePoints,
+  apiKey
+}: {
+  startLabel: string;
+  endLabel: string;
+  startPoint: MapPoint | null;
+  endPoint: MapPoint | null;
+  intermediatePoints: MapPoint[];
+  apiKey: string;
+}): Promise<RouteCoordinate[] | null> => {
+  const route = await fetchGoogleDirectionsRoute({
+    startLabel,
+    endLabel,
+    startPoint,
+    endPoint,
+    intermediatePoints,
+    apiKey
+  });
+  if (route) {
+    const coordinates = extractGoogleRoutePathCoordinates(route);
+    if (coordinates.length > 1) return coordinates;
+  }
+
+  const [resolvedStartPoint, resolvedEndPoint] = await Promise.all([
+    startPoint ? Promise.resolve(startPoint) : fetchGoogleFindPlacePoint(startLabel, apiKey),
+    endPoint ? Promise.resolve(endPoint) : fetchGoogleFindPlacePoint(endLabel, apiKey)
+  ]);
+  const osrmRoute = await fetchOsrmRouteData({
+    startPoint: resolvedStartPoint,
+    endPoint: resolvedEndPoint,
+    intermediatePoints
+  });
+  if (!osrmRoute) return null;
+  return osrmRoute.coordinates.length > 1 ? osrmRoute.coordinates : null;
+};
+
 const fetchGoogleFindPlacePoint = async (label: string, apiKey: string): Promise<MapPoint | null> => {
   const normalizedLabel = label.trim();
-  if (!normalizedLabel || !apiKey.trim()) return null;
+  if (!normalizedLabel) return null;
 
   const parsedCoordinatePoint = parseCoordinateLabelPoint(normalizedLabel);
   if (parsedCoordinatePoint) return parsedCoordinatePoint;
+  if (apiKey.trim()) {
+    try {
+      const params = new URLSearchParams({
+        input: normalizedLabel,
+        inputtype: 'textquery',
+        fields: 'formatted_address,name,geometry/location,photos',
+        language: 'en',
+        key: apiKey
+      });
 
-  try {
-    const params = new URLSearchParams({
-      input: normalizedLabel,
-      inputtype: 'textquery',
-      fields: 'formatted_address,name,geometry/location',
-      language: 'en',
-      key: apiKey
-    });
-
-    const response = await fetch(`https://maps.googleapis.com/maps/api/place/findplacefromtext/json?${params.toString()}`);
-    if (!response.ok) return null;
-
-    const payload = (await response.json()) as GoogleFindPlaceResponse;
-    if (payload.status !== 'OK') return null;
-
-    const candidate = payload.candidates?.[0];
-    const lat = candidate?.geometry?.location?.lat;
-    const lng = candidate?.geometry?.location?.lng;
-    if (!isFiniteNumber(lat ?? NaN) || !isFiniteNumber(lng ?? NaN)) return null;
-
-    return {
-      lat: lat as number,
-      lng: lng as number,
-      label: candidate?.formatted_address?.trim() || candidate?.name?.trim() || normalizedLabel
-    };
-  } catch {
-    return null;
+      const response = await fetch(`https://maps.googleapis.com/maps/api/place/findplacefromtext/json?${params.toString()}`);
+      if (response.ok) {
+        const payload = (await response.json()) as GoogleFindPlaceResponse;
+        if (payload.status === 'OK') {
+          const candidate = payload.candidates?.[0];
+          const lat = candidate?.geometry?.location?.lat;
+          const lng = candidate?.geometry?.location?.lng;
+          if (isFiniteNumber(lat ?? NaN) && isFiniteNumber(lng ?? NaN)) {
+            const photoRef = candidate?.photos?.[0]?.photo_reference;
+            return {
+              lat: lat as number,
+              lng: lng as number,
+              label: candidate?.formatted_address?.trim() || candidate?.name?.trim() || normalizedLabel,
+              ...(photoRef ? { photoRef } : {})
+            };
+          }
+        }
+      }
+    } catch {
+      // Fall through to OSM geocode fallback.
+    }
   }
+
+  return fetchOpenStreetMapGeocodePoint(normalizedLabel);
 };
 
 const resolveRouteEstimate = async ({
@@ -902,6 +1200,15 @@ const resolveRouteEstimate = async ({
     startPoint ? Promise.resolve(startPoint) : fetchGoogleFindPlacePoint(startLabel, apiKey),
     endPoint ? Promise.resolve(endPoint) : fetchGoogleFindPlacePoint(endLabel, apiKey)
   ]);
+
+  const osrmRoute = await fetchOsrmRouteData({
+    startPoint: resolvedStartPoint,
+    endPoint: resolvedEndPoint,
+    intermediatePoints
+  });
+  if (osrmRoute) {
+    return buildRouteEstimateFromOsrmData(osrmRoute);
+  }
 
   return buildFallbackRouteEstimate(resolvedStartPoint, resolvedEndPoint, intermediatePoints);
 };
@@ -1360,6 +1667,7 @@ export const CreateRideModal = ({
   onSubmit,
   theme,
   currentCity,
+  userSquads = [],
   initialRide
 }: {
   visible: boolean;
@@ -1367,6 +1675,7 @@ export const CreateRideModal = ({
   onSubmit: (ride: RideComposerPayload) => void;
   theme: Theme;
   currentCity: string;
+  userSquads?: Squad[];
   initialRide?: RidePost | null;
 }) => {
   const t = TOKENS[theme];
@@ -1379,6 +1688,7 @@ export const CreateRideModal = ({
   const selectedBackground = `${t.primary}1a`;
   const inactiveButtonBackground = `${t.muted}66`;
   const switchThumbOff = theme === 'dark' ? '#cbd5e1' : '#ffffff';
+  const availableUserSquads = Array.isArray(userSquads) ? userSquads : [];
   const [primaryDestination, setPrimaryDestination] = useState('');
   const [rideName, setRideName] = useState('');
   const [dayMode, setDayMode] = useState<'single' | 'multi'>('single');
@@ -1403,10 +1713,14 @@ export const CreateRideModal = ({
   const [rideJoinPermission, setRideJoinPermission] = useState<RideJoinPermission>('anyone');
   const [hasRiderLimit, setHasRiderLimit] = useState(false);
   const [maxParticipants, setMaxParticipants] = useState('5');
+  const [squadId, setSquadId] = useState('');
+  const [showSquadPicker, setShowSquadPicker] = useState(false);
   const [routePoints, setRoutePoints] = useState<MapPoint[]>([]);
   const [destinationIndex, setDestinationIndex] = useState(0);
   const [draftRoutePoints, setDraftRoutePoints] = useState<MapPoint[]>([]);
   const [destinationQuery, setDestinationQuery] = useState('');
+  const [destinationPhotoRef, setDestinationPhotoRef] = useState<string | null>(null);
+  const [destinationPoint, setDestinationPoint] = useState<MapPoint | null>(null);
   const [savedDestinations, setSavedDestinations] = useState<string[]>([]);
   const [isDestinationPickerOpen, setIsDestinationPickerOpen] = useState(false);
   const [locationPickerContext, setLocationPickerContext] = useState<LocationPickerContext>('primaryDestination');
@@ -1431,6 +1745,7 @@ export const CreateRideModal = ({
   const [isStopPickerOpen, setIsStopPickerOpen] = useState(false);
   const [mapPickerCanPan, setMapPickerCanPan] = useState(false);
   const [routeEstimate, setRouteEstimate] = useState<RouteEstimate | null>(null);
+  const [routePreviewPathCoordinates, setRoutePreviewPathCoordinates] = useState<RouteCoordinate[] | null>(null);
   const [isRouteEstimateLoading, setIsRouteEstimateLoading] = useState(false);
   const [routeEstimateError, setRouteEstimateError] = useState<string | null>(null);
   const rideNoteInputRef = useRef<TextInput | null>(null);
@@ -1441,6 +1756,17 @@ export const CreateRideModal = ({
   const trendingDestinations = useMemo(() => getTrendingDestinationsForCity(currentCity), [currentCity]);
   const normalizedCurrentCity = currentCity.trim();
   const hasGooglePlacesKey = GOOGLE_PLACES_KEY.length > 0;
+  const destinationLabel = (ridingTo.trim() || primaryDestination.trim()).trim();
+  const routeIntermediatePoints = useMemo(
+    () =>
+      mergeIntermediateRoutePoints({
+        routePoints,
+        destinationIndex,
+        destinationPoint,
+        destinationLabel
+      }),
+    [destinationIndex, destinationLabel, destinationPoint, routePoints]
+  );
   const destinationSuggestions = useMemo(() => {
     const pool = [normalizedCurrentCity, ...savedDestinations, ...trendingDestinations].filter((item) => item.trim().length > 0);
     const seen = new Set<string>();
@@ -1504,6 +1830,8 @@ export const CreateRideModal = ({
     setRideJoinPermission('anyone');
     setHasRiderLimit(false);
     setMaxParticipants('5');
+    setDestinationPhotoRef(null);
+    setDestinationPoint(null);
     setDestinationQuery('');
     setGoogleDestinationSuggestions([]);
     setIsGoogleDestinationLoading(false);
@@ -1525,6 +1853,7 @@ export const CreateRideModal = ({
     setDraftRoutePoints([]);
     setIsStopPickerOpen(false);
     setRouteEstimate(null);
+    setRoutePreviewPathCoordinates(null);
     setIsRouteEstimateLoading(false);
     setRouteEstimateError(null);
     routeEstimateRequestRef.current += 1;
@@ -1584,6 +1913,8 @@ export const CreateRideModal = ({
     setRideJoinPermission(initialRide.joinPermission === 'request_to_join' ? 'request_to_join' : 'anyone');
     setHasRiderLimit(initialRide.maxParticipants < 20);
     setMaxParticipants(String(initialRide.maxParticipants > 0 ? initialRide.maxParticipants : 5));
+    setDestinationPhotoRef(initialRide.destinationPhotoRef?.trim() || null);
+    setDestinationPoint(parseCoordinateLabelPoint(initialRide.primaryDestination?.trim() || '') ?? null);
     setRoutePoints(normalizedStopPoints);
     setDestinationIndex(normalizedStopPoints.length);
     setDraftRoutePoints([]);
@@ -1603,6 +1934,7 @@ export const CreateRideModal = ({
     setDraftRidePoint(null);
     setIsStopPickerOpen(false);
     setRouteEstimate(existingEstimate);
+    setRoutePreviewPathCoordinates(null);
     setIsRouteEstimateLoading(false);
     setRouteEstimateError(null);
     routeEstimateRequestRef.current += 1;
@@ -1700,6 +2032,44 @@ export const CreateRideModal = ({
   }, [destinationQuery, hasGooglePlacesKey, isDestinationPickerOpen]);
 
   useEffect(() => {
+    if (!destinationLabel) {
+      setDestinationPoint(null);
+      return;
+    }
+
+    if (destinationPoint?.label?.trim().toLowerCase() === destinationLabel.toLowerCase()) {
+      return;
+    }
+
+    const parsedCoordinatePoint = parseCoordinateLabelPoint(destinationLabel);
+    if (parsedCoordinatePoint) {
+      setDestinationPoint({
+        ...parsedCoordinatePoint,
+        label: destinationLabel
+      });
+      return;
+    }
+
+    let isCanceled = false;
+    (async () => {
+      const resolved = await fetchGoogleFindPlacePoint(destinationLabel, GOOGLE_PLACES_KEY);
+      if (isCanceled) return;
+      setDestinationPoint(
+        resolved
+          ? {
+            ...resolved,
+            label: destinationLabel
+          }
+          : null
+      );
+    })();
+
+    return () => {
+      isCanceled = true;
+    };
+  }, [destinationLabel, destinationPoint]);
+
+  useEffect(() => {
     const startLabel = rideStartsAt.trim();
     const endLabel = rideEndsAt.trim();
     if (!startLabel || !endLabel) {
@@ -1722,21 +2092,29 @@ export const CreateRideModal = ({
           endLabel,
           startPoint: rideStartPoint,
           endPoint: rideEndPoint,
-          intermediatePoints: routePoints,
+          intermediatePoints: routeIntermediatePoints,
           apiKey: GOOGLE_PLACES_KEY
         });
 
         if (isCanceled || requestId !== routeEstimateRequestRef.current) return;
-        if (!estimate) {
+        const fallbackEstimate = buildFallbackRouteEstimate(rideStartPoint, rideEndPoint, routeIntermediatePoints);
+        const resolvedEstimate = estimate ?? fallbackEstimate;
+        if (!resolvedEstimate) {
           setRouteEstimate(null);
           setRouteEstimateError(null);
           return;
         }
 
-        setRouteEstimate(estimate);
+        setRouteEstimate(resolvedEstimate);
         setRouteEstimateError(null);
       } catch {
         if (isCanceled || requestId !== routeEstimateRequestRef.current) return;
+        const fallbackEstimate = buildFallbackRouteEstimate(rideStartPoint, rideEndPoint, routeIntermediatePoints);
+        if (fallbackEstimate) {
+          setRouteEstimate(fallbackEstimate);
+          setRouteEstimateError(null);
+          return;
+        }
         setRouteEstimate(null);
         setRouteEstimateError('Unable to estimate route right now. Try again in a moment.');
       } finally {
@@ -1749,32 +2127,75 @@ export const CreateRideModal = ({
     return () => {
       isCanceled = true;
     };
-  }, [rideEndPoint, rideEndsAt, rideStartPoint, rideStartsAt, routePoints]);
+  }, [rideEndPoint, rideEndsAt, rideStartPoint, rideStartsAt, routeIntermediatePoints]);
+
+  useEffect(() => {
+    const startLabel = rideStartsAt.trim();
+    const endLabel = rideEndsAt.trim();
+    if (!startLabel || !endLabel) {
+      setRoutePreviewPathCoordinates(null);
+      return;
+    }
+
+    let isCanceled = false;
+
+    (async () => {
+      try {
+        const pathCoordinates = await fetchGoogleDirectionsPathCoordinates({
+          startLabel,
+          endLabel,
+          startPoint: rideStartPoint,
+          endPoint: rideEndPoint,
+          intermediatePoints: routeIntermediatePoints,
+          apiKey: GOOGLE_PLACES_KEY
+        });
+
+        if (isCanceled) return;
+        setRoutePreviewPathCoordinates(pathCoordinates);
+      } catch {
+        if (!isCanceled) {
+          setRoutePreviewPathCoordinates(null);
+        }
+      }
+    })();
+
+    return () => {
+      isCanceled = true;
+    };
+  }, [rideEndPoint, rideEndsAt, rideStartPoint, rideStartsAt, routeIntermediatePoints]);
 
   const riderLimit = Math.max(2, Math.min(20, Number(maxParticipants) || 5));
   const routeSummary = [rideStartsAt.trim(), ridingTo.trim(), rideEndsAt.trim()].filter(Boolean).join(' -> ');
-  const summaryDestination = primaryDestination.trim() || ridingTo.trim() || 'Pending destination';
+  const summaryDestination = destinationLabel || 'Pending destination';
   const routePreviewPoints: MapPoint[] = [
     ...(rideStartPoint ? [{ ...rideStartPoint, label: 'Ride starts' }] : []),
-    ...routePoints.map((point, index) => ({
+    ...routeIntermediatePoints.map((point, index) => ({
       ...point,
-      label: point.label?.trim() || `Stop ${index + 1}`
+      label: point.label?.trim() || `Waypoint ${index + 1}`
     })),
     ...(rideEndPoint ? [{ ...rideEndPoint, label: 'Ride ends' }] : [])
   ];
-  const routePreviewCoordinates = toRouteCoordinates(routePreviewPoints);
-  const routePreviewRegion = buildRouteRegion(routePreviewCoordinates);
-  const routePreviewMapKey = routePreviewCoordinates.map((point) => `${point.latitude}:${point.longitude}`).join('|');
-  const routeCoordinatePointCount = (rideStartPoint ? 1 : 0) + routePoints.length + (rideEndPoint ? 1 : 0);
+  const routePreviewBaseCoordinates = toRouteCoordinates(routePreviewPoints);
+  const routePreviewPolylineCoordinates = routePreviewPathCoordinates ?? routePreviewBaseCoordinates;
+  const firstPreviewCoordinate = routePreviewPolylineCoordinates[0];
+  const lastPreviewCoordinate =
+    routePreviewPolylineCoordinates.length > 0 ? routePreviewPolylineCoordinates[routePreviewPolylineCoordinates.length - 1] : null;
+  const routePreviewRegion = buildRouteRegion(routePreviewPolylineCoordinates);
+  const routePreviewMapKey = [
+    routePreviewPoints.map((point) => `${point.lat}:${point.lng}`).join('|'),
+    routePreviewPathCoordinates ? 'live' : 'point',
+    String(routePreviewPolylineCoordinates.length),
+    firstPreviewCoordinate ? `${firstPreviewCoordinate.latitude}:${firstPreviewCoordinate.longitude}` : '',
+    lastPreviewCoordinate ? `${lastPreviewCoordinate.latitude}:${lastPreviewCoordinate.longitude}` : ''
+  ].join('::');
+  const routeCoordinatePointCount = (rideStartPoint ? 1 : 0) + routeIntermediatePoints.length + (rideEndPoint ? 1 : 0);
   const hasEnoughRouteCoordinatePoints = routeCoordinatePointCount >= 2;
   const hasStartEndLabels = rideStartsAt.trim().length > 0 && rideEndsAt.trim().length > 0;
   const routeEstimateHintText = !hasStartEndLabels
     ? 'Select ride start and end to get ETA, distance, and toll estimate.'
     : hasEnoughRouteCoordinatePoints
       ? 'Unable to fetch live map estimate right now. Route points are ready, so retry in a moment.'
-      : hasGooglePlacesKey
-        ? 'Set start/end points on map for a reliable estimate when live map lookup is unavailable.'
-        : 'Add start/end points on map to estimate ETA, distance, and toll without Google Maps API.';
+      : 'Set start/end points on map for a reliable estimate when live map lookup is unavailable.';
   const routeEstimateMeta = routeEstimate?.source === 'google' ? 'Live map estimate' : routeEstimate?.source === 'fallback' ? 'Map-point estimate' : null;
   const numericPrice = Number(pricePerPerson);
   const numericSplitTotal = Number(splitTotalAmount);
@@ -1820,10 +2241,10 @@ export const CreateRideModal = ({
     const baseRoute = routeSummary || summaryDestination;
     const mappedRoutePoints: MapPoint[] = [
       ...(rideStartPoint ? [{ ...rideStartPoint, label: 'Ride starts' }] : []),
-      ...routePoints,
+      ...routeIntermediatePoints,
       ...(rideEndPoint ? [{ ...rideEndPoint, label: 'Ride ends' }] : [])
     ];
-    const finalRoutePoints = mappedRoutePoints.length > 0 ? mappedRoutePoints : routePoints;
+    const finalRoutePoints = mappedRoutePoints.length > 0 ? mappedRoutePoints : routeIntermediatePoints;
     const finalRoute = finalRoutePoints.length > 0 ? buildRouteTextFromPoints(finalRoutePoints) : baseRoute;
 
     onSubmit({
@@ -1856,17 +2277,35 @@ export const CreateRideModal = ({
       rideNote: rideNote.trim(),
       inviteAudience,
       isPrivate: isPrivateRide,
-      joinPermission: rideJoinPermission
+      joinPermission: rideJoinPermission,
+      destinationPhotoRef: destinationPhotoRef ?? undefined,
+      squadId: squadId || undefined,
+      squadName: squadId ? availableUserSquads.find((sq) => sq.id === squadId)?.name : undefined,
+      squadAvatar: squadId ? availableUserSquads.find((sq) => sq.id === squadId)?.avatar : undefined
     });
 
     resetForm();
   };
 
-  const handleDestinationSelected = (value: string) => {
+  const handleDestinationSelected = (value: string, point: MapPoint | null = null) => {
     const destination = value.trim();
     if (!destination) return;
+    const parsedPoint = parseCoordinateLabelPoint(destination);
     setPrimaryDestination(destination);
     setRidingTo(destination);
+    setDestinationPoint(
+      point
+        ? {
+          ...point,
+          label: destination
+        }
+        : parsedPoint
+          ? {
+            ...parsedPoint,
+            label: destination
+          }
+          : null
+    );
     if (!rideName.trim()) {
       setRideName(`Ride To ${destination}`);
     }
@@ -1882,15 +2321,20 @@ export const CreateRideModal = ({
     });
   };
 
-  const handleApplyPrimaryDestination = (value: string) => {
+  const handleApplyPrimaryDestination = (value: string, photoRef?: string | null, point?: MapPoint | null) => {
     const normalized = value.trim();
     if (!normalized) return;
 
     setPrimaryDestination(normalized);
+    if (photoRef) {
+      setDestinationPhotoRef(photoRef);
+    } else {
+      setDestinationPhotoRef(null);
+    }
     setDestinationQuery(normalized);
     saveDestination(normalized);
     setIsDestinationPickerOpen(false);
-    handleDestinationSelected(normalized);
+    handleDestinationSelected(normalized, point ?? null);
   };
 
   const getLocationValueByContext = (context: LocationPickerContext): string => {
@@ -1919,7 +2363,7 @@ export const CreateRideModal = ({
     try {
       const params = new URLSearchParams({
         place_id: placeId,
-        fields: 'formatted_address,name,geometry/location',
+        fields: 'formatted_address,name,geometry/location,photos',
         language: 'en',
         key: GOOGLE_PLACES_KEY
       });
@@ -1935,10 +2379,13 @@ export const CreateRideModal = ({
       if (!isFiniteNumber(lat ?? NaN) || !isFiniteNumber(lng ?? NaN)) return null;
 
       const label = payload.result?.formatted_address?.trim() || payload.result?.name?.trim();
+      const photoRef = payload.result?.photos?.[0]?.photo_reference;
+
       return {
         lat: lat as number,
         lng: lng as number,
-        label
+        label,
+        ...(photoRef ? { photoRef } : {})
       };
     } catch {
       return null;
@@ -1952,7 +2399,7 @@ export const CreateRideModal = ({
     const resolvedPoint = point ?? parsedCoordinatePoint;
 
     if (context === 'primaryDestination') {
-      handleApplyPrimaryDestination(normalized);
+      handleApplyPrimaryDestination(normalized, resolvedPoint?.photoRef, resolvedPoint);
       return;
     }
 
@@ -2000,12 +2447,12 @@ export const CreateRideModal = ({
   };
 
   const handleApplyLocationSelection = async (value: string, context: LocationPickerContext) => {
+    const normalized = value.trim();
+    if (!normalized) return;
+    const parsedCoordinatePoint = parseCoordinateLabelPoint(normalized);
+    const resolvedPoint = parsedCoordinatePoint ?? (await fetchGoogleFindPlacePoint(normalized, GOOGLE_PLACES_KEY));
     const stopIndex = getStopIndexFromContext(context);
     if (stopIndex !== null) {
-      const normalized = value.trim();
-      if (!normalized) return;
-      const parsedCoordinatePoint = parseCoordinateLabelPoint(normalized);
-      const resolvedPoint = parsedCoordinatePoint ?? (await fetchGoogleFindPlacePoint(normalized, GOOGLE_PLACES_KEY));
       if (!resolvedPoint) {
         Alert.alert('Select a valid stop', 'Choose a suggested location or enter coordinates like 28.6139, 77.2090.');
         return;
@@ -2014,14 +2461,13 @@ export const CreateRideModal = ({
       return;
     }
 
-    applyLocationByContext(value, context, null);
+    applyLocationByContext(normalized, context, resolvedPoint);
   };
 
   const handleApplyGoogleSuggestion = async (suggestion: GooglePlaceSuggestion, context: LocationPickerContext) => {
     const point = await fetchGooglePlacePoint(suggestion.placeId);
     const resolvedLabel = point?.label?.trim() || suggestion.description;
-    const fallbackPoint =
-      point ?? (isStopPickerContext(context) ? await fetchGoogleFindPlacePoint(resolvedLabel, GOOGLE_PLACES_KEY) : null);
+    const fallbackPoint = point ?? (await fetchGoogleFindPlacePoint(resolvedLabel, GOOGLE_PLACES_KEY));
     applyLocationByContext(resolvedLabel, context, fallbackPoint);
   };
 
@@ -2392,6 +2838,11 @@ export const CreateRideModal = ({
     }
   };
 
+  const handleRidingToChange = (value: string) => {
+    setRidingTo(value);
+    setDestinationPoint(null);
+  };
+
   const toggleInclusion = (option: RideInclusion) => {
     setInclusions((prev) => {
       if (prev.includes(option)) {
@@ -2651,7 +3102,7 @@ export const CreateRideModal = ({
                       <TextInput
                         style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, borderColor: t.border, color: t.text }]}
                         value={ridingTo}
-                        onChangeText={setRidingTo}
+                        onChangeText={handleRidingToChange}
                         placeholder="Search location"
                         placeholderTextColor={`${t.muted}99`}
                       />
@@ -2754,19 +3205,20 @@ export const CreateRideModal = ({
                     <View style={styles.rowBetween}>
                       <Text style={[styles.inputLabel, { color: t.muted, marginBottom: 0 }]}>Route Preview</Text>
                       <Text style={[styles.metaText, { color: t.muted }]}>
-                        {routePreviewPoints.length} point{routePreviewPoints.length === 1 ? '' : 's'}
+                        {routePreviewPathCoordinates ? 'Live road path' : 'Point path'} | {routePreviewPoints.length} point
+                        {routePreviewPoints.length === 1 ? '' : 's'}
                       </Text>
                     </View>
 
                     {routeMapModule ? (
                       <View style={[styles.routeMapFrame, { borderColor: t.border }]}>
                         <routeMapModule.MapView key={routePreviewMapKey} style={styles.routeMap} initialRegion={routePreviewRegion}>
-                          {routePreviewCoordinates.length > 1 && (
-                            <routeMapModule.Polyline coordinates={routePreviewCoordinates} strokeWidth={4} strokeColor={accent} />
+                          {routePreviewPolylineCoordinates.length > 1 && (
+                            <routeMapModule.Polyline coordinates={routePreviewPolylineCoordinates} strokeWidth={4} strokeColor={accent} />
                           )}
-                          {routePreviewCoordinates.map((point, index) => {
+                          {routePreviewBaseCoordinates.map((point, index) => {
                             const isStart = index === 0;
-                            const isEnd = index === routePreviewCoordinates.length - 1;
+                            const isEnd = index === routePreviewBaseCoordinates.length - 1;
                             const markerColor = isStart ? TOKENS[theme].green : isEnd ? TOKENS[theme].red : accent;
 
                             return (
@@ -3082,6 +3534,27 @@ export const CreateRideModal = ({
                       thumbColor={rideJoinPermission === 'request_to_join' ? accent : switchThumbOff}
                     />
                   </View>
+
+                  {availableUserSquads.length > 0 && (
+                    <View style={[createRideWizardStyles.preferenceRow, { marginTop: 10 }]}>
+                      <View style={styles.flex1}>
+                        <Text style={[createRideWizardStyles.preferenceTitle, { color: t.text }]}>Host as Squad (Optional)</Text>
+                        <Text style={[createRideWizardStyles.preferenceText, { color: t.text }]}>
+                          Organize this ride on behalf of a squad.
+                        </Text>
+                        <TouchableOpacity
+                          style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, borderColor: t.border, marginTop: 8, height: 44, justifyContent: 'center' }]}
+                          onPress={() => setShowSquadPicker(true)}
+                        >
+                          <Text style={{ color: squadId ? t.text : t.muted, fontWeight: '600' }}>
+                            {squadId
+                              ? availableUserSquads.find((sq) => sq.id === squadId)?.name || 'Unknown Squad'
+                              : 'None (Individual Ride)'}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
 
                   <View style={createRideWizardStyles.preferenceRow}>
                     <View style={styles.flex1}>
@@ -3604,6 +4077,57 @@ export const CreateRideModal = ({
           onChange={handleAndroidTimePickerChange}
         />
       )}
+
+      {/* Squad Picker Modal */}
+      <Modal visible={showSquadPicker} animationType="slide" transparent>
+        <View style={createRideWizardStyles.squadPickerOverlay}>
+          <View style={[styles.bottomSheet, { backgroundColor: TOKENS[theme].card }]}>
+            <View style={[createRideWizardStyles.squadPickerHeader, { borderBottomColor: TOKENS[theme].border }]}>
+              <Text style={[createRideWizardStyles.squadPickerTitle, { color: TOKENS[theme].text }]}>Host as Squad</Text>
+              <TouchableOpacity onPress={() => setShowSquadPicker(false)} style={styles.iconButton}>
+                <MaterialCommunityIcons name="close" size={20} color={TOKENS[theme].text} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 300 }}>
+              <TouchableOpacity
+                style={[
+                  createRideWizardStyles.squadPickerOption,
+                  { borderBottomColor: TOKENS[theme].border },
+                  !squadId && { backgroundColor: TOKENS[theme].subtle }
+                ]}
+                onPress={() => {
+                  setSquadId('');
+                  setShowSquadPicker(false);
+                }}
+              >
+                <Text style={[styles.bodyText, { color: !squadId ? TOKENS[theme].primary : TOKENS[theme].text }]}>
+                  None (Individual Ride)
+                </Text>
+              </TouchableOpacity>
+              {availableUserSquads.map((sq) => (
+                <TouchableOpacity
+                  key={sq.id}
+                  style={[
+                    createRideWizardStyles.squadPickerOption,
+                    { borderBottomColor: TOKENS[theme].border },
+                    squadId === sq.id && { backgroundColor: TOKENS[theme].subtle }
+                  ]}
+                  onPress={() => {
+                    setSquadId(sq.id);
+                    setShowSquadPicker(false);
+                  }}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                    <Text style={[styles.bodyText, { color: squadId === sq.id ? TOKENS[theme].primary : TOKENS[theme].text }]}>
+                      {sq.name}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
     </>
   );
@@ -4236,6 +4760,28 @@ const createRideWizardStyles = StyleSheet.create({
   selectorOptionText: {
     fontSize: 14,
     fontWeight: '600'
+  },
+  squadPickerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(2, 6, 23, 0.45)'
+  },
+  squadPickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1
+  },
+  squadPickerTitle: {
+    fontSize: 16,
+    fontWeight: '800'
+  },
+  squadPickerOption: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderBottomWidth: 1
   },
   nextButton: {
     minHeight: 46,
@@ -6174,7 +6720,7 @@ export const CreateSquadModal = ({
 }: {
   visible: boolean;
   onClose: () => void;
-  onSubmit: (data: { name: string; description: string; rideStyles: string[]; joinPermission: SquadJoinPermission; avatarUri?: string }) => void;
+  onSubmit: (data: { name: string; description: string; rideStyles: string[]; joinPermission: SquadJoinPermission; rideCreatePermission: SquadRideCreatePermission; avatarUri?: string }) => void;
   isSubmitting: boolean;
   mode?: 'create' | 'edit';
   initialData?: Squad | null;
@@ -6185,6 +6731,7 @@ export const CreateSquadModal = ({
   const [description, setDescription] = useState('');
   const [rideStyles, setRideStyles] = useState<string[]>(['Touring']);
   const [joinPermission, setJoinPermission] = useState<SquadJoinPermission>('anyone');
+  const [rideCreatePermission, setRideCreatePermission] = useState<SquadRideCreatePermission>('anyone');
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
 
   const rideStyleOptions = ['Touring', 'City / Urban', 'Adventure / Off-road', 'Night Cruise', 'Sport', 'Cafe Racer'];
@@ -6205,6 +6752,7 @@ export const CreateSquadModal = ({
       setDescription('');
       setRideStyles(['Touring']);
       setJoinPermission('anyone');
+      setRideCreatePermission('anyone');
       setAvatarUri(null);
       return;
     }
@@ -6214,6 +6762,7 @@ export const CreateSquadModal = ({
       setDescription(initialData.description);
       setRideStyles(initialData.rideStyles.length > 0 ? [...initialData.rideStyles] : ['Touring']);
       setJoinPermission(initialData.joinPermission);
+      setRideCreatePermission(initialData.rideCreatePermission ?? 'anyone');
       setAvatarUri(initialData.avatar || null);
       return;
     }
@@ -6222,6 +6771,7 @@ export const CreateSquadModal = ({
     setDescription('');
     setRideStyles(['Touring']);
     setJoinPermission('anyone');
+    setRideCreatePermission('anyone');
     setAvatarUri(null);
   }, [initialData, mode, visible]);
 
@@ -6240,6 +6790,7 @@ export const CreateSquadModal = ({
       description: description.trim(),
       rideStyles,
       joinPermission,
+      rideCreatePermission,
       avatarUri: avatarUri ?? undefined
     });
   };
@@ -6344,6 +6895,38 @@ export const CreateSquadModal = ({
                 </View>
               </View>
 
+              <View>
+                <Text style={[styles.inputLabel, { color: t.muted }]}>Who Can Create Rides</Text>
+                <View style={styles.wrapRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.selectorChip,
+                      {
+                        borderColor: rideCreatePermission === 'anyone' ? t.primary : t.border,
+                        backgroundColor: rideCreatePermission === 'anyone' ? `${t.primary}22` : t.subtle
+                      }
+                    ]}
+                    onPress={() => setRideCreatePermission('anyone')}
+                  >
+                    <Text style={[styles.selectorChipText, { color: rideCreatePermission === 'anyone' ? t.primary : t.muted }]}>Anyone</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.selectorChip,
+                      {
+                        borderColor: rideCreatePermission === 'admin' ? t.primary : t.border,
+                        backgroundColor: rideCreatePermission === 'admin' ? `${t.primary}22` : t.subtle
+                      }
+                    ]}
+                    onPress={() => setRideCreatePermission('admin')}
+                  >
+                    <Text style={[styles.selectorChipText, { color: rideCreatePermission === 'admin' ? t.primary : t.muted }]}>
+                      Admin Only
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
               <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={submit} disabled={isSubmitting}>
                 {isSubmitting ? (
                   <ActivityIndicator size="small" color="#fff" />
@@ -6367,6 +6950,7 @@ export const CreateSquadModal = ({
 export const SquadDetailModal = ({
   visible,
   squad,
+  rides,
   currentUser,
   users,
   onClose,
@@ -6385,6 +6969,7 @@ export const SquadDetailModal = ({
 }: {
   visible: boolean;
   squad: Squad | null;
+  rides: RidePost[];
   currentUser: User;
   users: User[];
   onClose: () => void;
@@ -6404,6 +6989,8 @@ export const SquadDetailModal = ({
   const t = TOKENS[theme];
   const insets = useSafeAreaInsets();
   const topInset = getAndroidTopInset(insets);
+  const [isLeadershipExpanded, setIsLeadershipExpanded] = useState(false);
+
   if (!squad) return null;
 
   const allUsers = Array.from(new Map([currentUser, ...users].map((user) => [user.id, user])).values());
@@ -6451,196 +7038,170 @@ export const SquadDetailModal = ({
             <TouchableOpacity onPress={onClose} style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
               <MaterialCommunityIcons name="arrow-left" size={20} color={t.text} />
             </TouchableOpacity>
-            <Text style={[styles.modalTitle, { color: t.text }]}>Squad Details</Text>
+            <View style={{ marginLeft: 'auto', flexDirection: 'row', gap: 12 }}>
+              <TouchableOpacity style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                <MaterialCommunityIcons name="share-variant" size={20} color={t.text} />
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                <MaterialCommunityIcons name="dots-vertical" size={20} color={t.text} />
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
 
-        <ScrollView contentContainerStyle={[styles.mainScroll, { paddingBottom: 40 }]}>
-          <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
-            <View style={styles.squadCardHeader}>
-              <Image source={{ uri: squad.avatar || avatarFallback }} style={styles.squadAvatar} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.cardTitle, { color: t.text }]}>{squad.name}</Text>
-                <View style={[styles.rowAligned, { marginTop: 4 }]}>
-                  <View style={styles.rowAligned}>
-                    <MaterialCommunityIcons name="map-marker-outline" size={13} color={t.primary} />
-                    <Text style={[styles.metaText, { color: t.muted }]}>{squad.city}</Text>
-                  </View>
-                  <View style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                    <Text style={[styles.pillTagText, { color: t.muted }]}>{joinPermissionLabel}</Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-
-            <Text style={[styles.bodyText, { color: t.text }]}>{squad.description}</Text>
-
-            <View style={{ marginTop: 10 }}>
-              <Text style={[styles.cardHeader, { color: t.muted }]}>RIDE STYLES</Text>
-              <View style={styles.wrapRow}>
-                {squad.rideStyles.map((style) => (
-                  <View key={style} style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                    <Text style={[styles.pillTagText, { color: t.text }]}>{style}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-
-            {isMember && (
-              <TouchableOpacity style={[styles.primaryButton, { backgroundColor: TOKENS[theme].blue }]} onPress={() => onOpenSquadChat(squad.id)}>
-                <MaterialCommunityIcons name="account-group-outline" size={18} color="#fff" />
-                <Text style={styles.primaryButtonText}>Open Squad Chat</Text>
-              </TouchableOpacity>
-            )}
-
-            {isOwner && (
-              <View style={styles.rowAligned}>
-                <TouchableOpacity
-                  style={[styles.primaryCompactButton, { borderColor: t.border, backgroundColor: t.subtle, flex: 1 }]}
-                  onPress={() => onEditSquad(squad.id)}
-                >
-                  <MaterialCommunityIcons name="pencil-outline" size={14} color={t.primary} />
-                  <Text style={[styles.primaryCompactButtonText, { color: t.primary }]}>Edit Squad</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.primaryCompactButton, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}12`, flex: 1 }]}
-                  onPress={() => onDeleteSquad(squad.id)}
-                >
-                  <MaterialCommunityIcons name="trash-can-outline" size={14} color={TOKENS[theme].red} />
-                  <Text style={[styles.primaryCompactButtonText, { color: TOKENS[theme].red }]}>Delete Squad</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {!isMember ? (
-              isPending ? (
-                <View style={[styles.statusStrip, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                  <MaterialCommunityIcons name="clock-outline" size={16} color={t.muted} />
-                  <Text style={[styles.statusStripText, { color: t.muted }]}>Request sent</Text>
-                </View>
-              ) : (
-                <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary }]} onPress={() => onJoinSquad(squad.id)}>
-                  <MaterialCommunityIcons
-                    name={squad.joinPermission === 'request_to_join' ? 'account-clock-outline' : 'plus'}
-                    size={18}
-                    color="#fff"
-                  />
-                  <Text style={styles.primaryButtonText}>{squad.joinPermission === 'request_to_join' ? 'Request to Join' : 'Join Squad'}</Text>
-                </TouchableOpacity>
-              )
-            ) : isOwner ? null : (
-              <TouchableOpacity style={[styles.dangerButton, { borderColor: TOKENS[theme].red }]} onPress={() => onLeaveSquad(squad.id)}>
-                <MaterialCommunityIcons name="logout" size={18} color={TOKENS[theme].red} />
-                <Text style={[styles.dangerButtonText, { color: TOKENS[theme].red }]}>Leave Squad</Text>
-              </TouchableOpacity>
-            )}
+        <ScrollView contentContainerStyle={{ paddingBottom: 100 }} bounces={false} showsVerticalScrollIndicator={false}>
+          {/* Top Banner Pattern */}
+          <View style={{ height: 100, backgroundColor: t.primary, opacity: 0.2, overflow: 'hidden' }}>
+            <View style={{
+               position: 'absolute', width: 400, height: 400, borderRadius: 200, 
+               borderWidth: 1, borderColor: t.primary, top: -200, left: -50, opacity: 0.3 
+            }} />
+            <View style={{
+               position: 'absolute', width: 450, height: 450, borderRadius: 225, 
+               borderWidth: 1, borderColor: t.primary, top: -225, left: -75, opacity: 0.2 
+            }} />
+            <View style={{
+               position: 'absolute', width: 500, height: 500, borderRadius: 250, 
+               borderWidth: 1, borderColor: t.primary, top: -250, left: -100, opacity: 0.1 
+            }} />
           </View>
 
-          {canManageRequests && requestUsers.length > 0 && (
-            <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
-              <Text style={[styles.cardHeader, { color: t.primary }]}>JOIN REQUESTS ({requestUsers.length})</Text>
-              {requestUsers.map((u) => (
-                <View key={u.id} style={[styles.requestRow, { borderColor: t.border }]}>
-                  <View style={styles.rowAligned}>
-                    <Image source={{ uri: u.avatar || avatarFallback }} style={styles.avatarSmall} />
-                    <View>
-                      <Text style={[styles.boldText, { color: t.text }]}>{u.name}</Text>
-                      <Text style={[styles.metaText, { color: t.muted }]}>{u.garage?.[0] ?? 'Unknown bike'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.rowAligned}>
-                    <TouchableOpacity
-                      style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
-                      onPress={() => onRejectJoinRequest(squad.id, u.id)}
-                    >
-                      <MaterialCommunityIcons name="close" size={18} color={TOKENS[theme].red} />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.iconButton, { borderColor: t.primary, backgroundColor: t.primary }]}
-                      onPress={() => onAcceptJoinRequest(squad.id, u.id)}
-                    >
-                      <MaterialCommunityIcons name="check" size={18} color="#fff" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              ))}
+          <View style={{ padding: 16, marginTop: -60 }}>
+            {/* Avatar & Title Row */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16 }}>
+               <View>
+                 <Image 
+                   source={{ uri: squad.avatar || avatarFallback }} 
+                   style={{ width: 88, height: 88, borderRadius: 12, backgroundColor: t.bg, borderWidth: 3, borderColor: t.bg }} 
+                 />
+                 <Text style={{ fontSize: 24, fontWeight: '700', color: t.text, marginTop: 8 }}>{squad.name}</Text>
+                 <Text style={{ fontSize: 13, color: t.muted, fontStyle: 'italic', marginBottom: 4 }}>
+                   @{squad.name.toLowerCase().replace(/\s+/g, '')}
+                 </Text>
+                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                     <MaterialCommunityIcons name="map-marker-outline" size={14} color={t.primary} />
+                     <Text style={{ color: t.muted, fontSize: 13 }}>{squad.city || 'India'}</Text>
+                   </View>
+                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                     <MaterialCommunityIcons name="shield-check-outline" size={14} color={t.primary} />
+                     <Text style={{ color: t.muted, fontSize: 13 }}>Est. 2025</Text>
+                   </View>
+                 </View>
+               </View>
+
+               <View style={{ backgroundColor: '#10b981', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, alignItems: 'center' }}>
+                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <MaterialCommunityIcons name="star" size={12} color="#fff" />
+                    <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700' }}>5.0</Text>
+                 </View>
+                 <Text style={{ color: '#fff', fontSize: 10 }}>2 reviews</Text>
+               </View>
             </View>
-          )}
 
-          <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
-            <Text style={[styles.cardHeader, { color: t.muted }]}>MEMBERS ({squad.members.length})</Text>
-            {squad.members.map((memberId) => {
-              const member = resolveUserForSquadId(memberId);
-              const role = getMemberRole(memberId);
-              const displayName = member?.name || `Member ${memberId.slice(-4).toUpperCase()}`;
-              const primaryVehicle = member?.garage?.[0] ?? 'Unknown machine';
-              const memberProfileId = member?.id ?? memberId;
+            {/* Stats Block */}
+            <View style={{ flexDirection: 'row', backgroundColor: t.subtle, borderRadius: 12, paddingVertical: 16, marginBottom: 24 }}>
+               <View style={{ flex: 1, alignItems: 'center', borderRightWidth: 1, borderRightColor: t.border }}>
+                  <Text style={{ fontSize: 22, fontWeight: '800', color: t.primary }}>{rides.filter((r) => r.squadId === squad.id).length.toString()}</Text>
+                  <Text style={{ fontSize: 12, color: t.muted, marginTop: 2 }}>Total Rides</Text>
+               </View>
+               <View style={{ flex: 1, alignItems: 'center', borderRightWidth: 1, borderRightColor: t.border }}>
+                  <Text style={{ fontSize: 22, fontWeight: '800', color: t.primary }}>1K+</Text>
+                  <Text style={{ fontSize: 12, color: t.muted, marginTop: 2 }}>Km Driven</Text>
+               </View>
+               <View style={{ flex: 1, alignItems: 'center' }}>
+                  <Text style={{ fontSize: 22, fontWeight: '800', color: t.primary }}>{squad.members.length.toString()}</Text>
+                  <Text style={{ fontSize: 12, color: t.muted, marginTop: 2 }}>Members</Text>
+               </View>
+            </View>
 
-              return (
-                <TouchableOpacity
-                  key={memberId}
-                  style={[styles.friendRow, { borderColor: t.border }]}
-                  onPress={() => onViewProfile(memberProfileId)}
-                >
-                  <View style={styles.rowAligned}>
-                    <Image source={{ uri: member?.avatar || avatarFallback }} style={styles.avatarMedium} />
-                    <View>
-                      <View style={styles.rowAligned}>
-                        <Text style={[styles.boldText, { color: t.text }]}>{displayName}</Text>
-                        {memberId === squad.creatorId && (
-                          <MaterialCommunityIcons name="crown" size={13} color={t.primary} />
-                        )}
-                      </View>
-                      <Text style={[styles.metaText, { color: t.muted }]}>{primaryVehicle}</Text>
+            <Text style={{ fontSize: 15, color: t.text, lineHeight: 22, marginBottom: 24 }}>
+              {squad.description}
+            </Text>
+
+            {/* Leadership Block */}
+            <View style={{ marginBottom: 24 }}>
+               <Text style={{ fontSize: 18, fontWeight: '600', color: t.text, marginBottom: 16 }}>Leadership</Text>
+               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
+                  {squad.members.map((memberId) => {
+                     const role = getMemberRole(memberId);
+                     const isLeader = role === 'owner' || role === 'admin';
+                     
+                     // If shrunk, only show leaders or max 4 people.
+                     if (!isLeadershipExpanded && !isLeader) return null;
+
+                     const member = resolveUserForSquadId(memberId);
+                     if (!member) return null;
+                     const handle = member.id.startsWith('user-') ? `${member.name.split(' ')[0]}${member.id.slice(-4)}` : member.id.slice(-6);
+
+                     return (
+                        <TouchableOpacity key={memberId} style={{ alignItems: 'center', width: 80 }} onPress={() => onViewProfile(member.id)}>
+                           <View>
+                              <Image source={{ uri: member.avatar || avatarFallback }} style={{ width: 64, height: 64, borderRadius: 32, borderWidth: 2, borderColor: t.primary }} />
+                              {isLeader && (
+                                 <View style={{ position: 'absolute', bottom: -8, alignSelf: 'center', backgroundColor: t.primary, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 }}>
+                                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '600' }}>Admin</Text>
+                                 </View>
+                              )}
+                           </View>
+                           <Text style={{ fontSize: 13, color: t.text, textAlign: 'center', marginTop: 12 }} numberOfLines={1}>{member.name}</Text>
+                           <Text style={{ fontSize: 11, color: t.muted, textAlign: 'center', marginTop: 2 }} numberOfLines={1}>{handle}</Text>
+                        </TouchableOpacity>
+                     );
+                  })}
+               </View>
+
+               {squad.members.length > squad.adminIds.length + 1 && (
+                 <TouchableOpacity style={{ alignItems: 'center', marginTop: 16 }} onPress={() => setIsLeadershipExpanded(!isLeadershipExpanded)}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                       <Text style={{ color: t.primary, fontWeight: '600' }}>{isLeadershipExpanded ? 'View Less' : 'View More'}</Text>
+                       <MaterialCommunityIcons name={isLeadershipExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={t.primary} />
                     </View>
-                  </View>
-                  <Badge color={memberId === squad.creatorId ? 'orange' : 'slate'} theme={theme}>
-                    {role === 'owner' ? 'Owner' : role === 'admin' ? 'Admin' : 'Member'}
-                  </Badge>
-                </TouchableOpacity>
-              );
-            })}
-            {squad.members.map((memberId) => {
-              const member = resolveUserForSquadId(memberId);
-              if (!member) return null;
-              if (!isOwner || memberId === squad.creatorId) return null;
+                 </TouchableOpacity>
+               )}
+            </View>
 
-              const isTargetAdmin = squad.adminIds.includes(memberId);
-
-              return (
-                <View key={`${memberId}-admin-action`} style={[styles.rowBetween, { marginTop: 8 }]}>
-                  <Text style={[styles.metaText, { color: t.muted }]}>
-                    {member.name.split(' ')[0]} role: {isTargetAdmin ? 'Admin' : 'Member'}
-                  </Text>
-                  <View style={styles.rowAligned}>
-                    <TouchableOpacity
-                      style={[styles.primaryCompactButton, { borderColor: t.border, backgroundColor: t.subtle }]}
-                      onPress={() =>
-                        isTargetAdmin ? onDemoteAdmin(squad.id, memberId) : onPromoteAdmin(squad.id, memberId)
-                      }
-                    >
-                      <MaterialCommunityIcons
-                        name={isTargetAdmin ? 'account-arrow-down-outline' : 'account-arrow-up-outline'}
-                        size={14}
-                        color={t.primary}
-                      />
-                      <Text style={[styles.primaryCompactButtonText, { color: t.primary }]}>
-                        {isTargetAdmin ? 'Set as Member' : 'Set as Admin'}
-                      </Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.primaryCompactButton, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}12` }]}
-                      onPress={() => onRemoveMember(squad.id, memberId)}
-                    >
-                      <MaterialCommunityIcons name="account-remove-outline" size={14} color={TOKENS[theme].red} />
-                      <Text style={[styles.primaryCompactButtonText, { color: TOKENS[theme].red }]}>Remove</Text>
-                    </TouchableOpacity>
+            {/* Roadbook Section */}
+            <View style={{ marginBottom: 16, borderTopWidth: 1, borderTopColor: t.border, paddingTop: 24 }}>
+               <Text style={{ fontSize: 18, fontWeight: '600', color: t.muted, textTransform: 'uppercase', marginBottom: 16 }}>ROADBOOK</Text>
+               
+               {rides.filter((r) => r.squadId === squad.id).map((rideItem) => (
+                  <View key={rideItem.id} style={{ marginBottom: 16 }}>
+                    <RideCard 
+                       ride={rideItem} 
+                       currentUserId={currentUser.id} 
+                       onOpenDetail={() => {}} 
+                       onViewProfile={onViewProfile} 
+                       theme={theme} 
+                    />
                   </View>
-                </View>
-              );
-            })}
+               ))}
+               
+               {rides.filter((r) => r.squadId === squad.id).length === 0 && (
+                  <Text style={{ color: t.muted, fontStyle: 'italic', textAlign: 'center', paddingVertical: 24 }}>No rides in roadbook yet.</Text>
+               )}
+            </View>
+
           </View>
         </ScrollView>
+
+        {/* Sticky Bottom Action Bar */}
+        <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: 16, backgroundColor: t.bg, borderTopWidth: 1, borderTopColor: t.border, paddingBottom: Math.max(insets.bottom, 16) }}>
+           {isMember ? (
+              <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary, borderRadius: 24 }]} onPress={() => onOpenSquadChat(squad.id)}>
+                 <Text style={[styles.primaryButtonText, { fontSize: 16 }]}>Go To Chat</Text>
+              </TouchableOpacity>
+           ) : isPending ? (
+              <View style={[styles.primaryButton, { backgroundColor: t.subtle, borderRadius: 24 }]}>
+                 <Text style={[styles.primaryButtonText, { color: t.muted, fontSize: 16 }]}>Request Sent</Text>
+              </View>
+           ) : (
+              <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary, borderRadius: 24 }]} onPress={() => onJoinSquad(squad.id)}>
+                 <Text style={[styles.primaryButtonText, { fontSize: 16 }]}>{squad.joinPermission === 'request_to_join' ? 'Request to Join' : 'Join Squad'}</Text>
+              </TouchableOpacity>
+           )}
+        </View>
+
       </SafeAreaView>
     </Modal>
   );

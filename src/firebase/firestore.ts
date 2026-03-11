@@ -29,6 +29,7 @@ import {
   SignedImageAsset,
   Squad,
   SquadJoinPermission,
+  SquadRideCreatePermission,
   User
 } from '../types';
 import { getFirebaseServices } from './client';
@@ -42,6 +43,7 @@ const SQUADS_COLLECTION = 'squads';
 const MODERATION_REPORTS_COLLECTION = 'moderationReports';
 const RIDE_VISIBILITY_OPTIONS: RideVisibility[] = ['Nearby', 'City', 'Friends'];
 const SQUAD_JOIN_PERMISSION_OPTIONS: SquadJoinPermission[] = ['anyone', 'request_to_join'];
+const SQUAD_RIDE_CREATE_PERMISSION_OPTIONS: SquadRideCreatePermission[] = ['anyone', 'admin'];
 const RIDE_JOIN_PERMISSION_OPTIONS: RideJoinPermission[] = ['anyone', 'request_to_join'];
 
 const asString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
@@ -341,7 +343,8 @@ const syncUserDirectoryEntry = async (
   if (!services) return;
 
   const uid = asString(user.id).trim();
-  const name = asString(payload.name).trim();
+  const fullName = asString(payload.fullName).trim();
+  const name = fullName || asString(payload.name).trim();
   if (!uid || !name) return;
 
   const directoryCollectionRef = collection(services.firestore, USER_DIRECTORY_COLLECTION);
@@ -420,8 +423,28 @@ const normalizeRide = (id: string, raw: DocumentData): RidePost => {
     rideNote: asString(raw.rideNote) || undefined,
     inviteAudience,
     isPrivate: typeof raw.isPrivate === 'boolean' ? raw.isPrivate : undefined,
-    joinPermission: normalizeRideJoinPermission(raw.joinPermission)
+    joinPermission: normalizeRideJoinPermission(raw.joinPermission),
+    destinationPhotoRef: asString(raw.destinationPhotoRef) || undefined,
+    squadId: asString(raw.squadId) || undefined,
+    squadName: asString(raw.squadName) || undefined,
+    squadAvatar: asString(raw.squadAvatar) || undefined
   };
+};
+
+const toFirestoreRidePayload = (ride: RidePost): Record<string, unknown> => {
+  const payload: Record<string, unknown> = {
+    ...ride,
+    createdAt: ride.createdAt || new Date().toISOString()
+  };
+
+  // Ensure optional fields are clearly handled
+  if (!ride.squadId) {
+    delete payload.squadId;
+    delete payload.squadName;
+    delete payload.squadAvatar;
+  }
+
+  return payload;
 };
 
 const normalizeHelpPost = (id: string, raw: DocumentData): HelpPost => ({
@@ -455,6 +478,11 @@ const normalizeSquadJoinPermission = (value: unknown): SquadJoinPermission =>
     ? (value as SquadJoinPermission)
     : 'anyone';
 
+const normalizeSquadRideCreatePermission = (value: unknown): SquadRideCreatePermission =>
+  typeof value === 'string' && SQUAD_RIDE_CREATE_PERMISSION_OPTIONS.includes(value as SquadRideCreatePermission)
+    ? (value as SquadRideCreatePermission)
+    : 'anyone';
+
 const normalizeSquad = (id: string, raw: DocumentData): Squad => {
   const members = Array.from(new Set(asStringArray(raw.members)));
   const adminIds = Array.from(new Set(asStringArray(raw.adminIds))).filter((memberId) =>
@@ -474,6 +502,7 @@ const normalizeSquad = (id: string, raw: DocumentData): Squad => {
     city: asString(raw.city),
     rideStyles: normalizeSquadRideStyles(raw),
     joinPermission: normalizeSquadJoinPermission(raw.joinPermission),
+    rideCreatePermission: normalizeSquadRideCreatePermission(raw.rideCreatePermission),
     joinRequests: Array.from(new Set(asStringArray(raw.joinRequests))).filter((memberId) => !members.includes(memberId)),
     createdAt: asString(raw.createdAt, new Date().toISOString())
   };
@@ -778,25 +807,28 @@ export const upsertRideInFirestore = async (ride: RidePost): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
 
-  await setDoc(doc(services.firestore, RIDES_COLLECTION, ride.id), ride, { merge: true });
+  const payload = toFirestoreRidePayload(ride);
+  await setDoc(doc(services.firestore, RIDES_COLLECTION, ride.id), payload, { merge: true });
 };
 
 export const updateRideJoinStateInFirestore = async (
   rideId: string,
-  updates: Pick<RidePost, 'currentParticipants' | 'requests'> & Partial<Pick<RidePost, 'joinPermission'>>
+  updates: Pick<RidePost, 'currentParticipants' | 'requests'> &
+    Partial<Pick<RidePost, 'joinPermission' | 'paymentStatusByUserId'>>
 ): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
 
-  await setDoc(
-    doc(services.firestore, RIDES_COLLECTION, rideId),
-    {
-      currentParticipants: updates.currentParticipants,
-      requests: updates.requests,
-      ...(updates.joinPermission ? { joinPermission: updates.joinPermission } : {})
-    },
-    { merge: true }
-  );
+  const payload: Record<string, unknown> = {
+    currentParticipants: updates.currentParticipants,
+    requests: updates.requests,
+    ...(updates.joinPermission ? { joinPermission: updates.joinPermission } : {})
+  };
+  if (updates.paymentStatusByUserId !== undefined) {
+    payload.paymentStatusByUserId = updates.paymentStatusByUserId;
+  }
+
+  await setDoc(doc(services.firestore, RIDES_COLLECTION, rideId), payload, { merge: true });
 };
 
 export const deleteRideInFirestore = async (rideId: string): Promise<void> => {

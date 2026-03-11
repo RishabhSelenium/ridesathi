@@ -308,6 +308,7 @@ export const MOCK_SQUADS: Squad[] = [
     city: 'New Delhi',
     rideStyles: ['Touring', 'Cafe Racer'],
     joinPermission: 'anyone',
+    rideCreatePermission: 'anyone',
     joinRequests: [],
     createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   },
@@ -322,6 +323,7 @@ export const MOCK_SQUADS: Squad[] = [
     city: 'New Delhi',
     rideStyles: ['City / Urban', 'Night Cruise'],
     joinPermission: 'request_to_join',
+    rideCreatePermission: 'admin',
     joinRequests: ['u2'],
     createdAt: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString()
   },
@@ -336,6 +338,7 @@ export const MOCK_SQUADS: Squad[] = [
     city: 'Pan India',
     rideStyles: ['Adventure / Off-road'],
     joinPermission: 'request_to_join',
+    rideCreatePermission: 'admin',
     joinRequests: [],
     createdAt: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
   },
@@ -350,6 +353,7 @@ export const MOCK_SQUADS: Squad[] = [
     city: 'Gurugram',
     rideStyles: ['Night Cruise', 'Sport'],
     joinPermission: 'anyone',
+    rideCreatePermission: 'anyone',
     joinRequests: [],
     createdAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000).toISOString()
   }

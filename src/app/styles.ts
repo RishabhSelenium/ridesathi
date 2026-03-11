@@ -409,6 +409,11 @@ export const styles = StyleSheet.create({
     height: 74,
     borderRadius: 24
   },
+  chatAvatar: {
+    width: 52,
+    height: 52,
+    borderRadius: 26
+  },
   boldText: {
     fontSize: 13,
     fontWeight: '700'
@@ -565,9 +570,8 @@ export const styles = StyleSheet.create({
     textTransform: 'uppercase'
   },
   chatRow: {
-    borderWidth: 1,
-    borderRadius: 16,
-    padding: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center'
   },
@@ -586,6 +590,83 @@ export const styles = StyleSheet.create({
   chatPreview: {
     fontSize: 12,
     marginTop: 4
+  },
+  chatHeaderContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
+    paddingBottom: 8,
+    gap: 12
+  },
+  chatSearchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    height: 48,
+    gap: 8
+  },
+  chatSearchInput: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '500'
+  },
+  chatFiltersScroll: {
+    maxHeight: 40
+  },
+  chatFiltersContainer: {
+    gap: 8
+  },
+  chatFilterPill: {
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    height: 36
+  },
+  chatFilterPillText: {
+    fontSize: 14,
+    fontWeight: '700'
+  },
+  chatParticipantName: {
+    fontSize: 16,
+    fontWeight: '800'
+  },
+  chatTimestamp: {
+    fontSize: 12,
+    fontWeight: '600'
+  },
+  chatPreviewText: {
+    fontSize: 14,
+    marginTop: 4
+  },
+  chatUnreadBadge: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 4
+  },
+  chatUnreadBadgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800'
+  },
+  chatFab: {
+    position: 'absolute',
+    right: 20,
+    bottom: 20,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
+    elevation: 8
   },
   profileName: {
     fontSize: 21,

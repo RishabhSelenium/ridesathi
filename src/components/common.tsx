@@ -16,6 +16,9 @@ import {
 import { styles } from '../app/styles';
 import { RidePost } from '../types';
 
+const GOOGLE_PLACES_KEY =
+  (process.env.EXPO_PUBLIC_GOOGLE_PLACES_API_KEY ?? process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ?? '').trim();
+
 const formatInrCurrency = (amount: number): string => `₹${Math.max(0, Math.round(amount)).toLocaleString('en-IN')}`;
 
 const getRidePaymentSummary = (ride: RidePost): string | null => {
@@ -182,7 +185,11 @@ export const RideCard = ({
 
       <View style={styles.rideCardCover}>
         <Image
-          source={{ uri: `https://picsum.photos/seed/${encodeURIComponent(endLoc)}/800/400` }}
+          source={{
+            uri: ride.destinationPhotoRef && GOOGLE_PLACES_KEY
+              ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photo_reference=${ride.destinationPhotoRef}&key=${GOOGLE_PLACES_KEY}`
+              : `https://picsum.photos/seed/${encodeURIComponent(endLoc)}/800/400`
+          }}
           style={styles.rideCardCoverImage}
         />
 
@@ -242,10 +249,19 @@ export const RideCard = ({
 
         <View style={styles.rideCardFooter}>
           <View style={styles.rideCardFooterLeft}>
-            <Text style={[styles.rideCardFooterLabel, { color: t.muted }]}>Riding With</Text>
-            <TouchableOpacity onPress={() => onViewProfile?.(ride.creatorId)}>
-              <Text style={[styles.rideCardCreatorName, { color: t.primary }]} numberOfLines={1}>{ride.creatorName}</Text>
-            </TouchableOpacity>
+            <Text style={[styles.rideCardFooterLabel, { color: t.muted }]}>
+              {ride.squadName ? 'Hosted By' : 'Riding With'}
+            </Text>
+            {ride.squadName ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                <Image source={{ uri: ride.squadAvatar }} style={{ width: 16, height: 16, borderRadius: 8 }} />
+                <Text style={[styles.rideCardCreatorName, { color: t.primary }]} numberOfLines={1}>{ride.squadName}</Text>
+              </View>
+            ) : (
+              <TouchableOpacity onPress={() => onViewProfile?.(ride.creatorId)}>
+                <Text style={[styles.rideCardCreatorName, { color: t.primary }]} numberOfLines={1}>{ride.creatorName}</Text>
+              </TouchableOpacity>
+            )}
           </View>
           <View style={styles.rideCardFooterRight}>
             <Text style={[styles.rideCardCostValue, { color: t.text }]}>

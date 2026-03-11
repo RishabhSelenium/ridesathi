@@ -6,7 +6,8 @@ export type RidePaymentMethod = 'UPI_LINK';
 export type RidePaymentState = 'pending' | 'paid';
 export type RideInviteAudience = 'groups' | 'riders';
 export type RideJoinPermission = 'anyone' | 'request_to_join';
-export type SquadJoinPermission = 'anyone' | 'request_to_join';
+export type SquadJoinPermission = 'anyone' | 'request_to_join' | 'invite_only';
+export type SquadRideCreatePermission = 'anyone' | 'admin';
 export type SquadRole = 'owner' | 'admin' | 'member';
 
 export interface SignedImageAsset {
@@ -65,6 +66,7 @@ export interface MapPoint {
   lat: number;
   lng: number;
   label?: string;
+  photoRef?: string;
 }
 
 export interface LiveRideLocation {
@@ -144,6 +146,10 @@ export interface RidePost {
   inviteAudience?: RideInviteAudience;
   isPrivate?: boolean;
   joinPermission?: RideJoinPermission;
+  destinationPhotoRef?: string;
+  squadId?: string;
+  squadName?: string;
+  squadAvatar?: string;
 }
 
 export interface HelpPost {
@@ -215,6 +221,7 @@ export interface Conversation {
   participantAvatar: string;
   lastMessage: string;
   timestamp: string;
+  isUnread?: boolean;
   unreadCount: number;
   messages: ChatMessage[];
 }
@@ -231,6 +238,7 @@ export interface Squad {
   city: string;
   rideStyles: string[];
   joinPermission: SquadJoinPermission;
+  rideCreatePermission: SquadRideCreatePermission;
   joinRequests: string[];
   createdAt: string;
 }

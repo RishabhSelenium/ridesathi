@@ -110,7 +110,35 @@ service cloud.firestore {
         data.city is string &&
         data.visibility is list &&
         data.visibility.size() > 0 &&
+        (data.destinationPhotoRef == null || data.destinationPhotoRef is string) &&
+        validRideSquadHost(data) &&
         data.createdAt is string;
+    }
+
+    function validRideSquadHost(data) {
+      return (
+          !(data.squadId is string) ||
+          data.squadId == ''
+        )
+        ? (data.squadName == null && data.squadAvatar == null)
+        : (
+          get(/databases/$(database)/documents/squads/$(data.squadId)).data != null &&
+          get(/databases/$(database)/documents/squads/$(data.squadId)).data.members is list &&
+          get(/databases/$(database)/documents/squads/$(data.squadId)).data.members.hasAny([request.auth.uid]) &&
+          (
+            !(get(/databases/$(database)/documents/squads/$(data.squadId)).data.rideCreatePermission is string) ||
+            get(/databases/$(database)/documents/squads/$(data.squadId)).data.rideCreatePermission == 'anyone' ||
+            get(/databases/$(database)/documents/squads/$(data.squadId)).data.creatorId == request.auth.uid ||
+            (
+              get(/databases/$(database)/documents/squads/$(data.squadId)).data.adminIds is list &&
+              get(/databases/$(database)/documents/squads/$(data.squadId)).data.adminIds.hasAny([request.auth.uid])
+            )
+          ) &&
+          data.squadName is string &&
+          data.squadName == get(/databases/$(database)/documents/squads/$(data.squadId)).data.name &&
+          (data.squadAvatar == null || data.squadAvatar is string) &&
+          data.squadAvatar == get(/databases/$(database)/documents/squads/$(data.squadId)).data.avatar
+        );
     }
 
     function canSelfJoinOpenRide() {
@@ -130,6 +158,35 @@ service cloud.firestore {
         request.resource.data.currentParticipants.hasAll([request.auth.uid]) &&
         request.resource.data.currentParticipants.size() == resource.data.currentParticipants.size() + 1 &&
         request.resource.data.currentParticipants.size() <= resource.data.maxParticipants;
+    }
+
+    function canParticipantLeave() {
+      return request.auth.uid != resource.data.creatorId &&
+        resource.data.currentParticipants.hasAny([request.auth.uid]) &&
+        !request.resource.data.currentParticipants.hasAny([request.auth.uid]) &&
+        request.resource.data.currentParticipants.size() == resource.data.currentParticipants.size() - 1 &&
+        resource.data.currentParticipants.hasAll(request.resource.data.currentParticipants) &&
+        request.resource.data.creatorId == resource.data.creatorId &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'currentParticipants',
+          'requests',
+          'paymentStatusByUserId'
+        ]) &&
+        request.resource.data.currentParticipants is list &&
+        request.resource.data.requests is list &&
+        request.resource.data.requests == resource.data.requests &&
+        (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['paymentStatusByUserId']) ||
+          (
+            resource.data.paymentStatusByUserId is map &&
+            request.resource.data.paymentStatusByUserId is map &&
+            request.resource.data.paymentStatusByUserId.diff(resource.data.paymentStatusByUserId).addedKeys().size() == 0 &&
+            request.resource.data.paymentStatusByUserId.diff(resource.data.paymentStatusByUserId).changedKeys().size() == 0 &&
+            request.resource.data.paymentStatusByUserId.diff(resource.data.paymentStatusByUserId).removedKeys().hasOnly([request.auth.uid])
+          )
+        );
     }
 
     function validHelpPost(data, postId) {
@@ -190,6 +247,7 @@ service cloud.firestore {
           'city',
           'rideStyles',
           'joinPermission',
+          'rideCreatePermission',
           'joinRequests',
           'createdAt'
         ]) &&
@@ -206,6 +264,7 @@ service cloud.firestore {
           'rideStyle',
           'rideStyles',
           'joinPermission',
+          'rideCreatePermission',
           'joinRequests',
           'createdAt'
         ]) &&
@@ -222,6 +281,7 @@ service cloud.firestore {
         data.rideStyles is list &&
         data.rideStyles.size() > 0 &&
         (data.joinPermission == 'anyone' || data.joinPermission == 'request_to_join') &&
+        (data.rideCreatePermission == 'anyone' || data.rideCreatePermission == 'admin') &&
         data.joinRequests is list &&
         data.createdAt is string;
     }
@@ -306,7 +366,8 @@ service cloud.firestore {
             request.resource.data.currentParticipants is list &&
             request.resource.data.requests is list &&
             canSelfJoinOpenRide()
-          )
+          ) ||
+          canParticipantLeave()
         );
 
       allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;
@@ -333,7 +394,33 @@ service cloud.firestore {
     }
 
     match /squads/{squadId} {
-      allow read, write: if isSignedIn();
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn() &&
+        validSquad(request.resource.data, squadId) &&
+        request.resource.data.creatorId == request.auth.uid &&
+        request.resource.data.members.hasAny([request.auth.uid]);
+
+      allow update: if isSignedIn() &&
+        validSquad(request.resource.data, squadId) &&
+        request.resource.data.id == resource.data.id &&
+        request.resource.data.creatorId == resource.data.creatorId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        (
+          request.auth.uid == resource.data.creatorId ||
+          (
+            resource.data.adminIds is list &&
+            resource.data.adminIds.hasAny([request.auth.uid])
+          ) ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'adminIds', 'joinRequests']) ||
+          (
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinRequests']) &&
+            request.resource.data.members == resource.data.members &&
+            request.resource.data.adminIds == resource.data.adminIds
+          )
+        );
+
+      allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;
     }
 
     match /userDirectory/{directoryDocId} {
