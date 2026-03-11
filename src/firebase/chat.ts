@@ -21,6 +21,8 @@ const normalizeRealtimeMessage = (value: unknown): RealtimeChatMessage | null =>
   return {
     id: raw.id,
     senderId: raw.senderId,
+    senderName: typeof raw.senderName === 'string' ? raw.senderName : undefined,
+    recipientId: typeof raw.recipientId === 'string' ? raw.recipientId : undefined,
     text: raw.text,
     timestamp: typeof raw.timestamp === 'string' ? raw.timestamp : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     timestampEpoch: typeof raw.timestampEpoch === 'number' && Number.isFinite(raw.timestampEpoch) ? raw.timestampEpoch : Date.now()
@@ -75,6 +77,8 @@ const subscribeMessages = (
         .map<ChatMessage>((item) => ({
           id: item.id,
           senderId: item.senderId,
+          senderName: item.senderName,
+          recipientId: item.recipientId,
           text: item.text,
           timestamp: item.timestamp
         }));

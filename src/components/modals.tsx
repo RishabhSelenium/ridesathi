@@ -21,7 +21,7 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView as SafeAreaContextView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { styles } from '../app/styles';
 import {
@@ -40,7 +40,7 @@ import {
   getRideLifecycleStatus
 } from '../app/ui';
 import { buildRideJoinAndroidIntentUrl, buildRideJoinDeepLink, PLAY_STORE_URL } from '../app/deep-links';
-import { Badge, LabeledInput, SelectorRow } from './common';
+import { Badge, LabeledInput, SelectorRow, RideCard } from './common';
 import {
   ChatMessage,
   Conversation,
@@ -1303,7 +1303,7 @@ export const SquadChatRoomScreen = ({
           ) : (
             messages.map((msg) => {
               const isMe = msg.senderId === currentUserId;
-              const senderName = usersById.get(msg.senderId)?.name ?? 'Rider';
+              const senderName = msg.senderName ?? usersById.get(msg.senderId)?.name ?? msg.senderId;
 
               return (
                 <View key={msg.id} style={[styles.messageRow, isMe ? styles.messageRight : styles.messageLeft]}>
@@ -4506,13 +4506,26 @@ export const EditProfileModal = ({
   uploadingBikeName: string | null;
   theme: Theme;
 }) => {
-  const sanitizeEmergencyInput = (value: string): string => value.replace(/\D/g, '').slice(0, 15);
+  const ridingStyleOptions = [
+    'Touring / Off-road',
+    'Fast / Spirited',
+    'Long Distance',
+    'Chill / City',
+    'Night Cruise',
+    'Adventure / Off-road',
+    'City / Urban',
+    'Sport'
+  ];
+  const sanitizeEmergencyInput = (value: string): string => {
+    const digits = value.replace(/\D/g, '');
+    return digits.length <= 10 ? digits : digits.slice(-10);
+  };
   const normalizeEmergencyContacts = (values: string[]): string[] => {
     const seen = new Set<string>();
     const normalized: string[] = [];
     values
       .map((value) => sanitizeEmergencyInput(value))
-      .filter((value) => value.length >= 10)
+      .filter((value) => value.length === 10)
       .forEach((value) => {
         if (seen.has(value)) return;
         seen.add(value);
@@ -4525,8 +4538,16 @@ export const EditProfileModal = ({
     ...(user.sosContacts ?? []),
     user.sosNumber ?? ''
   ]);
+  const deriveNameParts = (profile: User): { first: string; last: string } => {
+    const fullNameParts = (profile.fullName?.trim() ?? '').split(/\s+/).filter(Boolean);
+    const first = profile.firstName?.trim() || fullNameParts[0] || profile.name.trim();
+    const last = profile.lastName?.trim() || (fullNameParts.length > 1 ? fullNameParts.slice(1).join(' ') : '');
+    return { first, last };
+  };
+  const initialNameParts = deriveNameParts(user);
   const t = TOKENS[theme];
-  const [name, setName] = useState(user.name);
+  const [firstName, setFirstName] = useState(initialNameParts.first);
+  const [lastName, setLastName] = useState(initialNameParts.last);
   const [garage, setGarage] = useState<string[]>(user.garage || []);
   const [style, setStyle] = useState(user.style);
   const [typicalRideTime, setTypicalRideTime] = useState(user.typicalRideTime);
@@ -4545,7 +4566,9 @@ export const EditProfileModal = ({
 
     initializedForOpenRef.current = true;
     const contacts = normalizeEmergencyContacts([...(user.sosContacts ?? []), user.sosNumber ?? '']);
-    setName(user.name);
+    const nameParts = deriveNameParts(user);
+    setFirstName(nameParts.first);
+    setLastName(nameParts.last);
     setGarage(user.garage || []);
     setStyle(user.style);
     setTypicalRideTime(user.typicalRideTime);
@@ -4588,17 +4611,32 @@ export const EditProfileModal = ({
   };
 
   const submit = () => {
+    const normalizedFirstName = firstName.trim();
+    const normalizedLastName = lastName.trim();
+    const normalizedDisplayName = normalizedFirstName || user.name.trim() || 'Rider';
+    const normalizedFullName = [normalizedFirstName, normalizedLastName].filter(Boolean).join(' ') || normalizedDisplayName;
     const filteredGarage = garage.map((value) => value.trim()).filter(Boolean);
     const emergencyContacts = normalizeEmergencyContacts([primarySosContact, secondarySosContact, thirdSosContact]);
+    const hasInvalidSosLength = [primarySosContact, secondarySosContact, thirdSosContact].some(
+      (contact) => contact.length > 0 && contact.length !== 10
+    );
+
+    if (hasInvalidSosLength) {
+      setError('Each SOS contact must be exactly 10 digits.');
+      return;
+    }
 
     if (emergencyContacts.length === 0) {
-      setError('Add at least one emergency contact (minimum 10 digits).');
+      setError('Add at least one emergency contact (10 digits).');
       return;
     }
 
     setError('');
     onSave({
-      name,
+      name: normalizedDisplayName,
+      firstName: normalizedFirstName || undefined,
+      lastName: normalizedLastName || undefined,
+      fullName: normalizedFullName,
       garage: filteredGarage,
       style,
       typicalRideTime,
@@ -4641,7 +4679,8 @@ export const EditProfileModal = ({
                 </TouchableOpacity>
               </View>
 
-              <LabeledInput label="Name" value={name} onChangeText={setName} theme={theme} />
+              <LabeledInput label="First Name" value={firstName} onChangeText={setFirstName} theme={theme} />
+              <LabeledInput label="Last Name" value={lastName} onChangeText={setLastName} theme={theme} />
 
               <Text style={[styles.inputLabel, { color: t.muted }]}>Garage</Text>
               {garage.map((bike, idx) => {
@@ -4696,7 +4735,29 @@ export const EditProfileModal = ({
                 Add one photo per bike. Upload uses your account storage.
               </Text>
 
-              <LabeledInput label="Riding Style" value={style} onChangeText={setStyle} theme={theme} />
+              <View>
+                <Text style={[styles.inputLabel, { color: t.muted }]}>Riding Style</Text>
+                <View style={styles.wrapRow}>
+                  {ridingStyleOptions.map((option) => {
+                    const isActive = style === option;
+                    return (
+                      <TouchableOpacity
+                        key={option}
+                        style={[
+                          styles.selectorChip,
+                          {
+                            borderColor: isActive ? t.primary : t.border,
+                            backgroundColor: isActive ? `${t.primary}22` : t.subtle
+                          }
+                        ]}
+                        onPress={() => setStyle(option)}
+                      >
+                        <Text style={[styles.selectorChipText, { color: isActive ? t.primary : t.muted }]}>{option}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
               <LabeledInput label="Typical Ride Time" value={typicalRideTime} onChangeText={setTypicalRideTime} theme={theme} />
 
               <Text style={[styles.inputLabel, { color: t.muted }]}>Primary Emergency Contact</Text>
@@ -4706,7 +4767,7 @@ export const EditProfileModal = ({
                 placeholder="Primary emergency number"
                 placeholderTextColor={t.muted}
                 keyboardType="number-pad"
-                maxLength={15}
+                maxLength={10}
                 onChangeText={(value) => {
                   setPrimarySosContact(sanitizeEmergencyInput(value));
                   setError('');
@@ -4720,7 +4781,7 @@ export const EditProfileModal = ({
                 placeholder="Secondary emergency number"
                 placeholderTextColor={t.muted}
                 keyboardType="number-pad"
-                maxLength={15}
+                maxLength={10}
                 onChangeText={(value) => {
                   setSecondarySosContact(sanitizeEmergencyInput(value));
                   setError('');
@@ -4734,7 +4795,7 @@ export const EditProfileModal = ({
                 placeholder="Third emergency number"
                 placeholderTextColor={t.muted}
                 keyboardType="number-pad"
-                maxLength={15}
+                maxLength={10}
                 onChangeText={(value) => {
                   setThirdSosContact(sanitizeEmergencyInput(value));
                   setError('');
@@ -4818,7 +4879,7 @@ export const RideDetailScreen = ({
 }) => {
   const t = TOKENS[theme];
   const insets = useSafeAreaInsets();
-  const topInset = getAndroidTopInset(insets);
+  const topInset = Platform.OS === 'ios' ? insets.top : getAndroidTopInset(insets);
 
   if (!ride) return null;
 
@@ -4826,23 +4887,105 @@ export const RideDetailScreen = ({
   const isPending = ride.requests.includes(currentUser.id);
   const isJoined = ride.currentParticipants.includes(currentUser.id);
   const requiresJoinApproval = ride.joinPermission !== 'anyone';
-  const participants = users.filter((u) => ride.currentParticipants.includes(u.id));
+  const usersById = new Map(users.map((user) => [user.id, user]));
+  const isGenericRiderName = (value: string): boolean => {
+    const normalized = value.trim().toLowerCase();
+    return normalized.length === 0 || normalized === 'rider' || normalized === 'a rider' || normalized === 'user' || normalized === 'a';
+  };
+  const getUserDisplayName = (user: User | null | undefined, fallback: string): string => {
+    if (!user) return fallback;
+
+    const fullName = user.fullName?.trim();
+    if (fullName && !isGenericRiderName(fullName)) return fullName;
+
+    const joinedName = [user.firstName?.trim(), user.lastName?.trim()].filter(Boolean).join(' ').trim();
+    if (joinedName && !isGenericRiderName(joinedName)) return joinedName;
+
+    return fallback;
+  };
+  const getDisplayFirstName = (value: string | undefined): string => {
+    const normalized = value?.trim() ?? '';
+    if (!normalized) return 'Rider';
+    return normalized.split(/\s+/)[0] || 'Rider';
+  };
+  const normalizeRiderName = (value: string | undefined, fallback: string): string => {
+    const trimmed = value?.trim() ?? '';
+    return isGenericRiderName(trimmed) ? fallback : trimmed;
+  };
+  const resolveUserById = (userId: string): User | null => {
+    if (userId === currentUser.id) return currentUser;
+
+    const exact = usersById.get(userId);
+    if (exact && !exact.isInferredProfile) return exact;
+
+    const digitsFromId = userId.replace(/\D/g, '');
+    const aliasPhoneLast10 = digitsFromId.length >= 10 ? digitsFromId.slice(-10) : '';
+    if (!aliasPhoneLast10) return exact ?? null;
+    const matched = users.find((user) => {
+      if (user.id === userId) return false;
+      const digits = (user.phoneNumber ?? '').replace(/\D/g, '');
+      return digits.length >= 10 && digits.slice(-10) === aliasPhoneLast10 && user.isInferredProfile !== true;
+    });
+    if (matched) return matched;
+    return (
+      users.find((user) => {
+        const digits = (user.phoneNumber ?? '').replace(/\D/g, '');
+        return digits.length >= 10 && digits.slice(-10) === aliasPhoneLast10;
+      }) ?? exact ?? null
+    );
+  };
+  const participantIds = Array.from(new Set(ride.currentParticipants));
+  const participantMap = new Map<
+    string,
+    {
+      participantId: string;
+      profileId: string;
+      name: string;
+      avatar: string;
+      garage: string[];
+    }
+  >();
+  participantIds.forEach((participantId) => {
+    const user = resolveUserById(participantId);
+    const fallbackName = 'Rider';
+    const candidate = {
+      participantId,
+      profileId: user?.id ?? participantId,
+      name: normalizeRiderName(getUserDisplayName(user, user?.name ?? fallbackName), fallbackName),
+      avatar: user?.avatar ?? avatarFallback,
+      garage: user?.garage ?? []
+    };
+    const digitsFromId = participantId.replace(/\D/g, '');
+    const dedupeKey = user?.id ?? (digitsFromId.length >= 10 ? `phone:${digitsFromId.slice(-10)}` : `id:${participantId}`);
+    const existing = participantMap.get(dedupeKey);
+    if (!existing) {
+      participantMap.set(dedupeKey, candidate);
+      return;
+    }
+
+    const existingLooksGeneric = isGenericRiderName(existing.name) || /^rider\b/i.test(existing.name);
+    const candidateLooksGeneric = isGenericRiderName(candidate.name) || /^rider\b/i.test(candidate.name);
+    if (existingLooksGeneric && !candidateLooksGeneric) {
+      participantMap.set(dedupeKey, candidate);
+    }
+  });
+  const participants = Array.from(participantMap.values());
   const requestEntries = ride.requests.map((requesterId) => {
-    const user = usersById.get(requesterId);
+    const user = resolveUserById(requesterId);
+    const fallbackName = 'Rider';
     return {
       id: requesterId,
-      name: user?.name ?? 'Rider',
+      name: normalizeRiderName(getUserDisplayName(user, user?.name ?? fallbackName), fallbackName),
       avatar: user?.avatar ?? avatarFallback,
       bikeModel: user?.garage?.[0] ?? 'Unknown bike'
     };
   });
-  const usersById = new Map(users.map((user) => [user.id, user]));
   const isRideParticipant = isJoined;
   const isLiveTrackingActive = Boolean(rideTrackingSession?.isActive);
   const myTrackingState = rideTrackingSession?.participants[currentUser.id];
   const isCheckedIn = Boolean(myTrackingState?.checkedIn);
   const liveParticipantStates = participants.map((participant) => {
-    const state = rideTrackingSession?.participants[participant.id];
+    const state = rideTrackingSession?.participants[participant.participantId];
     const checkedIn = Boolean(state?.checkedIn);
     const hasLocation = Boolean(state?.lastLocation);
     const status = getLiveParticipantStatus({
@@ -4864,7 +5007,7 @@ export const RideDetailScreen = ({
       const location = entry.state?.lastLocation;
       if (!location) return null;
       return {
-        id: entry.user.id,
+        id: entry.user.participantId,
         name: entry.user.name,
         checkedIn: entry.checkedIn,
         statusLabel: entry.status.label,
@@ -4931,10 +5074,6 @@ export const RideDetailScreen = ({
   const hasPaymentFlow = hasPaidCost && basePaymentAmount > 0 && paymentParticipantIds.length > 0;
   const hasUpiLink = typeof ride.upiPaymentLink === 'string' && ride.upiPaymentLink.trim().length > 0;
   const paymentStatusByUserId = ride.paymentStatusByUserId ?? {};
-  const resolveUserById = (userId: string): User | null => {
-    if (userId === currentUser.id) return currentUser;
-    return usersById.get(userId) ?? null;
-  };
   const paymentRows = paymentParticipantIds.map((participantId) => {
     const rowStatus = paymentStatusByUserId[participantId];
     const fallbackAmount = Number(basePaymentAmount.toFixed(2));
@@ -5034,7 +5173,7 @@ export const RideDetailScreen = ({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.fullScreen, { backgroundColor: t.bg, paddingTop: topInset }]}>
+      <SafeAreaContextView edges={['left', 'right', 'bottom']} style={[styles.fullScreen, { backgroundColor: t.bg, paddingTop: topInset }]}>
         <View style={[styles.modalHeader, { borderBottomColor: t.border }]}>
           <View style={styles.rowAligned}>
             <TouchableOpacity onPress={onClose} style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
@@ -5483,7 +5622,7 @@ export const RideDetailScreen = ({
                   const latestLocationTimestamp = state?.lastLocation?.updatedAt;
 
                   return (
-                    <View key={user.id} style={[styles.liveParticipantRow, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <View key={user.participantId} style={[styles.liveParticipantRow, { borderColor: t.border, backgroundColor: t.subtle }]}>
                       <View style={styles.rowAligned}>
                         <Image source={{ uri: user.avatar || avatarFallback }} style={styles.avatarTiny} />
                         <View>
@@ -5515,11 +5654,11 @@ export const RideDetailScreen = ({
                 <View style={styles.liveStatusBadgeWrap}>
                   {liveParticipantStates.map(({ user, status }) => {
                     const badgeTone = colorForBadge(status.badgeColor, theme);
-                    const riderName = user.name.split(' ')[0] || 'Rider';
+                    const riderName = getDisplayFirstName(user.name);
 
                     return (
                       <View
-                        key={`live-status-${user.id}`}
+                        key={`live-status-${user.participantId}`}
                         style={[styles.liveStatusBadge, { borderColor: badgeTone.border, backgroundColor: badgeTone.bg }]}
                       >
                         <MaterialCommunityIcons name={status.icon} size={12} color={badgeTone.text} />
@@ -5577,9 +5716,15 @@ export const RideDetailScreen = ({
             <Text style={[styles.cardHeader, { color: t.muted }]}>RIDERS ({participants.length})</Text>
             <View style={styles.wrapRow}>
               {participants.map((u) => (
-                <TouchableOpacity key={u.id} style={styles.participantPill} onPress={() => onHandleViewProfile?.(u.id)}>
+                <TouchableOpacity
+                  key={u.participantId}
+                  style={styles.participantPill}
+                  onPress={() => onHandleViewProfile?.(u.profileId)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${u.name}'s profile`}
+                >
                   <Image source={{ uri: u.avatar || avatarFallback }} style={styles.avatarTiny} />
-                  <Text style={[styles.metaText, { color: t.text }]}>{u.name.split(' ')[0]}</Text>
+                  <Text style={[styles.metaText, { color: t.text, textAlign: 'center' }]}>{getDisplayFirstName(u.name)}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -5680,7 +5825,7 @@ export const RideDetailScreen = ({
             </TouchableOpacity>
           )}
         </View>
-      </SafeAreaView>
+      </SafeAreaContextView>
     </Modal>
   );
 };
@@ -5860,24 +6005,24 @@ export const UserProfileModal = ({
   visible,
   user,
   rides,
+  isLimitedProfile,
   friendStatus,
   isBlocked,
   onClose,
   onMessage,
   onAddFriend,
-  onReportUser,
   onBlockUser,
   theme
 }: {
   visible: boolean;
   user: User | null;
   rides: RidePost[];
+  isLimitedProfile?: boolean;
   friendStatus: FriendStatus;
   isBlocked: boolean;
   onClose: () => void;
   onMessage: (userId: string) => void;
   onAddFriend: (userId: string) => void;
-  onReportUser: (userId: string) => void;
   onBlockUser: (userId: string) => void;
   theme: Theme;
 }) => {
@@ -5889,22 +6034,16 @@ export const UserProfileModal = ({
   const canMessage = friendStatus !== 'self' && !isBlocked;
   const canAddFriend = friendStatus === 'none' && !isBlocked;
   const friendButtonLabel = friendStatus === 'friend' ? 'Connected' : friendStatus === 'requested' ? 'Pending' : friendStatus === 'self' ? 'You' : 'Add';
+  const hasCity = Boolean(user.city?.trim());
+  const hasGarage = user.garage.length > 0;
+  const hasStyle = Boolean(user.style?.trim());
+  const hasWindow = Boolean(user.typicalRideTime?.trim());
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <SafeAreaView style={styles.modalBackdrop}>
         <Pressable style={styles.modalScrim} onPress={onClose} />
         <View style={[styles.profileSheet, { backgroundColor: t.bg, borderTopColor: t.primary }]}>
-          <View style={styles.profileCoverWrap}>
-            <Image
-              source={{ uri: 'https://images.unsplash.com/photo-1558981403-c5f9899a28bc?auto=format&fit=crop&q=80&w=800' }}
-              style={styles.profileCover}
-            />
-            <TouchableOpacity style={styles.profileCloseButton} onPress={onClose}>
-              <MaterialCommunityIcons name="close" size={20} color="#fff" />
-            </TouchableOpacity>
-          </View>
-
           <ScrollView contentContainerStyle={styles.userProfileContent}>
             <View style={styles.userTopRow}>
               <Image source={{ uri: user.avatar || avatarFallback }} style={styles.userAvatarHuge} />
@@ -5916,14 +6055,6 @@ export const UserProfileModal = ({
                 >
                   <MaterialCommunityIcons name="message-outline" size={18} color={canMessage ? t.primary : t.muted} />
                 </TouchableOpacity>
-                {friendStatus !== 'self' && (
-                  <TouchableOpacity
-                    style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}
-                    onPress={() => onReportUser(user.id)}
-                  >
-                    <MaterialCommunityIcons name="flag-outline" size={18} color={TOKENS[theme].red} />
-                  </TouchableOpacity>
-                )}
                 {friendStatus !== 'self' && (
                   <TouchableOpacity
                     style={[styles.iconButton, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}1f` }]}
@@ -5941,10 +6072,16 @@ export const UserProfileModal = ({
                   <MaterialCommunityIcons name="account-plus-outline" size={16} color={canAddFriend ? '#fff' : t.muted} />
                   <Text style={[styles.primaryCompactButtonText, { color: canAddFriend ? '#fff' : t.muted }]}>{friendButtonLabel}</Text>
                 </TouchableOpacity>
+                <TouchableOpacity style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]} onPress={onClose}>
+                  <MaterialCommunityIcons name="close" size={18} color={t.muted} />
+                </TouchableOpacity>
               </View>
             </View>
 
-            <Text style={[styles.profileName, { color: t.text }]}>{user.name}</Text>
+            <Text style={[styles.profileName, { color: t.text }]}>{user.fullName?.trim() || user.name}</Text>
+            {isLimitedProfile && (
+              <Text style={[styles.metaText, { color: t.muted }]}>Basic profile preview from feed data.</Text>
+            )}
 
             {isBlocked && (
               <View style={[styles.newsScoreChip, { borderColor: TOKENS[theme].red, backgroundColor: `${TOKENS[theme].red}1f` }]}>
@@ -5956,48 +6093,69 @@ export const UserProfileModal = ({
               <Badge color="orange" theme={theme}>
                 {user.experience}
               </Badge>
-              <View style={{ width: 8 }} />
-              <Badge color="blue" theme={theme}>
-                {user.city}
-              </Badge>
+              {hasCity && (
+                <>
+                  <View style={{ width: 8 }} />
+                  <Badge color="blue" theme={theme}>
+                    {user.city}
+                  </Badge>
+                </>
+              )}
             </View>
 
-            <View style={styles.profileStatsRow}>
-              <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                <Text style={[styles.profileStatValue, { color: t.text }]}>{user.friends.length}</Text>
-                <Text style={[styles.profileStatLabel, { color: t.muted }]}>Squad</Text>
+            {isLimitedProfile ? (
+              <View style={styles.profileStatsRow}>
+                <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <Text style={[styles.profileStatValue, { color: t.text }]}>{userRides.length}</Text>
+                  <Text style={[styles.profileStatLabel, { color: t.muted }]}>Rides</Text>
+                </View>
               </View>
-              <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                <Text style={[styles.profileStatValue, { color: t.text }]}>{userRides.length}</Text>
-                <Text style={[styles.profileStatLabel, { color: t.muted }]}>Missions</Text>
+            ) : (
+              <View style={styles.profileStatsRow}>
+                <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <Text style={[styles.profileStatValue, { color: t.text }]}>{user.friends.length}</Text>
+                  <Text style={[styles.profileStatLabel, { color: t.muted }]}>Squad</Text>
+                </View>
+                <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <Text style={[styles.profileStatValue, { color: t.text }]}>{userRides.length}</Text>
+                  <Text style={[styles.profileStatLabel, { color: t.muted }]}>Rides</Text>
+                </View>
+                <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                  <Text style={[styles.profileStatValue, { color: t.text }]}>{user.garage.length}</Text>
+                  <Text style={[styles.profileStatLabel, { color: t.muted }]}>Machines</Text>
+                </View>
               </View>
-              <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                <Text style={[styles.profileStatValue, { color: t.text }]}>{user.garage.length}</Text>
-                <Text style={[styles.profileStatLabel, { color: t.muted }]}>Machines</Text>
-              </View>
-            </View>
+            )}
 
-            <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
-              <Text style={[styles.cardHeader, { color: t.muted }]}>GARAGE</Text>
-              <View style={styles.wrapRow}>
-                {user.garage.map((bike, idx) => (
-                  <View key={`${bike}-${idx}`} style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                    <Text style={[styles.pillTagText, { color: t.text }]}>{bike}</Text>
+            {hasGarage && (
+              <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
+                <Text style={[styles.cardHeader, { color: t.muted }]}>GARAGE</Text>
+                <View style={styles.wrapRow}>
+                  {user.garage.map((bike, idx) => (
+                    <View key={`${bike}-${idx}`} style={[styles.pillTag, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                      <Text style={[styles.pillTagText, { color: t.text }]}>{bike}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            {(hasStyle || hasWindow) && (
+              <View style={styles.gridTwo}>
+                {hasStyle && (
+                  <View style={[styles.infoTile, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <Text style={[styles.inputLabel, { color: t.muted }]}>Style</Text>
+                    <Text style={[styles.bodyText, { color: t.text }]}>{user.style}</Text>
                   </View>
-                ))}
+                )}
+                {hasWindow && (
+                  <View style={[styles.infoTile, { borderColor: t.border, backgroundColor: t.subtle }]}>
+                    <Text style={[styles.inputLabel, { color: t.muted }]}>Window</Text>
+                    <Text style={[styles.bodyText, { color: t.text }]}>{user.typicalRideTime}</Text>
+                  </View>
+                )}
               </View>
-            </View>
-
-            <View style={styles.gridTwo}>
-              <View style={[styles.infoTile, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                <Text style={[styles.inputLabel, { color: t.muted }]}>Style</Text>
-                <Text style={[styles.bodyText, { color: t.text }]}>{user.style}</Text>
-              </View>
-              <View style={[styles.infoTile, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                <Text style={[styles.inputLabel, { color: t.muted }]}>Window</Text>
-                <Text style={[styles.bodyText, { color: t.text }]}>{user.typicalRideTime}</Text>
-              </View>
-            </View>
+            )}
           </ScrollView>
         </View>
       </SafeAreaView>
@@ -6248,14 +6406,36 @@ export const SquadDetailModal = ({
   const topInset = getAndroidTopInset(insets);
   if (!squad) return null;
 
-  const allUsers = [currentUser, ...users];
+  const allUsers = Array.from(new Map([currentUser, ...users].map((user) => [user.id, user])).values());
+  const resolveUserForSquadId = (memberId: string): User | undefined => {
+    const exact = allUsers.find((user) => user.id === memberId);
+    if (exact && !exact.isInferredProfile) return exact;
+
+    const aliasMatch = memberId.match(/^user-(\d{10})$/);
+    if (!aliasMatch) return exact;
+    const aliasPhoneLast10 = aliasMatch[1];
+
+    const matched = allUsers.find((user) => {
+      if (user.id === memberId) return false;
+      const digits = (user.phoneNumber ?? '').replace(/\D/g, '');
+      return digits.length >= 10 && digits.slice(-10) === aliasPhoneLast10 && user.isInferredProfile !== true;
+    });
+    if (matched) return matched;
+
+    return allUsers.find((user) => {
+      const digits = (user.phoneNumber ?? '').replace(/\D/g, '');
+      return digits.length >= 10 && digits.slice(-10) === aliasPhoneLast10;
+    }) ?? exact;
+  };
   const isMember = squad.members.includes(currentUser.id);
   const isOwner = squad.creatorId === currentUser.id;
   const isAdmin = squad.adminIds.includes(currentUser.id);
   const canManageRequests = isOwner || isAdmin;
   const isPending = squad.joinRequests.includes(currentUser.id);
-  const creator = allUsers.find((u) => u.id === squad.creatorId);
-  const requestUsers = allUsers.filter((u) => squad.joinRequests.includes(u.id));
+  const requestUsers = Array.from(new Set(squad.joinRequests)).flatMap((memberId: string) => {
+    const resolved = resolveUserForSquadId(memberId);
+    return resolved ? [resolved] : [];
+  });
   const joinPermissionLabel = squad.joinPermission === 'request_to_join' ? 'Request approval' : 'Anyone can join';
   const getMemberRole = (memberId: string): SquadRole => {
     if (memberId === squad.creatorId) return 'owner';
@@ -6306,17 +6486,6 @@ export const SquadDetailModal = ({
               </View>
             </View>
 
-            <View style={styles.profileStatsRow}>
-              <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                <Text style={[styles.profileStatValue, { color: t.primary }]}>{squad.members.length}</Text>
-                <Text style={[styles.profileStatLabel, { color: t.muted }]}>Members</Text>
-              </View>
-              <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
-                <Text style={[styles.profileStatValue, { color: t.primary }]}>{creator?.name?.split(' ')[0] ?? '\u2014'}</Text>
-                <Text style={[styles.profileStatLabel, { color: t.muted }]}>Founded by</Text>
-              </View>
-            </View>
-
             {isMember && (
               <TouchableOpacity style={[styles.primaryButton, { backgroundColor: TOKENS[theme].blue }]} onPress={() => onOpenSquadChat(squad.id)}>
                 <MaterialCommunityIcons name="account-group-outline" size={18} color="#fff" />
@@ -6359,12 +6528,7 @@ export const SquadDetailModal = ({
                   <Text style={styles.primaryButtonText}>{squad.joinPermission === 'request_to_join' ? 'Request to Join' : 'Join Squad'}</Text>
                 </TouchableOpacity>
               )
-            ) : isOwner ? (
-              <View style={[styles.statusStrip, { borderColor: `${t.primary}66`, backgroundColor: `${t.primary}15` }]}>
-                <MaterialCommunityIcons name="crown" size={16} color={t.primary} />
-                <Text style={[styles.statusStripText, { color: t.primary }]}>You own this squad</Text>
-              </View>
-            ) : (
+            ) : isOwner ? null : (
               <TouchableOpacity style={[styles.dangerButton, { borderColor: TOKENS[theme].red }]} onPress={() => onLeaveSquad(squad.id)}>
                 <MaterialCommunityIcons name="logout" size={18} color={TOKENS[theme].red} />
                 <Text style={[styles.dangerButtonText, { color: TOKENS[theme].red }]}>Leave Squad</Text>
@@ -6406,26 +6570,28 @@ export const SquadDetailModal = ({
           <View style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}>
             <Text style={[styles.cardHeader, { color: t.muted }]}>MEMBERS ({squad.members.length})</Text>
             {squad.members.map((memberId) => {
-              const member = allUsers.find((u) => u.id === memberId);
-              if (!member) return null;
+              const member = resolveUserForSquadId(memberId);
               const role = getMemberRole(memberId);
+              const displayName = member?.name || `Member ${memberId.slice(-4).toUpperCase()}`;
+              const primaryVehicle = member?.garage?.[0] ?? 'Unknown machine';
+              const memberProfileId = member?.id ?? memberId;
 
               return (
                 <TouchableOpacity
                   key={memberId}
                   style={[styles.friendRow, { borderColor: t.border }]}
-                  onPress={() => onViewProfile(memberId)}
+                  onPress={() => onViewProfile(memberProfileId)}
                 >
                   <View style={styles.rowAligned}>
-                    <Image source={{ uri: member.avatar || avatarFallback }} style={styles.avatarMedium} />
+                    <Image source={{ uri: member?.avatar || avatarFallback }} style={styles.avatarMedium} />
                     <View>
                       <View style={styles.rowAligned}>
-                        <Text style={[styles.boldText, { color: t.text }]}>{member.name}</Text>
+                        <Text style={[styles.boldText, { color: t.text }]}>{displayName}</Text>
                         {memberId === squad.creatorId && (
                           <MaterialCommunityIcons name="crown" size={13} color={t.primary} />
                         )}
                       </View>
-                      <Text style={[styles.metaText, { color: t.muted }]}>{member.garage?.[0] ?? 'Unknown machine'}</Text>
+                      <Text style={[styles.metaText, { color: t.muted }]}>{primaryVehicle}</Text>
                     </View>
                   </View>
                   <Badge color={memberId === squad.creatorId ? 'orange' : 'slate'} theme={theme}>
@@ -6435,7 +6601,7 @@ export const SquadDetailModal = ({
               );
             })}
             {squad.members.map((memberId) => {
-              const member = allUsers.find((u) => u.id === memberId);
+              const member = resolveUserForSquadId(memberId);
               if (!member) return null;
               if (!isOwner || memberId === squad.creatorId) return null;
 
@@ -6593,6 +6759,119 @@ export const NewsArticleModal = ({
             ) : null}
           </View>
         )}
+      </View>
+    </Modal>
+  );
+};
+
+export const RideCreatedSuccessfullyModal = ({
+  visible,
+  theme,
+  ride,
+  onClose,
+  onViewProfile,
+  currentUserId
+}: {
+  visible: boolean;
+  theme: Theme;
+  ride: RidePost | null;
+  onClose: () => void;
+  onViewProfile?: (userId: string) => void;
+  currentUserId: string;
+}) => {
+  const t = TOKENS[theme];
+  if (!ride) return null;
+
+  const handleShare = async () => {
+    try {
+      await Share.share({
+        title: ride.title,
+        message: `Join my ride "${ride.title}" on ThrottleUp!`
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <View style={[styles.modalBackdrop, styles.modalScrim, { justifyContent: 'center', alignItems: 'center' }]}>
+        <View style={{ width: '90%', maxWidth: 400, alignItems: 'center' }}>
+          <TouchableOpacity 
+            onPress={onClose}
+            style={{
+              marginBottom: 16,
+              width: 36,
+              height: 36,
+              borderRadius: 18,
+              backgroundColor: t.surface,
+              justifyContent: 'center',
+              alignItems: 'center',
+              borderWidth: 1,
+              borderColor: t.border
+            }}
+          >
+            <MaterialCommunityIcons name="close" size={20} color={t.text} />
+          </TouchableOpacity>
+
+          <View style={{ 
+            backgroundColor: t.surface, 
+            borderRadius: 16, 
+            width: '100%', 
+            padding: 20,
+            paddingBottom: 24,
+            alignItems: 'center',
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.15,
+            shadowRadius: 12,
+            elevation: 8,
+          }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 24, alignSelf: 'flex-start', marginLeft: 10 }}>
+              <View style={{
+                width: 28,
+                height: 28,
+                borderRadius: 14,
+                backgroundColor: '#10b981',
+                marginRight: 12
+              }} />
+              <Text style={{ fontSize: 18, fontWeight: '500', color: t.text }}>Ride created successfully</Text>
+            </View>
+
+            <View style={{ width: '100%' }}>
+              <RideCard 
+                ride={ride} 
+                currentUserId={currentUserId} 
+                onOpenDetail={() => {}} 
+                onViewProfile={onViewProfile} 
+                theme={theme} 
+              />
+            </View>
+          </View>
+
+          <View style={{ marginTop: 40, alignItems: 'center' }}>
+            <TouchableOpacity 
+              onPress={handleShare}
+              style={{
+                width: 50,
+                height: 50,
+                borderRadius: 25,
+                backgroundColor: t.surface,
+                justifyContent: 'center',
+                alignItems: 'center',
+                marginBottom: 8,
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.1,
+                shadowRadius: 8,
+                elevation: 4
+              }}
+            >
+              <MaterialCommunityIcons name="share" size={24} color={t.primary} />
+            </TouchableOpacity>
+            <Text style={{ color: t.primary, fontSize: 13, fontWeight: '600' }}>Share</Text>
+          </View>
+        </View>
       </View>
     </Modal>
   );

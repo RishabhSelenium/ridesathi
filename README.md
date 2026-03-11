@@ -50,7 +50,7 @@ The app now includes Firebase service modules:
 - Cloud Firestore sync for users/rides/help posts (`src/firebase/firestore.ts`)
 - Realtime Database chat sync (`src/firebase/chat.ts`)
 - Cloud Storage upload helpers (`src/firebase/storage.ts`)
-- Device push-token registration to Firestore (`users/{uid}.expoPushTokens`)
+- Device push-token registration to Firestore (`users/{uid}.expoPushTokens` and `users/{uid}.firebasePushTokens`)
 
 ### 1. Add environment variables
 
@@ -65,11 +65,9 @@ Optional: use Cloudflare R2 for image uploads (instead of Firebase Storage):
 - `EXPO_PUBLIC_IMAGE_STORAGE_PROVIDER=r2`
 - `EXPO_PUBLIC_R2_BACKEND_BASE_URL=http://<your-backend-host>:8788`
 - `EXPO_PUBLIC_R2_BACKEND_TOKEN=<backend-token>`
-- `EXPO_PUBLIC_PUSH_FANOUT_BASE_URL=https://<your-worker-subdomain>.workers.dev`
-- `EXPO_PUBLIC_PUSH_FANOUT_TOKEN=<push-fanout-token>`
 
 R2 signer backend: `backend/r2-signer/`
-Push fanout worker: `backend/cloudflare/`
+R2 upload worker: `backend/cloudflare/`
 
 The app stores signed image URLs plus expiry in Firestore and refreshes them automatically when fetched after expiry.
 
@@ -144,7 +142,13 @@ If you use a specific Firebase project id:
 firebase deploy --project <your-project-id> --only firestore:rules,database,storage
 ```
 
-Deploy Cloudflare worker updates (for Spark-compatible push fanout):
+Deploy Cloud Functions (FCM notification backend):
+
+```bash
+firebase deploy --only functions
+```
+
+Deploy Cloudflare worker updates (R2 image uploads):
 
 ```bash
 cd backend/cloudflare

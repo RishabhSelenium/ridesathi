@@ -3,7 +3,6 @@ main = "r2-upload-worker.js"
 compatibility_date = "2026-03-06"
 
 [vars]
-# Set PUSH_FANOUT_TOKEN as a secret via `wrangler secret put PUSH_FANOUT_TOKEN`
 # Set UPLOAD_TOKEN as a secret via `wrangler secret put UPLOAD_TOKEN`
 
 [[r2_buckets]]

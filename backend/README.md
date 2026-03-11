@@ -6,9 +6,10 @@ Firebase backend configuration lives here.
 - `firebase/firestore.rules`
 - `firebase/database.rules.json`
 - `firebase/storage.rules`
+- `functions/` (Firebase Cloud Functions for FCM notifications)
 - `cloudflare/`
 - `r2-signer/`
-- `cloudflare/` (R2 uploads + push fanout worker)
+- `cloudflare/` (R2 upload worker)
 
 ## Deploy rules
 Run from project root:
@@ -17,7 +18,15 @@ Run from project root:
 npx firebase-tools deploy --only firestore:rules,database,storage --project YOUR_FIREBASE_PROJECT_ID
 ```
 
-## Deploy Cloudflare worker (Spark-compatible push fanout)
+## Deploy Cloud Functions (FCM)
+
+Run from project root:
+
+```bash
+npx firebase-tools deploy --only functions --project YOUR_FIREBASE_PROJECT_ID
+```
+
+## Deploy Cloudflare worker (R2 uploads)
 From project root:
 
 ```bash

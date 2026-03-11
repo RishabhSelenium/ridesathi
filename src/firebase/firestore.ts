@@ -9,6 +9,7 @@ import {
   orderBy,
   query,
   setDoc,
+  where,
   type DocumentData,
   type Unsubscribe
 } from 'firebase/firestore';
@@ -34,6 +35,7 @@ import { getFirebaseServices } from './client';
 import { refreshSignedImageAsset } from './storage';
 
 const USERS_COLLECTION = 'users';
+const USER_DIRECTORY_COLLECTION = 'userDirectory';
 const RIDES_COLLECTION = 'rides';
 const HELP_COLLECTION = 'helpPosts';
 const SQUADS_COLLECTION = 'squads';
@@ -46,6 +48,7 @@ const asString = (value: unknown, fallback = ''): string => (typeof value === 's
 const asBoolean = (value: unknown, fallback = false): boolean => (typeof value === 'boolean' ? value : fallback);
 const asNumber = (value: unknown, fallback = 0): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+const FIREBASE_PUSH_TOKEN_REGEX = /^[\w\-:.]{20,}$/;
 const parseCoordinateNumber = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string') {
@@ -88,6 +91,17 @@ const asSignedImageAssetMap = (value: unknown): Record<string, SignedImageAsset>
 };
 const normalizeSosContacts = (value: unknown): string[] =>
   Array.from(new Set(asStringArray(value).map((item) => item.trim()).filter(Boolean)));
+const normalizeUniqueStringArray = (value: unknown): string[] =>
+  Array.from(new Set(asStringArray(value).map((item) => item.trim()).filter(Boolean)));
+const slugify = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    .slice(0, 64) || 'user';
+const buildUserDirectoryDocId = (name: string, uid: string): string => `${slugify(name)}-${uid.slice(0, 10).toLowerCase()}`;
 
 const normalizeVisibility = (value: unknown): RideVisibility[] => {
   if (Array.isArray(value)) {
@@ -238,8 +252,121 @@ const normalizeUser = (id: string, raw: DocumentData): User => {
       new Set(
         asStringArray(raw.expoPushTokens).filter((token) => /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(token))
       )
+    ),
+    firebasePushTokens: Array.from(
+      new Set(asStringArray(raw.firebasePushTokens).filter((token) => FIREBASE_PUSH_TOKEN_REGEX.test(token)))
     )
   };
+};
+
+const toFirestoreUserPayload = (user: User): Record<string, unknown> => {
+  const payload: Record<string, unknown> = {
+    id: String(user.id ?? '').trim(),
+    name: asString(user.name).trim(),
+    garage: normalizeUniqueStringArray(user.garage),
+    bikeType: asString(user.bikeType).trim(),
+    city: asString(user.city).trim(),
+    style: asString(user.style).trim(),
+    experience: asString(user.experience, 'Beginner').trim() || 'Beginner',
+    distance: asString(user.distance).trim(),
+    isPro: Boolean(user.isPro),
+    avatar: asString(user.avatar).trim(),
+    verified: Boolean(user.verified),
+    typicalRideTime: asString(user.typicalRideTime).trim(),
+    friends: normalizeUniqueStringArray(user.friends),
+    friendRequests: {
+      sent: normalizeUniqueStringArray(user.friendRequests?.sent),
+      received: normalizeUniqueStringArray(user.friendRequests?.received)
+    },
+    blockedUserIds: normalizeUniqueStringArray(user.blockedUserIds),
+    expoPushTokens: normalizeUniqueStringArray(user.expoPushTokens).filter((token) =>
+      /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/.test(token)
+    ),
+    firebasePushTokens: normalizeUniqueStringArray(user.firebasePushTokens).filter((token) =>
+      FIREBASE_PUSH_TOKEN_REGEX.test(token)
+    )
+  };
+
+  const phoneNumber = asString(user.phoneNumber).trim();
+  if (phoneNumber) payload.phoneNumber = phoneNumber;
+
+  const firstName = asString(user.firstName).trim();
+  if (firstName) payload.firstName = firstName;
+
+  const lastName = asString(user.lastName).trim();
+  if (lastName) payload.lastName = lastName;
+
+  const fullName = asString(user.fullName).trim();
+  if (fullName) payload.fullName = fullName;
+
+  const sosNumber = asString(user.sosNumber).trim();
+  if (sosNumber) payload.sosNumber = sosNumber;
+
+  const sosContacts = normalizeSosContacts(user.sosContacts);
+  if (sosContacts.length > 0) payload.sosContacts = sosContacts;
+
+  const dob = asString(user.dob).trim();
+  if (dob) payload.dob = dob;
+
+  const bloodGroup = asString(user.bloodGroup).trim();
+  if (bloodGroup) payload.bloodGroup = bloodGroup;
+
+  if (typeof user.profileComplete === 'boolean') {
+    payload.profileComplete = user.profileComplete;
+  }
+
+  const avatarAsset = asSignedImageAsset(user.avatarAsset);
+  if (avatarAsset) {
+    payload.avatarAsset = avatarAsset;
+  }
+
+  const bikePhotosByName = asStringMap(user.bikePhotosByName);
+  if (bikePhotosByName && Object.keys(bikePhotosByName).length > 0) {
+    payload.bikePhotosByName = bikePhotosByName;
+  }
+
+  const bikePhotoAssetsByName = asSignedImageAssetMap(user.bikePhotoAssetsByName);
+  if (bikePhotoAssetsByName && Object.keys(bikePhotoAssetsByName).length > 0) {
+    payload.bikePhotoAssetsByName = bikePhotoAssetsByName;
+  }
+
+  return payload;
+};
+
+const syncUserDirectoryEntry = async (
+  user: User,
+  payload: Record<string, unknown>
+): Promise<void> => {
+  const services = getFirebaseServices();
+  if (!services) return;
+
+  const uid = asString(user.id).trim();
+  const name = asString(payload.name).trim();
+  if (!uid || !name) return;
+
+  const directoryCollectionRef = collection(services.firestore, USER_DIRECTORY_COLLECTION);
+  const directoryDocId = buildUserDirectoryDocId(name, uid);
+  const directoryDocRef = doc(services.firestore, USER_DIRECTORY_COLLECTION, directoryDocId);
+
+  await setDoc(
+    directoryDocRef,
+    {
+      uid,
+      name,
+      phoneNumber: asString(payload.phoneNumber).trim() || null,
+      profileComplete: typeof payload.profileComplete === 'boolean' ? payload.profileComplete : false,
+      sourceUserDocId: uid,
+      lastSyncedAt: new Date().toISOString()
+    },
+    { merge: true }
+  );
+
+  const existingDirectoryDocs = await getDocs(query(directoryCollectionRef, where('uid', '==', uid)));
+  await Promise.all(
+    existingDirectoryDocs.docs
+      .filter((item) => item.id !== directoryDocId)
+      .map((item) => deleteDoc(item.ref))
+  );
 };
 
 const normalizeRide = (id: string, raw: DocumentData): RidePost => {
@@ -609,7 +736,14 @@ export const upsertUserInFirestore = async (user: User): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
 
-  await setDoc(doc(services.firestore, USERS_COLLECTION, user.id), user, { merge: true });
+  const payload = toFirestoreUserPayload(user);
+  await setDoc(doc(services.firestore, USERS_COLLECTION, user.id), payload, { merge: true });
+
+  try {
+    await syncUserDirectoryEntry(user, payload);
+  } catch (error) {
+    console.warn('[user-directory] Failed to sync userDirectory entry:', error);
+  }
 };
 
 export const addExpoPushTokenToUser = async (userId: string, expoPushToken: string): Promise<void> => {
@@ -621,6 +755,20 @@ export const addExpoPushTokenToUser = async (userId: string, expoPushToken: stri
     doc(services.firestore, USERS_COLLECTION, userId),
     {
       expoPushTokens: arrayUnion(expoPushToken)
+    },
+    { merge: true }
+  );
+};
+
+export const addFirebasePushTokenToUser = async (userId: string, firebasePushToken: string): Promise<void> => {
+  const services = getFirebaseServices();
+  if (!services) return;
+  if (!firebasePushToken || !FIREBASE_PUSH_TOKEN_REGEX.test(firebasePushToken)) return;
+
+  await setDoc(
+    doc(services.firestore, USERS_COLLECTION, userId),
+    {
+      firebasePushTokens: arrayUnion(firebasePushToken)
     },
     { merge: true }
   );

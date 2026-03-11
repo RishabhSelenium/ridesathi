@@ -41,3 +41,26 @@ export const triggerRideCancelledNotification = async (
   );
   await notify({ rideId, title, cancelledBy });
 };
+
+export const triggerRideRequestOwnerNotification = async ({
+  rideId,
+  rideTitle,
+  requesterId,
+  requesterName,
+  ownerId
+}: {
+  rideId: string;
+  rideTitle: string;
+  requesterId: string;
+  requesterName: string;
+  ownerId: string;
+}): Promise<void> => {
+  const services = getFirebaseServices();
+  if (!services) return;
+
+  const notify = httpsCallable<
+    { rideId: string; rideTitle: string; requesterId: string; requesterName: string; ownerId: string },
+    { ok: boolean }
+  >(services.functions, 'notifyRideRequestOwner');
+  await notify({ rideId, rideTitle, requesterId, requesterName, ownerId });
+};

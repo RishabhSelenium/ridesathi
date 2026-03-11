@@ -1,6 +1,4 @@
 const ALLOWED_KEY_PREFIXES = ['profiles/', 'squads/', 'bikes/', 'rides/'];
-const EXPO_PUSH_ENDPOINT = 'https://exp.host/--/api/v2/push/send';
-const EXPO_PUSH_TOKEN_REGEX = /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -26,30 +24,6 @@ const sanitizeObjectKey = (value) => {
 
 const isAllowedObjectKey = (value) => ALLOWED_KEY_PREFIXES.some((prefix) => value.startsWith(prefix));
 const buildPublicFileUrl = (origin, objectKey) => `${origin}/public/${encodeURIComponent(objectKey).replace(/%2F/g, '/')}`;
-const chunk = (items, size) => {
-  const chunks = [];
-  for (let index = 0; index < items.length; index += size) {
-    chunks.push(items.slice(index, index + size));
-  }
-  return chunks;
-};
-
-const sendExpoBatch = async (messages) => {
-  const response = await fetch(EXPO_PUSH_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Accept-Encoding': 'gzip, deflate',
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(messages)
-  });
-
-  if (!response.ok) {
-    const responseText = await response.text().catch(() => '');
-    throw new Error(`Expo push request failed (${response.status}): ${responseText}`);
-  }
-};
 
 export default {
   async fetch(request, env) {
@@ -77,68 +51,6 @@ export default {
           'Access-Control-Allow-Origin': '*'
         }
       });
-    }
-
-    if (url.pathname === '/notify/ride-request') {
-      if (request.method !== 'POST') {
-        return jsonResponse(405, { error: 'Method not allowed.' });
-      }
-
-      const authHeader = request.headers.get('Authorization') ?? '';
-      const expectedAuthHeader = env.PUSH_FANOUT_TOKEN ? `Bearer ${env.PUSH_FANOUT_TOKEN}` : '';
-      if (!env.PUSH_FANOUT_TOKEN || authHeader !== expectedAuthHeader) {
-        return jsonResponse(401, { error: 'Unauthorized push fanout token.' });
-      }
-
-      let payload;
-      try {
-        payload = await request.json();
-      } catch {
-        return jsonResponse(400, { error: 'Invalid JSON payload.' });
-      }
-
-      const rideId = typeof payload?.rideId === 'string' ? payload.rideId.trim() : '';
-      const rideTitle = typeof payload?.rideTitle === 'string' ? payload.rideTitle.trim() : '';
-      const requesterId = typeof payload?.requesterId === 'string' ? payload.requesterId.trim() : '';
-      const requesterName = typeof payload?.requesterName === 'string' ? payload.requesterName.trim() : 'A rider';
-      const ownerPushTokens = Array.isArray(payload?.ownerPushTokens)
-        ? payload.ownerPushTokens.filter((token) => typeof token === 'string').map((token) => token.trim())
-        : [];
-      const validOwnerPushTokens = Array.from(new Set(ownerPushTokens)).filter((token) => EXPO_PUSH_TOKEN_REGEX.test(token));
-
-      if (!rideId || !rideTitle || !requesterId) {
-        return jsonResponse(400, { error: 'Missing ride request payload fields.' });
-      }
-
-      if (validOwnerPushTokens.length === 0) {
-        return jsonResponse(200, { sent: 0, skipped: true });
-      }
-
-      const messages = validOwnerPushTokens.map((token) => ({
-        to: token,
-        sound: 'Ride_notification.mp3',
-        title: 'Request received',
-        body: `${requesterName} requested to join "${rideTitle}".`,
-        data: {
-          type: 'ride_request',
-          rideId,
-          requesterId
-        }
-      }));
-
-      try {
-        const batches = chunk(messages, 100);
-        for (const batch of batches) {
-          await sendExpoBatch(batch);
-        }
-      } catch (error) {
-        return jsonResponse(502, {
-          error: 'Push delivery failed.',
-          details: error instanceof Error ? error.message : String(error)
-        });
-      }
-
-      return jsonResponse(200, { sent: messages.length });
     }
 
     if (url.pathname !== '/upload') {

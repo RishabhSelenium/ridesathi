@@ -15,6 +15,7 @@ const NOTIFICATION_SOUNDS: Record<NotificationSoundKind, string> = {
   message: 'msg_notification.mp3'
 };
 const EXPO_PUSH_TOKEN_REGEX = /^(ExponentPushToken|ExpoPushToken)\[[^\]]+\]$/;
+const FIREBASE_PUSH_TOKEN_REGEX = /^[\w\-:.]{20,}$/;
 const VALID_NOTIFICATION_TYPES: Notification['type'][] = [
   'friend_request',
   'ride_joined',
@@ -27,6 +28,22 @@ type NotificationModule = typeof import('expo-notifications');
 type ExpoNotification = import('expo-notifications').Notification;
 type ExpoNotificationResponse = import('expo-notifications').NotificationResponse;
 type NotificationSubscription = { remove(): void };
+type MessagingUnsubscribe = () => void;
+type NativeMessagingAuthorizationStatus = {
+  AUTHORIZED: number;
+  PROVISIONAL: number;
+  EPHEMERAL?: number;
+};
+type NativeMessagingInstance = {
+  getToken(): Promise<string>;
+  requestPermission(): Promise<number>;
+  registerDeviceForRemoteMessages?: () => Promise<void>;
+  onTokenRefresh(listener: (token: string) => void): MessagingUnsubscribe;
+};
+type NativeMessagingModule = {
+  default: () => NativeMessagingInstance;
+  AuthorizationStatus: NativeMessagingAuthorizationStatus;
+};
 
 type StoredNotificationSeed = {
   id?: string;
@@ -41,6 +58,13 @@ type StoredNotificationSeed = {
 };
 
 const loadNotificationsModule = async (): Promise<NotificationModule> => import('expo-notifications');
+const loadFirebaseMessagingModule = (): NativeMessagingModule | null => {
+  try {
+    return require('@react-native-firebase/messaging') as NativeMessagingModule;
+  } catch {
+    return null;
+  }
+};
 
 const asRecord = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -175,6 +199,63 @@ export const getExpoPushToken = async (): Promise<string | null> => {
     ? await Notifications.getExpoPushTokenAsync({ projectId: easProjectId })
     : await Notifications.getExpoPushTokenAsync();
   return EXPO_PUSH_TOKEN_REGEX.test(response.data) ? response.data : null;
+};
+
+export const getFirebasePushToken = async ({
+  isExpoGo,
+  permissionStatus
+}: {
+  isExpoGo: boolean;
+  permissionStatus: PermissionStatus;
+}): Promise<string | null> => {
+  if (isExpoGo || permissionStatus !== 'granted') return null;
+  if (Platform.OS !== 'android' && Platform.OS !== 'ios') return null;
+
+  const messagingModule = loadFirebaseMessagingModule();
+  if (!messagingModule) return null;
+
+  const messaging = messagingModule.default();
+  try {
+    if (messaging.registerDeviceForRemoteMessages) {
+      await messaging.registerDeviceForRemoteMessages();
+    }
+  } catch {
+    // best-effort registration
+  }
+
+  if (Platform.OS === 'ios') {
+    const status = await messaging.requestPermission();
+    const { AUTHORIZED, PROVISIONAL, EPHEMERAL } = messagingModule.AuthorizationStatus;
+    if (status !== AUTHORIZED && status !== PROVISIONAL && status !== EPHEMERAL) {
+      return null;
+    }
+  }
+
+  const token = (await messaging.getToken()).trim();
+  return FIREBASE_PUSH_TOKEN_REGEX.test(token) ? token : null;
+};
+
+export const subscribeToFirebasePushTokenRefresh = ({
+  isExpoGo,
+  permissionStatus,
+  onToken
+}: {
+  isExpoGo: boolean;
+  permissionStatus: PermissionStatus;
+  onToken: (token: string) => void;
+}): MessagingUnsubscribe => {
+  if (isExpoGo || permissionStatus !== 'granted') return () => undefined;
+  if (Platform.OS !== 'android' && Platform.OS !== 'ios') return () => undefined;
+
+  const messagingModule = loadFirebaseMessagingModule();
+  if (!messagingModule) return () => undefined;
+
+  const messaging = messagingModule.default();
+  return messaging.onTokenRefresh((token) => {
+    const normalized = token.trim();
+    if (!FIREBASE_PUSH_TOKEN_REGEX.test(normalized)) return;
+    onToken(normalized);
+  });
 };
 
 export const buildStoredNotificationFromExpo = (notification: ExpoNotification): Notification | null => {

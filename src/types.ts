@@ -57,6 +57,8 @@ export interface User {
   bikePhotosByName?: Record<string, string>;
   bikePhotoAssetsByName?: Record<string, SignedImageAsset>;
   expoPushTokens?: string[];
+  firebasePushTokens?: string[];
+  isInferredProfile?: boolean;
 }
 
 export interface MapPoint {
@@ -200,6 +202,8 @@ export interface Notification {
 export interface ChatMessage {
   id: string;
   senderId: string;
+  senderName?: string;
+  recipientId?: string;
   text: string;
   timestamp: string;
 }

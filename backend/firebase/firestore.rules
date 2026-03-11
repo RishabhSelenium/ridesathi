@@ -55,7 +55,8 @@ service cloud.firestore {
           'friends',
           'friendRequests',
           'blockedUserIds',
-          'expoPushTokens'
+          'expoPushTokens',
+          'firebasePushTokens'
         ]) &&
         data.id == userId &&
         (data.phoneNumber == null || data.phoneNumber is string) &&
@@ -88,7 +89,8 @@ service cloud.firestore {
         data.friendRequests.sent is list &&
         data.friendRequests.received is list &&
         (data.blockedUserIds == null || data.blockedUserIds is list) &&
-        (data.expoPushTokens == null || data.expoPushTokens is list);
+        (data.expoPushTokens == null || data.expoPushTokens is list) &&
+        (data.firebasePushTokens == null || data.firebasePushTokens is list);
     }
 
     function validRide(data, rideId) {
@@ -256,10 +258,10 @@ service cloud.firestore {
 
       allow create: if isSignedIn() &&
         request.auth.uid == userId &&
-        validUser(request.resource.data, userId);
+        request.resource.data.id == userId;
 
       allow update: if isSignedIn() &&
-        validUser(request.resource.data, userId) &&
+        request.resource.data.id == userId &&
         (
           request.auth.uid == userId ||
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['friends', 'friendRequests'])
@@ -332,6 +334,18 @@ service cloud.firestore {
 
     match /squads/{squadId} {
       allow read, write: if isSignedIn();
+    }
+
+    match /userDirectory/{directoryDocId} {
+      allow read: if isSignedIn();
+
+      allow create, update: if isSignedIn() &&
+        request.resource.data.uid is string &&
+        request.resource.data.uid == request.auth.uid;
+
+      allow delete: if isSignedIn() &&
+        resource.data.uid is string &&
+        resource.data.uid == request.auth.uid;
     }
 
     match /moderationReports/{reportId} {

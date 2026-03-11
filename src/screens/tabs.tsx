@@ -9,7 +9,6 @@ import {
   Image,
   KeyboardAvoidingView,
   Platform,
-  SafeAreaView,
   ScrollView,
   Switch,
   Text,
@@ -18,6 +17,7 @@ import {
   View,
   Pressable
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { styles } from '../app/styles';
 import { TOKENS, Theme, avatarFallback, formatClock, formatRelative } from '../app/ui';
@@ -257,6 +257,11 @@ export const LoginScreen = ({
             {step !== 'phone' && (
               <Text style={[styles.loginSubtitle, { color: t.muted }]}>
                 {betaModeEnabled ? `Enter the beta OTP for ${maskedPhone}` : `Enter the last 4 digits of ${maskedPhone}`}
+              </Text>
+            )}
+            {!firebaseEnabled && (
+              <Text style={[styles.errorText, { color: TOKENS[theme].red }]}>
+                Cloud sync is disabled in this build. Data will stay on this device only.
               </Text>
             )}
 
@@ -1340,7 +1345,10 @@ export const CompleteProfileScreen = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const t = TOKENS[theme];
 
-  const sanitizeEmergencyNumber = (value: string): string => value.replace(/\D/g, '').slice(0, 15);
+  const sanitizeEmergencyNumber = (value: string): string => {
+    const digits = value.replace(/\D/g, '');
+    return digits.length <= 10 ? digits : digits.slice(-10);
+  };
   const normalizeComparablePhone = (value: string): string => {
     const digits = value.replace(/\D/g, '');
     return digits.length > 10 ? digits.slice(-10) : digits;
@@ -1390,14 +1398,14 @@ export const CompleteProfileScreen = ({
     const primaryContact = sanitizeEmergencyNumber(sosNumber);
     const currentUserPhone = normalizeComparablePhone(phoneNumber ?? '');
     const candidateContacts = [primaryContact].filter((contact) => contact.length > 0);
-    const invalidContact = candidateContacts.find((contact) => contact.length < 10);
+    const invalidContact = candidateContacts.find((contact) => contact.length !== 10);
 
-    if (!primaryContact || primaryContact.length < 10) {
-      setError('Please enter a valid primary SOS contact number.');
+    if (!primaryContact || primaryContact.length !== 10) {
+      setError('Please enter a valid 10-digit primary SOS contact number.');
       return;
     }
     if (invalidContact) {
-      setError('Each emergency contact should be at least 10 digits.');
+      setError('Each emergency contact should be exactly 10 digits.');
       return;
     }
     const comparableContacts = candidateContacts.map(normalizeComparablePhone);
@@ -1502,7 +1510,7 @@ export const CompleteProfileScreen = ({
                 placeholder="Primary emergency number"
                 placeholderTextColor={t.muted}
                 keyboardType="number-pad"
-                maxLength={15}
+                maxLength={10}
                 value={sosNumber}
                 onChangeText={(v) => { setSosNumber(sanitizeEmergencyNumber(v)); setError(''); }}
               />
