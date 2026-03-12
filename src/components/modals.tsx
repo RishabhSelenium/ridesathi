@@ -53,10 +53,10 @@ import {
   RideTrackingSession,
   RideType,
   RideVisibility,
-  Squad,
-  SquadJoinPermission,
-  SquadRideCreatePermission,
-  SquadRole,
+  Group,
+  GroupJoinPermission,
+  GroupRideCreatePermission,
+  GroupRole,
   User
 } from '../types';
 
@@ -971,7 +971,7 @@ const fetchOpenStreetMapGeocodePoint = async (label: string): Promise<MapPoint |
       headers: {
         Accept: 'application/json',
         'Accept-Language': 'en',
-        'User-Agent': 'RideSathiReact/1.0'
+        'User-Agent': 'ThrottleUpReact/1.0'
       }
     });
     if (!response.ok) return null;
@@ -1029,7 +1029,7 @@ const fetchOpenStreetMapReverseGeocodeLabel = async (point: Pick<MapPoint, 'lat'
       headers: {
         Accept: 'application/json',
         'Accept-Language': 'en',
-        'User-Agent': 'RideSathiReact/1.0'
+        'User-Agent': 'ThrottleUpReact/1.0'
       }
     });
     if (!response.ok) return null;
@@ -1675,9 +1675,9 @@ export const ChatRoomScreen = ({
   );
 };
 
-export const SquadChatRoomScreen = ({
+export const GroupChatRoomScreen = ({
   visible,
-  squad,
+  group,
   messages,
   currentUserId,
   users,
@@ -1689,7 +1689,7 @@ export const SquadChatRoomScreen = ({
   theme
 }: {
   visible: boolean;
-  squad: Squad | null;
+  group: Group | null;
   messages: ChatMessage[];
   currentUserId: string;
   users: User[];
@@ -1697,7 +1697,7 @@ export const SquadChatRoomScreen = ({
   isSyncing?: boolean;
   onRetrySync?: () => void;
   onClose: () => void;
-  onSendMessage: (squadId: string, text: string) => void;
+  onSendMessage: (groupId: string, text: string) => void;
   theme: Theme;
 }) => {
   const t = TOKENS[theme];
@@ -1711,7 +1711,7 @@ export const SquadChatRoomScreen = ({
     return map;
   }, [users]);
 
-  if (!squad) return null;
+  if (!group) return null;
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
@@ -1721,10 +1721,10 @@ export const SquadChatRoomScreen = ({
             <TouchableOpacity onPress={onClose} style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
               <MaterialCommunityIcons name="arrow-left" size={20} color={t.text} />
             </TouchableOpacity>
-            <Image source={{ uri: squad.avatar || avatarFallback }} style={styles.avatarSmall} />
+            <Image source={{ uri: group.avatar || avatarFallback }} style={styles.avatarSmall} />
             <View>
-              <Text style={[styles.modalTitle, { color: t.text }]}>{squad.name}</Text>
-              <Text style={[styles.metaText, { color: t.muted }]}>{squad.members.length} members</Text>
+              <Text style={[styles.modalTitle, { color: t.text }]}>{group.name}</Text>
+              <Text style={[styles.metaText, { color: t.muted }]}>{group.members.length} members</Text>
             </View>
           </View>
         </View>
@@ -1733,7 +1733,7 @@ export const SquadChatRoomScreen = ({
           <View style={[styles.syncBanner, { margin: 14, borderColor: `${TOKENS[theme].red}66`, backgroundColor: t.subtle }]}>
             <MaterialCommunityIcons name="cloud-alert-outline" size={18} color={TOKENS[theme].red} />
             <View style={styles.syncBannerContent}>
-              <Text style={[styles.syncBannerTitle, { color: TOKENS[theme].red }]}>Squad Chat Sync Failed</Text>
+              <Text style={[styles.syncBannerTitle, { color: TOKENS[theme].red }]}>Group Chat Sync Failed</Text>
               <Text style={[styles.syncBannerMessage, { color: t.muted }]}>{syncError}</Text>
             </View>
             <TouchableOpacity
@@ -1757,7 +1757,7 @@ export const SquadChatRoomScreen = ({
           {messages.length === 0 ? (
             <View style={styles.emptyWrap}>
               <MaterialCommunityIcons name="account-group-outline" size={40} color={t.muted} />
-              <Text style={[styles.emptyTitle, { color: t.text }]}>Squad channel is quiet.</Text>
+              <Text style={[styles.emptyTitle, { color: t.text }]}>Group channel is quiet.</Text>
               <Text style={[styles.emptySubtitle, { color: t.muted }]}>Start planning your next ride.</Text>
             </View>
           ) : (
@@ -1790,7 +1790,7 @@ export const SquadChatRoomScreen = ({
           <View style={[styles.messageComposer, { borderTopColor: t.border, backgroundColor: t.surface }]}>
             <TextInput
               style={[styles.input, styles.flex1, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
-              placeholder="Message squad..."
+              placeholder="Message group..."
               placeholderTextColor={t.muted}
               value={inputText}
               onChangeText={setInputText}
@@ -1799,7 +1799,7 @@ export const SquadChatRoomScreen = ({
               style={[styles.iconRoundButton, { backgroundColor: t.primary }]}
               onPress={() => {
                 if (!inputText.trim()) return;
-                onSendMessage(squad.id, inputText.trim());
+                onSendMessage(group.id, inputText.trim());
                 setInputText('');
               }}
             >
@@ -1820,7 +1820,7 @@ export const CreateRideModal = ({
   onSubmit,
   theme,
   currentCity,
-  userSquads = [],
+  userGroups = [],
   initialRide
 }: {
   visible: boolean;
@@ -1828,7 +1828,7 @@ export const CreateRideModal = ({
   onSubmit: (ride: RideComposerPayload) => void;
   theme: Theme;
   currentCity: string;
-  userSquads?: Squad[];
+  userGroups?: Group[];
   initialRide?: RidePost | null;
 }) => {
   const t = TOKENS[theme];
@@ -1841,7 +1841,7 @@ export const CreateRideModal = ({
   const selectedBackground = `${t.primary}1a`;
   const inactiveButtonBackground = `${t.muted}66`;
   const switchThumbOff = theme === 'dark' ? '#cbd5e1' : '#ffffff';
-  const availableUserSquads = Array.isArray(userSquads) ? userSquads : [];
+  const availableUserGroups = Array.isArray(userGroups) ? userGroups : [];
   const [primaryDestination, setPrimaryDestination] = useState('');
   const [rideName, setRideName] = useState('');
   const [dayMode, setDayMode] = useState<'single' | 'multi'>('single');
@@ -1867,8 +1867,8 @@ export const CreateRideModal = ({
   const [rideJoinPermission, setRideJoinPermission] = useState<RideJoinPermission>('anyone');
   const [hasRiderLimit, setHasRiderLimit] = useState(false);
   const [maxParticipants, setMaxParticipants] = useState('5');
-  const [squadId, setSquadId] = useState('');
-  const [showSquadPicker, setShowSquadPicker] = useState(false);
+  const [groupId, setGroupId] = useState('');
+  const [showGroupPicker, setShowGroupPicker] = useState(false);
   const [routePoints, setRoutePoints] = useState<MapPoint[]>([]);
   const [destinationIndex, setDestinationIndex] = useState(0);
   const [draftRoutePoints, setDraftRoutePoints] = useState<MapPoint[]>([]);
@@ -2614,9 +2614,9 @@ export const CreateRideModal = ({
       isPrivate: isPrivateRide,
       joinPermission: rideJoinPermission,
       destinationPhotoRef: destinationPhotoRef ?? undefined,
-      squadId: squadId || undefined,
-      squadName: squadId ? availableUserSquads.find((sq) => sq.id === squadId)?.name : undefined,
-      squadAvatar: squadId ? availableUserSquads.find((sq) => sq.id === squadId)?.avatar : undefined
+      groupId: groupId || undefined,
+      groupName: groupId ? availableUserGroups.find((sq) => sq.id === groupId)?.name : undefined,
+      groupAvatar: groupId ? availableUserGroups.find((sq) => sq.id === groupId)?.avatar : undefined
     });
 
     resetForm();
@@ -3946,20 +3946,20 @@ export const CreateRideModal = ({
                     />
                   </View>
 
-                  {availableUserSquads.length > 0 && (
+                  {availableUserGroups.length > 0 && (
                     <View style={[createRideWizardStyles.preferenceRow, { marginTop: 10 }]}>
                       <View style={styles.flex1}>
-                        <Text style={[createRideWizardStyles.preferenceTitle, { color: t.text }]}>Host as Squad (Optional)</Text>
+                        <Text style={[createRideWizardStyles.preferenceTitle, { color: t.text }]}>Host as Group (Optional)</Text>
                         <Text style={[createRideWizardStyles.preferenceText, { color: t.text }]}>
-                          Organize this ride on behalf of a squad.
+                          Organize this ride on behalf of a group.
                         </Text>
                         <TouchableOpacity
                           style={[createRideWizardStyles.filledInput, { backgroundColor: t.surface, borderColor: t.border, marginTop: 8, height: 44, justifyContent: 'center' }]}
-                          onPress={() => setShowSquadPicker(true)}
+                          onPress={() => setShowGroupPicker(true)}
                         >
-                          <Text style={{ color: squadId ? t.text : t.muted, fontWeight: '600' }}>
-                            {squadId
-                              ? availableUserSquads.find((sq) => sq.id === squadId)?.name || 'Unknown Squad'
+                          <Text style={{ color: groupId ? t.text : t.muted, fontWeight: '600' }}>
+                            {groupId
+                              ? availableUserGroups.find((sq) => sq.id === groupId)?.name || 'Unknown Group'
                               : 'None (Individual Ride)'}
                           </Text>
                         </TouchableOpacity>
@@ -4489,47 +4489,47 @@ export const CreateRideModal = ({
         />
       )}
 
-      {/* Squad Picker Modal */}
-      <Modal visible={showSquadPicker} animationType="slide" transparent>
-        <View style={createRideWizardStyles.squadPickerOverlay}>
+      {/* Group Picker Modal */}
+      <Modal visible={showGroupPicker} animationType="slide" transparent>
+        <View style={createRideWizardStyles.groupPickerOverlay}>
           <View style={[styles.bottomSheet, { backgroundColor: TOKENS[theme].card }]}>
-            <View style={[createRideWizardStyles.squadPickerHeader, { borderBottomColor: TOKENS[theme].border }]}>
-              <Text style={[createRideWizardStyles.squadPickerTitle, { color: TOKENS[theme].text }]}>Host as Squad</Text>
-              <TouchableOpacity onPress={() => setShowSquadPicker(false)} style={styles.iconButton}>
+            <View style={[createRideWizardStyles.groupPickerHeader, { borderBottomColor: TOKENS[theme].border }]}>
+              <Text style={[createRideWizardStyles.groupPickerTitle, { color: TOKENS[theme].text }]}>Host as Group</Text>
+              <TouchableOpacity onPress={() => setShowGroupPicker(false)} style={styles.iconButton}>
                 <MaterialCommunityIcons name="close" size={20} color={TOKENS[theme].text} />
               </TouchableOpacity>
             </View>
             <ScrollView style={{ maxHeight: 300 }}>
               <TouchableOpacity
                 style={[
-                  createRideWizardStyles.squadPickerOption,
+                  createRideWizardStyles.groupPickerOption,
                   { borderBottomColor: TOKENS[theme].border },
-                  !squadId && { backgroundColor: TOKENS[theme].subtle }
+                  !groupId && { backgroundColor: TOKENS[theme].subtle }
                 ]}
                 onPress={() => {
-                  setSquadId('');
-                  setShowSquadPicker(false);
+                  setGroupId('');
+                  setShowGroupPicker(false);
                 }}
               >
-                <Text style={[styles.bodyText, { color: !squadId ? TOKENS[theme].primary : TOKENS[theme].text }]}>
+                <Text style={[styles.bodyText, { color: !groupId ? TOKENS[theme].primary : TOKENS[theme].text }]}>
                   None (Individual Ride)
                 </Text>
               </TouchableOpacity>
-              {availableUserSquads.map((sq) => (
+              {availableUserGroups.map((sq) => (
                 <TouchableOpacity
                   key={sq.id}
                   style={[
-                    createRideWizardStyles.squadPickerOption,
+                    createRideWizardStyles.groupPickerOption,
                     { borderBottomColor: TOKENS[theme].border },
-                    squadId === sq.id && { backgroundColor: TOKENS[theme].subtle }
+                    groupId === sq.id && { backgroundColor: TOKENS[theme].subtle }
                   ]}
                   onPress={() => {
-                    setSquadId(sq.id);
-                    setShowSquadPicker(false);
+                    setGroupId(sq.id);
+                    setShowGroupPicker(false);
                   }}
                 >
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                    <Text style={[styles.bodyText, { color: squadId === sq.id ? TOKENS[theme].primary : TOKENS[theme].text }]}>
+                    <Text style={[styles.bodyText, { color: groupId === sq.id ? TOKENS[theme].primary : TOKENS[theme].text }]}>
                       {sq.name}
                     </Text>
                   </View>
@@ -5172,12 +5172,12 @@ const createRideWizardStyles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600'
   },
-  squadPickerOverlay: {
+  groupPickerOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'flex-end',
     backgroundColor: 'rgba(2, 6, 23, 0.45)'
   },
-  squadPickerHeader: {
+  groupPickerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
@@ -5185,11 +5185,11 @@ const createRideWizardStyles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: 1
   },
-  squadPickerTitle: {
+  groupPickerTitle: {
     fontSize: 16,
     fontWeight: '800'
   },
-  squadPickerOption: {
+  groupPickerOption: {
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: 1
@@ -7317,7 +7317,7 @@ export const UserProfileModal = ({
               <View style={styles.profileStatsRow}>
                 <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
                   <Text style={[styles.profileStatValue, { color: t.text }]}>{user.friends.length}</Text>
-                  <Text style={[styles.profileStatLabel, { color: t.muted }]}>Squad</Text>
+                  <Text style={[styles.profileStatLabel, { color: t.muted }]}>Group</Text>
                 </View>
                 <View style={[styles.profileStatCard, { borderColor: t.border, backgroundColor: t.subtle }]}>
                   <Text style={[styles.profileStatValue, { color: t.text }]}>{userRides.length}</Text>
@@ -7366,7 +7366,7 @@ export const UserProfileModal = ({
   );
 };
 
-export const CreateSquadModal = ({
+export const CreateGroupModal = ({
   visible,
   onClose,
   onSubmit,
@@ -7377,18 +7377,18 @@ export const CreateSquadModal = ({
 }: {
   visible: boolean;
   onClose: () => void;
-  onSubmit: (data: { name: string; description: string; rideStyles: string[]; joinPermission: SquadJoinPermission; rideCreatePermission: SquadRideCreatePermission; avatarUri?: string }) => void;
+  onSubmit: (data: { name: string; description: string; rideStyles: string[]; joinPermission: GroupJoinPermission; rideCreatePermission: GroupRideCreatePermission; avatarUri?: string }) => void;
   isSubmitting: boolean;
   mode?: 'create' | 'edit';
-  initialData?: Squad | null;
+  initialData?: Group | null;
   theme: Theme;
 }) => {
   const t = TOKENS[theme];
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [rideStyles, setRideStyles] = useState<string[]>(['Touring']);
-  const [joinPermission, setJoinPermission] = useState<SquadJoinPermission>('anyone');
-  const [rideCreatePermission, setRideCreatePermission] = useState<SquadRideCreatePermission>('anyone');
+  const [joinPermission, setJoinPermission] = useState<GroupJoinPermission>('anyone');
+  const [rideCreatePermission, setRideCreatePermission] = useState<GroupRideCreatePermission>('anyone');
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
 
   const rideStyleOptions = ['Touring', 'City / Urban', 'Adventure / Off-road', 'Night Cruise', 'Sport', 'Cafe Racer'];
@@ -7432,7 +7432,7 @@ export const CreateSquadModal = ({
     setAvatarUri(null);
   }, [initialData, mode, visible]);
 
-  const handlePickSquadPhoto = async () => {
+  const handlePickGroupPhoto = async () => {
     if (isSubmitting) return;
     const localUri = await pickImageFromLibrary();
     if (!localUri) return;
@@ -7459,7 +7459,7 @@ export const CreateSquadModal = ({
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
           <View style={[styles.bottomSheet, { backgroundColor: t.surface, borderTopColor: t.primary }]}>
             <View style={styles.rowBetween}>
-              <Text style={[styles.modalTitle, { color: t.text }]}>{mode === 'edit' ? 'Edit Squad' : 'Create Squad'}</Text>
+              <Text style={[styles.modalTitle, { color: t.text }]}>{mode === 'edit' ? 'Edit Group' : 'Create Group'}</Text>
               <TouchableOpacity onPress={onClose}>
                 <MaterialCommunityIcons name="close" size={24} color={t.muted} />
               </TouchableOpacity>
@@ -7467,20 +7467,20 @@ export const CreateSquadModal = ({
 
             <ScrollView contentContainerStyle={styles.formSection} showsVerticalScrollIndicator={false}>
               <View style={styles.rowAligned}>
-                <Image source={{ uri: avatarUri || avatarFallback }} style={styles.squadAvatar} />
+                <Image source={{ uri: avatarUri || avatarFallback }} style={styles.groupAvatar} />
                 <TouchableOpacity
                   style={[styles.primaryCompactButton, { borderColor: t.border, backgroundColor: t.subtle }]}
                   onPress={() => {
-                    void handlePickSquadPhoto();
+                    void handlePickGroupPhoto();
                   }}
                   disabled={isSubmitting}
                 >
                   <MaterialCommunityIcons name="camera" size={14} color={t.primary} />
-                  <Text style={[styles.primaryCompactButtonText, { color: t.primary }]}>Choose Squad Photo</Text>
+                  <Text style={[styles.primaryCompactButtonText, { color: t.primary }]}>Choose Group Photo</Text>
                 </TouchableOpacity>
               </View>
 
-              <LabeledInput label="Squad Name" value={name} onChangeText={setName} theme={theme} placeholder="e.g. NCR Touring Pack" />
+              <LabeledInput label="Group Name" value={name} onChangeText={setName} theme={theme} placeholder="e.g. NCR Touring Pack" />
 
               <View>
                 <Text style={[styles.inputLabel, { color: t.muted }]}>Description</Text>
@@ -7490,7 +7490,7 @@ export const CreateSquadModal = ({
                   textAlignVertical="top"
                   value={description}
                   onChangeText={setDescription}
-                  placeholder="What's your squad about?"
+                  placeholder="What's your group about?"
                   placeholderTextColor={t.muted}
                 />
               </View>
@@ -7607,7 +7607,7 @@ export const CreateSquadModal = ({
                 <Text style={styles.primaryButtonText}>
                   {isSubmitting
                     ? (mode === 'edit' ? 'Saving...' : 'Uploading...')
-                    : (mode === 'edit' ? 'Save Changes' : 'Create Squad')}
+                    : (mode === 'edit' ? 'Save Changes' : 'Create Group')}
                 </Text>
               </TouchableOpacity>
             </ScrollView>
@@ -7618,42 +7618,42 @@ export const CreateSquadModal = ({
   );
 };
 
-export const SquadDetailModal = ({
+export const GroupDetailModal = ({
   visible,
-  squad,
+  group,
   rides,
   currentUser,
   users,
   onClose,
-  onOpenSquadChat,
-  onJoinSquad,
-  onLeaveSquad,
+  onOpenGroupChat,
+  onJoinGroup,
+  onLeaveGroup,
   onAcceptJoinRequest,
   onRejectJoinRequest,
   onPromoteAdmin,
   onDemoteAdmin,
-  onEditSquad,
-  onDeleteSquad,
+  onEditGroup,
+  onDeleteGroup,
   onRemoveMember,
   onViewProfile,
   theme
 }: {
   visible: boolean;
-  squad: Squad | null;
+  group: Group | null;
   rides: RidePost[];
   currentUser: User;
   users: User[];
   onClose: () => void;
-  onOpenSquadChat: (squadId: string) => void;
-  onJoinSquad: (squadId: string) => void;
-  onLeaveSquad: (squadId: string) => void;
-  onAcceptJoinRequest: (squadId: string, userId: string) => void;
-  onRejectJoinRequest: (squadId: string, userId: string) => void;
-  onPromoteAdmin: (squadId: string, userId: string) => void;
-  onDemoteAdmin: (squadId: string, userId: string) => void;
-  onEditSquad: (squadId: string) => void;
-  onDeleteSquad: (squadId: string) => void;
-  onRemoveMember: (squadId: string, userId: string) => void;
+  onOpenGroupChat: (groupId: string) => void;
+  onJoinGroup: (groupId: string) => void;
+  onLeaveGroup: (groupId: string) => void;
+  onAcceptJoinRequest: (groupId: string, userId: string) => void;
+  onRejectJoinRequest: (groupId: string, userId: string) => void;
+  onPromoteAdmin: (groupId: string, userId: string) => void;
+  onDemoteAdmin: (groupId: string, userId: string) => void;
+  onEditGroup: (groupId: string) => void;
+  onDeleteGroup: (groupId: string) => void;
+  onRemoveMember: (groupId: string, userId: string) => void;
   onViewProfile: (userId: string) => void;
   theme: Theme;
 }) => {
@@ -7662,10 +7662,10 @@ export const SquadDetailModal = ({
   const topInset = getAndroidTopInset(insets);
   const [isLeadershipExpanded, setIsLeadershipExpanded] = useState(false);
 
-  if (!squad) return null;
+  if (!group) return null;
 
   const allUsers = Array.from(new Map([currentUser, ...users].map((user) => [user.id, user])).values());
-  const resolveUserForSquadId = (memberId: string): User | undefined => {
+  const resolveUserForGroupId = (memberId: string): User | undefined => {
     const exact = allUsers.find((user) => user.id === memberId);
     if (exact && !exact.isInferredProfile) return exact;
 
@@ -7685,56 +7685,56 @@ export const SquadDetailModal = ({
       return digits.length >= 10 && digits.slice(-10) === aliasPhoneLast10;
     }) ?? exact;
   };
-  const isMember = squad.members.includes(currentUser.id);
-  const isOwner = squad.creatorId === currentUser.id;
-  const isAdmin = squad.adminIds.includes(currentUser.id);
+  const isMember = group.members.includes(currentUser.id);
+  const isOwner = group.creatorId === currentUser.id;
+  const isAdmin = group.adminIds.includes(currentUser.id);
   const canManageRequests = isOwner || isAdmin;
-  const isPending = squad.joinRequests.includes(currentUser.id);
-  const requestUsers = Array.from(new Set(squad.joinRequests)).flatMap((memberId: string) => {
-    const resolved = resolveUserForSquadId(memberId);
+  const isPending = group.joinRequests.includes(currentUser.id);
+  const requestUsers = Array.from(new Set(group.joinRequests)).flatMap((memberId: string) => {
+    const resolved = resolveUserForGroupId(memberId);
     return resolved ? [resolved] : [];
   });
   const joinPermissionLabel =
-    squad.joinPermission === 'invite_only'
+    group.joinPermission === 'invite_only'
       ? 'Invite only'
-      : squad.joinPermission === 'request_to_join'
+      : group.joinPermission === 'request_to_join'
         ? 'Request approval'
         : 'Anyone can join';
-  const getMemberRole = (memberId: string): SquadRole => {
-    if (memberId === squad.creatorId) return 'owner';
-    if (squad.adminIds.includes(memberId)) return 'admin';
+  const getMemberRole = (memberId: string): GroupRole => {
+    if (memberId === group.creatorId) return 'owner';
+    if (group.adminIds.includes(memberId)) return 'admin';
     return 'member';
   };
-  const handleShareSquad = () => {
-    const details = [`Check out "${squad.name}" on ThrottleUp.`, squad.city ? `City: ${squad.city}` : null]
+  const handleShareGroup = () => {
+    const details = [`Check out "${group.name}" on ThrottleUp.`, group.city ? `City: ${group.city}` : null]
       .filter(Boolean)
       .join('\n');
     void Share.share({
-      title: squad.name,
+      title: group.name,
       message: details
     });
   };
-  const openSquadActions = () => {
+  const openGroupActions = () => {
     const actions: Array<{ text: string; style?: 'default' | 'cancel' | 'destructive'; onPress?: () => void }> = [];
     if (isOwner) {
       actions.push({
-        text: 'Edit Squad',
-        onPress: () => onEditSquad(squad.id)
+        text: 'Edit Group',
+        onPress: () => onEditGroup(group.id)
       });
       actions.push({
-        text: 'Delete Squad',
+        text: 'Delete Group',
         style: 'destructive',
-        onPress: () => onDeleteSquad(squad.id)
+        onPress: () => onDeleteGroup(group.id)
       });
     } else if (isMember || isPending) {
       actions.push({
-        text: isPending ? 'Cancel Join Request' : 'Leave Squad',
+        text: isPending ? 'Cancel Join Request' : 'Leave Group',
         style: 'destructive',
-        onPress: () => onLeaveSquad(squad.id)
+        onPress: () => onLeaveGroup(group.id)
       });
     }
     actions.push({ text: 'Cancel', style: 'cancel' });
-    Alert.alert('Squad Actions', 'Manage this squad', actions);
+    Alert.alert('Group Actions', 'Manage this group', actions);
   };
 
   return (
@@ -7746,10 +7746,10 @@ export const SquadDetailModal = ({
               <MaterialCommunityIcons name="arrow-left" size={20} color={t.text} />
             </TouchableOpacity>
             <View style={{ marginLeft: 'auto', flexDirection: 'row', gap: 12 }}>
-              <TouchableOpacity onPress={handleShareSquad} style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
+              <TouchableOpacity onPress={handleShareGroup} style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
                 <MaterialCommunityIcons name="share-variant" size={20} color={t.text} />
               </TouchableOpacity>
-              <TouchableOpacity onPress={openSquadActions} style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
+              <TouchableOpacity onPress={openGroupActions} style={[styles.iconButton, { borderColor: t.border, backgroundColor: t.subtle }]}>
                 <MaterialCommunityIcons name="dots-vertical" size={20} color={t.text} />
               </TouchableOpacity>
             </View>
@@ -7778,17 +7778,17 @@ export const SquadDetailModal = ({
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 16 }}>
                <View>
                  <Image 
-                   source={{ uri: squad.avatar || avatarFallback }} 
+                   source={{ uri: group.avatar || avatarFallback }} 
                    style={{ width: 88, height: 88, borderRadius: 12, backgroundColor: t.bg, borderWidth: 3, borderColor: t.bg }} 
                  />
-                 <Text style={{ fontSize: 24, fontWeight: '700', color: t.text, marginTop: 8 }}>{squad.name}</Text>
+                 <Text style={{ fontSize: 24, fontWeight: '700', color: t.text, marginTop: 8 }}>{group.name}</Text>
                  <Text style={{ fontSize: 13, color: t.muted, fontStyle: 'italic', marginBottom: 4 }}>
-                   @{squad.name.toLowerCase().replace(/\s+/g, '')}
+                   @{group.name.toLowerCase().replace(/\s+/g, '')}
                  </Text>
                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                      <MaterialCommunityIcons name="map-marker-outline" size={14} color={t.primary} />
-                     <Text style={{ color: t.muted, fontSize: 13 }}>{squad.city || 'India'}</Text>
+                     <Text style={{ color: t.muted, fontSize: 13 }}>{group.city || 'India'}</Text>
                    </View>
                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                      <MaterialCommunityIcons name="shield-check-outline" size={14} color={t.primary} />
@@ -7809,7 +7809,7 @@ export const SquadDetailModal = ({
             {/* Stats Block */}
             <View style={{ flexDirection: 'row', backgroundColor: t.subtle, borderRadius: 12, paddingVertical: 16, marginBottom: 24 }}>
                <View style={{ flex: 1, alignItems: 'center', borderRightWidth: 1, borderRightColor: t.border }}>
-                  <Text style={{ fontSize: 22, fontWeight: '800', color: t.primary }}>{rides.filter((r) => r.squadId === squad.id).length.toString()}</Text>
+                  <Text style={{ fontSize: 22, fontWeight: '800', color: t.primary }}>{rides.filter((r) => r.groupId === group.id).length.toString()}</Text>
                   <Text style={{ fontSize: 12, color: t.muted, marginTop: 2 }}>Total Rides</Text>
                </View>
                <View style={{ flex: 1, alignItems: 'center', borderRightWidth: 1, borderRightColor: t.border }}>
@@ -7817,13 +7817,13 @@ export const SquadDetailModal = ({
                   <Text style={{ fontSize: 12, color: t.muted, marginTop: 2 }}>Km Driven</Text>
                </View>
                <View style={{ flex: 1, alignItems: 'center' }}>
-                  <Text style={{ fontSize: 22, fontWeight: '800', color: t.primary }}>{squad.members.length.toString()}</Text>
+                  <Text style={{ fontSize: 22, fontWeight: '800', color: t.primary }}>{group.members.length.toString()}</Text>
                   <Text style={{ fontSize: 12, color: t.muted, marginTop: 2 }}>Members</Text>
                </View>
             </View>
 
             <Text style={{ fontSize: 15, color: t.text, lineHeight: 22, marginBottom: 24 }}>
-              {squad.description}
+              {group.description}
             </Text>
 
             {canManageRequests && (
@@ -7857,13 +7857,13 @@ export const SquadDetailModal = ({
                       </View>
                       <TouchableOpacity
                         style={{ borderWidth: 1, borderColor: t.border, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 }}
-                        onPress={() => onRejectJoinRequest(squad.id, requestUser.id)}
+                        onPress={() => onRejectJoinRequest(group.id, requestUser.id)}
                       >
                         <Text style={{ color: t.muted, fontSize: 12, fontWeight: '600' }}>Decline</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={{ borderWidth: 1, borderColor: t.primary, backgroundColor: t.primary, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 }}
-                        onPress={() => onAcceptJoinRequest(squad.id, requestUser.id)}
+                        onPress={() => onAcceptJoinRequest(group.id, requestUser.id)}
                       >
                         <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>Approve</Text>
                       </TouchableOpacity>
@@ -7877,17 +7877,17 @@ export const SquadDetailModal = ({
             <View style={{ marginBottom: 24 }}>
                <Text style={{ fontSize: 18, fontWeight: '600', color: t.text, marginBottom: 16 }}>Leadership</Text>
                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 16 }}>
-                  {squad.members.map((memberId) => {
+                  {group.members.map((memberId) => {
                      const role = getMemberRole(memberId);
                      const isLeader = role === 'owner' || role === 'admin';
                      
                      // If shrunk, only show leaders or max 4 people.
                      if (!isLeadershipExpanded && !isLeader) return null;
 
-                     const member = resolveUserForSquadId(memberId);
+                     const member = resolveUserForGroupId(memberId);
                      if (!member) return null;
                      const handle = member.id.startsWith('user-') ? `${member.name.split(' ')[0]}${member.id.slice(-4)}` : member.id.slice(-6);
-                     const canManageMember = isOwner && member.id !== currentUser.id && member.id !== squad.creatorId;
+                     const canManageMember = isOwner && member.id !== currentUser.id && member.id !== group.creatorId;
                      const roleLabel = role === 'owner' ? 'Owner' : role === 'admin' ? 'Admin' : null;
 
                      return (
@@ -7910,10 +7910,10 @@ export const SquadDetailModal = ({
                                  style={{ borderWidth: 1, borderColor: t.primary, borderRadius: 8, paddingVertical: 5, alignItems: 'center' }}
                                  onPress={() => {
                                    if (role === 'admin') {
-                                     onDemoteAdmin(squad.id, member.id);
+                                     onDemoteAdmin(group.id, member.id);
                                      return;
                                    }
-                                   onPromoteAdmin(squad.id, member.id);
+                                   onPromoteAdmin(group.id, member.id);
                                  }}
                                >
                                  <Text style={{ color: t.primary, fontSize: 11, fontWeight: '700' }}>
@@ -7922,7 +7922,7 @@ export const SquadDetailModal = ({
                                </TouchableOpacity>
                                <TouchableOpacity
                                  style={{ borderWidth: 1, borderColor: '#ef4444', borderRadius: 8, paddingVertical: 5, alignItems: 'center' }}
-                                 onPress={() => onRemoveMember(squad.id, member.id)}
+                                 onPress={() => onRemoveMember(group.id, member.id)}
                                >
                                  <Text style={{ color: '#ef4444', fontSize: 11, fontWeight: '700' }}>Remove</Text>
                                </TouchableOpacity>
@@ -7933,7 +7933,7 @@ export const SquadDetailModal = ({
                   })}
                </View>
 
-               {squad.members.length > squad.adminIds.length + 1 && (
+               {group.members.length > group.adminIds.length + 1 && (
                  <TouchableOpacity style={{ alignItems: 'center', marginTop: 16 }} onPress={() => setIsLeadershipExpanded(!isLeadershipExpanded)}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                        <Text style={{ color: t.primary, fontWeight: '600' }}>{isLeadershipExpanded ? 'View Less' : 'View More'}</Text>
@@ -7947,7 +7947,7 @@ export const SquadDetailModal = ({
             <View style={{ marginBottom: 16, borderTopWidth: 1, borderTopColor: t.border, paddingTop: 24 }}>
                <Text style={{ fontSize: 18, fontWeight: '600', color: t.muted, textTransform: 'uppercase', marginBottom: 16 }}>ROADBOOK</Text>
                
-               {rides.filter((r) => r.squadId === squad.id).map((rideItem) => (
+               {rides.filter((r) => r.groupId === group.id).map((rideItem) => (
                   <View key={rideItem.id} style={{ marginBottom: 16 }}>
                     <RideCard 
                        ride={rideItem} 
@@ -7959,7 +7959,7 @@ export const SquadDetailModal = ({
                   </View>
                ))}
                
-               {rides.filter((r) => r.squadId === squad.id).length === 0 && (
+               {rides.filter((r) => r.groupId === group.id).length === 0 && (
                   <Text style={{ color: t.muted, fontStyle: 'italic', textAlign: 'center', paddingVertical: 24 }}>No rides in roadbook yet.</Text>
                )}
             </View>
@@ -7971,15 +7971,15 @@ export const SquadDetailModal = ({
         <View style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: 16, backgroundColor: t.bg, borderTopWidth: 1, borderTopColor: t.border, paddingBottom: Math.max(insets.bottom, 16) }}>
            {isMember ? (
               <View style={{ gap: 10 }}>
-                <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary, borderRadius: 24 }]} onPress={() => onOpenSquadChat(squad.id)}>
+                <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary, borderRadius: 24 }]} onPress={() => onOpenGroupChat(group.id)}>
                    <Text style={[styles.primaryButtonText, { fontSize: 16 }]}>Go To Chat</Text>
                 </TouchableOpacity>
                 {!isOwner && (
                   <TouchableOpacity
                     style={[styles.primaryButton, { backgroundColor: t.subtle, borderRadius: 24, borderWidth: 1, borderColor: t.border }]}
-                    onPress={() => onLeaveSquad(squad.id)}
+                    onPress={() => onLeaveGroup(group.id)}
                   >
-                     <Text style={[styles.primaryButtonText, { color: '#ef4444', fontSize: 15 }]}>Leave Squad</Text>
+                     <Text style={[styles.primaryButtonText, { color: '#ef4444', fontSize: 15 }]}>Leave Group</Text>
                   </TouchableOpacity>
                 )}
               </View>
@@ -7990,18 +7990,18 @@ export const SquadDetailModal = ({
                 </View>
                 <TouchableOpacity
                   style={[styles.primaryButton, { backgroundColor: t.bg, borderRadius: 24, borderWidth: 1, borderColor: t.border }]}
-                  onPress={() => onLeaveSquad(squad.id)}
+                  onPress={() => onLeaveGroup(group.id)}
                 >
                    <Text style={[styles.primaryButtonText, { color: '#ef4444', fontSize: 15 }]}>Cancel Request</Text>
                 </TouchableOpacity>
               </View>
-           ) : squad.joinPermission === 'invite_only' ? (
+           ) : group.joinPermission === 'invite_only' ? (
               <View style={[styles.primaryButton, { backgroundColor: t.subtle, borderRadius: 24 }]}>
                  <Text style={[styles.primaryButtonText, { color: t.muted, fontSize: 16 }]}>Invite Only</Text>
               </View>
            ) : (
-              <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary, borderRadius: 24 }]} onPress={() => onJoinSquad(squad.id)}>
-                 <Text style={[styles.primaryButtonText, { fontSize: 16 }]}>{squad.joinPermission === 'request_to_join' ? 'Request to Join' : 'Join Squad'}</Text>
+              <TouchableOpacity style={[styles.primaryButton, { backgroundColor: t.primary, borderRadius: 24 }]} onPress={() => onJoinGroup(group.id)}>
+                 <Text style={[styles.primaryButtonText, { fontSize: 16 }]}>{group.joinPermission === 'request_to_join' ? 'Request to Join' : 'Join Group'}</Text>
               </TouchableOpacity>
            )}
         </View>

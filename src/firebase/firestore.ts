@@ -27,9 +27,9 @@ import {
   RidePost,
   RideVisibility,
   SignedImageAsset,
-  Squad,
-  SquadJoinPermission,
-  SquadRideCreatePermission,
+  Group,
+  GroupJoinPermission,
+  GroupRideCreatePermission,
   User
 } from '../types';
 import { getFirebaseServices } from './client';
@@ -39,11 +39,11 @@ const USERS_COLLECTION = 'users';
 const USER_DIRECTORY_COLLECTION = 'userDirectory';
 const RIDES_COLLECTION = 'rides';
 const HELP_COLLECTION = 'helpPosts';
-const SQUADS_COLLECTION = 'squads';
+const GROUPS_COLLECTION = 'groups';
 const MODERATION_REPORTS_COLLECTION = 'moderationReports';
 const RIDE_VISIBILITY_OPTIONS: RideVisibility[] = ['Nearby', 'City', 'Friends'];
-const SQUAD_JOIN_PERMISSION_OPTIONS: SquadJoinPermission[] = ['anyone', 'request_to_join', 'invite_only'];
-const SQUAD_RIDE_CREATE_PERMISSION_OPTIONS: SquadRideCreatePermission[] = ['anyone', 'admin'];
+const GROUP_JOIN_PERMISSION_OPTIONS: GroupJoinPermission[] = ['anyone', 'request_to_join', 'invite_only'];
+const GROUP_RIDE_CREATE_PERMISSION_OPTIONS: GroupRideCreatePermission[] = ['anyone', 'admin'];
 const RIDE_JOIN_PERMISSION_OPTIONS: RideJoinPermission[] = ['anyone', 'request_to_join'];
 
 const asString = (value: unknown, fallback = ''): string => (typeof value === 'string' ? value : fallback);
@@ -425,9 +425,9 @@ const normalizeRide = (id: string, raw: DocumentData): RidePost => {
     isPrivate: typeof raw.isPrivate === 'boolean' ? raw.isPrivate : undefined,
     joinPermission: normalizeRideJoinPermission(raw.joinPermission),
     destinationPhotoRef: asString(raw.destinationPhotoRef) || undefined,
-    squadId: asString(raw.squadId) || undefined,
-    squadName: asString(raw.squadName) || undefined,
-    squadAvatar: asString(raw.squadAvatar) || undefined
+    groupId: asString(raw.groupId) || undefined,
+    groupName: asString(raw.groupName) || undefined,
+    groupAvatar: asString(raw.groupAvatar) || undefined
   };
 };
 
@@ -438,10 +438,10 @@ const toFirestoreRidePayload = (ride: RidePost): Record<string, unknown> => {
   };
 
   // Ensure optional fields are clearly handled
-  if (!ride.squadId) {
-    delete payload.squadId;
-    delete payload.squadName;
-    delete payload.squadAvatar;
+  if (!ride.groupId) {
+    delete payload.groupId;
+    delete payload.groupName;
+    delete payload.groupAvatar;
   }
 
   return payload;
@@ -463,7 +463,7 @@ const normalizeHelpPost = (id: string, raw: DocumentData): HelpPost => ({
   createdAt: asString(raw.createdAt, new Date().toISOString())
 });
 
-const normalizeSquadRideStyles = (raw: DocumentData): string[] => {
+const normalizeGroupRideStyles = (raw: DocumentData): string[] => {
   const fromArray = asStringArray(raw.rideStyles).map((value) => value.trim()).filter(Boolean);
   if (fromArray.length > 0) {
     return Array.from(new Set(fromArray));
@@ -473,17 +473,17 @@ const normalizeSquadRideStyles = (raw: DocumentData): string[] => {
   return legacyRideStyle ? [legacyRideStyle] : ['Touring'];
 };
 
-const normalizeSquadJoinPermission = (value: unknown): SquadJoinPermission =>
-  typeof value === 'string' && SQUAD_JOIN_PERMISSION_OPTIONS.includes(value as SquadJoinPermission)
-    ? (value as SquadJoinPermission)
+const normalizeGroupJoinPermission = (value: unknown): GroupJoinPermission =>
+  typeof value === 'string' && GROUP_JOIN_PERMISSION_OPTIONS.includes(value as GroupJoinPermission)
+    ? (value as GroupJoinPermission)
     : 'anyone';
 
-const normalizeSquadRideCreatePermission = (value: unknown): SquadRideCreatePermission =>
-  typeof value === 'string' && SQUAD_RIDE_CREATE_PERMISSION_OPTIONS.includes(value as SquadRideCreatePermission)
-    ? (value as SquadRideCreatePermission)
+const normalizeGroupRideCreatePermission = (value: unknown): GroupRideCreatePermission =>
+  typeof value === 'string' && GROUP_RIDE_CREATE_PERMISSION_OPTIONS.includes(value as GroupRideCreatePermission)
+    ? (value as GroupRideCreatePermission)
     : 'anyone';
 
-const normalizeSquad = (id: string, raw: DocumentData): Squad => {
+const normalizeGroup = (id: string, raw: DocumentData): Group => {
   const members = Array.from(new Set(asStringArray(raw.members)));
   const adminIds = Array.from(new Set(asStringArray(raw.adminIds))).filter((memberId) =>
     memberId !== asString(raw.creatorId) && members.includes(memberId)
@@ -500,9 +500,9 @@ const normalizeSquad = (id: string, raw: DocumentData): Squad => {
     avatar: avatarAsset?.signedUrl ?? asString(raw.avatar),
     avatarAsset,
     city: asString(raw.city),
-    rideStyles: normalizeSquadRideStyles(raw),
-    joinPermission: normalizeSquadJoinPermission(raw.joinPermission),
-    rideCreatePermission: normalizeSquadRideCreatePermission(raw.rideCreatePermission),
+    rideStyles: normalizeGroupRideStyles(raw),
+    joinPermission: normalizeGroupJoinPermission(raw.joinPermission),
+    rideCreatePermission: normalizeGroupRideCreatePermission(raw.rideCreatePermission),
     joinRequests: Array.from(new Set(asStringArray(raw.joinRequests))).filter((memberId) => !members.includes(memberId)),
     createdAt: asString(raw.createdAt, new Date().toISOString())
   };
@@ -561,19 +561,19 @@ const refreshUserImageAssetsIfNeeded = async (user: User): Promise<User> => {
   return nextUser;
 };
 
-const refreshSquadImageAssetsIfNeeded = async (squad: Squad): Promise<Squad> => {
-  if (!shouldRefreshSignedImageAsset(squad.avatarAsset)) {
-    return squad;
+const refreshGroupImageAssetsIfNeeded = async (group: Group): Promise<Group> => {
+  if (!shouldRefreshSignedImageAsset(group.avatarAsset)) {
+    return group;
   }
 
-  const avatarAsset = await refreshSignedImageAsset(squad.avatarAsset.objectKey);
-  const nextSquad: Squad = {
-    ...squad,
+  const avatarAsset = await refreshSignedImageAsset(group.avatarAsset.objectKey);
+  const nextGroup: Group = {
+    ...group,
     avatar: avatarAsset.signedUrl,
     avatarAsset
   };
-  await upsertSquadInFirestore(nextSquad);
-  return nextSquad;
+  await upsertGroupInFirestore(nextGroup);
+  return nextGroup;
 };
 
 export const fetchUsersFromFirestore = async (): Promise<User[]> => {
@@ -704,27 +704,27 @@ export const subscribeHelpPostsFromFirestore = ({
   };
 };
 
-export const fetchSquadsFromFirestore = async (): Promise<Squad[]> => {
+export const fetchGroupsFromFirestore = async (): Promise<Group[]> => {
   const services = getFirebaseServices();
   if (!services) return [];
 
-  const squadsRef = collection(services.firestore, SQUADS_COLLECTION);
+  const groupsRef = collection(services.firestore, GROUPS_COLLECTION);
   try {
-    const snapshot = await getDocs(query(squadsRef, orderBy('createdAt', 'desc')));
-    const squads = snapshot.docs.map((item) => normalizeSquad(item.id, item.data()));
-    return Promise.all(squads.map(refreshSquadImageAssetsIfNeeded));
+    const snapshot = await getDocs(query(groupsRef, orderBy('createdAt', 'desc')));
+    const groups = snapshot.docs.map((item) => normalizeGroup(item.id, item.data()));
+    return Promise.all(groups.map(refreshGroupImageAssetsIfNeeded));
   } catch {
-    const snapshot = await getDocs(squadsRef);
-    const squads = snapshot.docs.map((item) => normalizeSquad(item.id, item.data()));
-    return Promise.all(squads.map(refreshSquadImageAssetsIfNeeded));
+    const snapshot = await getDocs(groupsRef);
+    const groups = snapshot.docs.map((item) => normalizeGroup(item.id, item.data()));
+    return Promise.all(groups.map(refreshGroupImageAssetsIfNeeded));
   }
 };
 
-export const subscribeSquadsFromFirestore = ({
+export const subscribeGroupsFromFirestore = ({
   onChange,
   onError
 }: {
-  onChange: (squads: Squad[]) => void;
+  onChange: (groups: Group[]) => void;
   onError?: (error: unknown) => void;
 }): Unsubscribe => {
   const services = getFirebaseServices();
@@ -733,20 +733,20 @@ export const subscribeSquadsFromFirestore = ({
     return () => undefined;
   }
 
-  const squadsRef = collection(services.firestore, SQUADS_COLLECTION);
+  const groupsRef = collection(services.firestore, GROUPS_COLLECTION);
   let fallbackUnsubscribe: Unsubscribe | null = null;
 
   const orderedUnsubscribe = onSnapshot(
-    query(squadsRef, orderBy('createdAt', 'desc')),
+    query(groupsRef, orderBy('createdAt', 'desc')),
     (snapshot) => {
-      onChange(snapshot.docs.map((item) => normalizeSquad(item.id, item.data())));
+      onChange(snapshot.docs.map((item) => normalizeGroup(item.id, item.data())));
     },
     () => {
       if (fallbackUnsubscribe) return;
       fallbackUnsubscribe = onSnapshot(
-        squadsRef,
+        groupsRef,
         (snapshot) => {
-          onChange(snapshot.docs.map((item) => normalizeSquad(item.id, item.data())));
+          onChange(snapshot.docs.map((item) => normalizeGroup(item.id, item.data())));
         },
         (fallbackError) => {
           onError?.(fallbackError);
@@ -845,23 +845,23 @@ export const upsertHelpPostInFirestore = async (helpPost: HelpPost): Promise<voi
   await setDoc(doc(services.firestore, HELP_COLLECTION, helpPost.id), helpPost, { merge: true });
 };
 
-export const upsertSquadInFirestore = async (squad: Squad): Promise<void> => {
+export const upsertGroupInFirestore = async (group: Group): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
 
-  const squadRef = doc(services.firestore, SQUADS_COLLECTION, squad.id);
+  const groupRef = doc(services.firestore, GROUPS_COLLECTION, group.id);
   const getErrorCode = (error: unknown): string =>
     error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
   const isPermissionDenied = (error: unknown): boolean => getErrorCode(error).includes('permission-denied');
 
   const payloadWithAvatarAsset = {
-    ...squad,
+    ...group,
     // Newer rules require this key to exist even when no uploaded asset is present.
-    avatarAsset: squad.avatarAsset ?? null
+    avatarAsset: group.avatarAsset ?? null
   };
 
   try {
-    await setDoc(squadRef, payloadWithAvatarAsset, { merge: true });
+    await setDoc(groupRef, payloadWithAvatarAsset, { merge: true });
     return;
   } catch (error) {
     if (!isPermissionDenied(error)) {
@@ -869,10 +869,10 @@ export const upsertSquadInFirestore = async (squad: Squad): Promise<void> => {
     }
   }
 
-  // Backward-compat retry for projects still using older squad rules without avatarAsset.
+  // Backward-compat retry for projects still using older group rules without avatarAsset.
   const { avatarAsset: _ignoredAvatarAsset, ...legacyPayload } = payloadWithAvatarAsset;
   try {
-    await setDoc(squadRef, legacyPayload, { merge: true });
+    await setDoc(groupRef, legacyPayload, { merge: true });
     return;
   } catch (error) {
     if (!isPermissionDenied(error)) {
@@ -880,26 +880,26 @@ export const upsertSquadInFirestore = async (squad: Squad): Promise<void> => {
     }
   }
 
-  // Legacy schema fallback (older projects may validate a smaller squad shape).
+  // Legacy schema fallback (older projects may validate a smaller group shape).
   const legacyMinimalPayload = {
-    id: squad.id,
-    name: squad.name,
-    description: squad.description,
-    creatorId: squad.creatorId,
-    members: squad.members,
-    avatar: squad.avatar,
-    city: squad.city,
-    rideStyle: squad.rideStyles[0] ?? 'Touring',
-    createdAt: squad.createdAt
+    id: group.id,
+    name: group.name,
+    description: group.description,
+    creatorId: group.creatorId,
+    members: group.members,
+    avatar: group.avatar,
+    city: group.city,
+    rideStyle: group.rideStyles[0] ?? 'Touring',
+    createdAt: group.createdAt
   };
-  await setDoc(squadRef, legacyMinimalPayload, { merge: true });
+  await setDoc(groupRef, legacyMinimalPayload, { merge: true });
 };
 
-export const deleteSquadInFirestore = async (squadId: string): Promise<void> => {
+export const deleteGroupInFirestore = async (groupId: string): Promise<void> => {
   const services = getFirebaseServices();
   if (!services) return;
 
-  await deleteDoc(doc(services.firestore, SQUADS_COLLECTION, squadId));
+  await deleteDoc(doc(services.firestore, GROUPS_COLLECTION, groupId));
 };
 
 export const createModerationReportInFirestore = async (report: ModerationReport): Promise<void> => {

@@ -34,14 +34,14 @@ R2_API_TOKEN=
 ## Run
 
 ```bash
-cd /Users/rishabh/Projects/RideSathiReact/backend/r2-signer
+cd /Users/rishabh/Projects/ThrottleUp/backend/r2-signer
 npm install
 npm start
 ```
 
 ## App configuration
 
-In `/Users/rishabh/Projects/RideSathiReact/.env`:
+In `/Users/rishabh/Projects/ThrottleUp/.env`:
 
 ```bash
 EXPO_PUBLIC_IMAGE_STORAGE_PROVIDER=r2

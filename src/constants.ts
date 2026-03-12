@@ -1,4 +1,4 @@
-import { Conversation, HelpPost, NewsArticle, Notification, RidePost, Squad, User } from './types';
+import { Conversation, HelpPost, NewsArticle, Notification, RidePost, Group, User } from './types';
 
 export const MOCK_CURRENT_USER: User = {
   id: 'me-123',
@@ -296,11 +296,11 @@ export const MOCK_NEWS: NewsArticle[] = [
   }
 ];
 
-export const MOCK_SQUADS: Squad[] = [
+export const MOCK_GROUPS: Group[] = [
   {
     id: 'sq-1',
     name: 'NCR Touring Pack',
-    description: 'Weekend touring squad covering Delhi-NCR and nearby highways. Regular rides to Rajasthan, Uttarakhand, and beyond.',
+    description: 'Weekend touring group covering Delhi-NCR and nearby highways. Regular rides to Rajasthan, Uttarakhand, and beyond.',
     creatorId: 'me-123',
     members: ['me-123', 'u1', 'u2'],
     adminIds: ['u1'],
@@ -345,7 +345,7 @@ export const MOCK_SQUADS: Squad[] = [
   {
     id: 'sq-4',
     name: 'Gurgaon Night Riders',
-    description: 'Late-night cruise squad. Quiet roads, good vibes, and chai stops at 2 AM.',
+    description: 'Late-night cruise group. Quiet roads, good vibes, and chai stops at 2 AM.',
     creatorId: 'u3',
     members: ['u3'],
     adminIds: [],

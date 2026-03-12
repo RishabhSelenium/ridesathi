@@ -17,7 +17,7 @@ React Native (Expo) migration of the original ThrottleUp web prototype.
 ## Run locally
 
 ```bash
-cd /Users/rishabh/Projects/RideSathiReact
+cd /Users/rishabh/Projects/ThrottleUp
 npm install
 npm run start
 ```
@@ -30,7 +30,7 @@ Then:
 ## Build/install on Android device
 
 ```bash
-cd /Users/rishabh/Projects/RideSathiReact
+cd /Users/rishabh/Projects/ThrottleUp
 npm install
 npx expo run:android
 ```
@@ -117,7 +117,7 @@ This build supports beta login with a shared OTP and stable identity per phone n
 - `EXPO_PUBLIC_BETA_MODE=true`
 - `EXPO_PUBLIC_BETA_DEFAULT_OTP=1234`
 - `EXPO_PUBLIC_BETA_ALLOWED_PHONES=` (comma-separated E.164 values, optional)
-- `EXPO_PUBLIC_BETA_AUTH_PASSWORD=ridesathi-beta` (must be at least 6 chars)
+- `EXPO_PUBLIC_BETA_AUTH_PASSWORD=throttleup-beta` (must be at least 6 chars)
 
 When beta mode is enabled, login uses Firebase Email/Password under the hood with a deterministic account per phone number.
 

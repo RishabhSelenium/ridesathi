@@ -11,7 +11,7 @@ const R2_SECRET_ACCESS_KEY = (process.env.R2_SECRET_ACCESS_KEY ?? '').trim();
 const R2_BUCKET_NAME = (process.env.R2_BUCKET_NAME ?? '').trim();
 const R2_API_TOKEN = (process.env.R2_API_TOKEN ?? '').trim();
 const SIGNED_URL_TTL_SECONDS = Math.max(60, Number.parseInt(process.env.R2_SIGNED_URL_TTL_SECONDS ?? '3600', 10));
-const ALLOWED_KEY_PREFIXES = ['profiles/', 'squads/', 'bikes/', 'rides/'];
+const ALLOWED_KEY_PREFIXES = ['profiles/', 'groups/', 'bikes/', 'rides/'];
 
 if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET_NAME) {
   throw new Error('Missing R2 signer env. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET_NAME.');

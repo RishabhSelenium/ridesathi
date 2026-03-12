@@ -39,7 +39,7 @@ type NativeAuthModule = {
 const nativeConfirmationMap = new Map<string, NativeConfirmation>();
 const nativeAuthMissingMessage =
   'Native Firebase Phone Auth is not available in this build. Rebuild the Android app with @react-native-firebase/auth.';
-const BETA_AUTH_PASSWORD = process.env.EXPO_PUBLIC_BETA_AUTH_PASSWORD ?? 'ridesathi-beta';
+const BETA_AUTH_PASSWORD = process.env.EXPO_PUBLIC_BETA_AUTH_PASSWORD ?? 'throttleup-beta';
 const hasRnfbAppModule = (): boolean => Boolean((NativeModules as Record<string, unknown>).RNFBAppModule);
 
 const generateNativeVerificationId = (): string => `native-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -49,7 +49,7 @@ const toBetaEmailFromPhone = (phoneNumber: string): string => {
   if (key.length < 10) {
     throw new Error('Please enter a valid phone number.');
   }
-  return `beta_phone_${key}@ridesathi.app`;
+  return `beta_phone_${key}@throttleup.app`;
 };
 const getWebAuth = () => getFirebaseServices()?.auth ?? null;
 

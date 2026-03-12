@@ -35,8 +35,8 @@
         }
       }
     },
-    "squadChats": {
-      "$squadId": {
+    "groupChats": {
+      "$groupId": {
         ".read": "auth != null",
         "messages": {
           ".read": "auth != null",

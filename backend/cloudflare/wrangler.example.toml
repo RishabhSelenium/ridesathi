@@ -1,4 +1,4 @@
-name = "ridesathi-r2-upload"
+name = "throttleup-r2-upload"
 main = "r2-upload-worker.js"
 compatibility_date = "2026-03-06"
 

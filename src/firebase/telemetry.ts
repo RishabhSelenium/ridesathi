@@ -7,7 +7,7 @@ const ANALYTICS_EVENTS_COLLECTION = 'analyticsEvents';
 const CRASH_EVENTS_COLLECTION = 'crashEvents';
 const MAX_PARAM_LENGTH = 200;
 
-export type AppAnalyticsEvent = 'app_open' | 'create_ride' | 'join_ride' | 'post_help' | 'send_message' | 'send_squad_message';
+export type AppAnalyticsEvent = 'app_open' | 'create_ride' | 'join_ride' | 'post_help' | 'send_message' | 'send_group_message';
 
 type AnalyticsParamValue = string | number | boolean;
 type AnalyticsParams = Record<string, AnalyticsParamValue>;

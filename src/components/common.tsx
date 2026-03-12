@@ -250,12 +250,12 @@ export const RideCard = ({
         <View style={styles.rideCardFooter}>
           <View style={styles.rideCardFooterLeft}>
             <Text style={[styles.rideCardFooterLabel, { color: t.muted }]}>
-              {ride.squadName ? 'Hosted By' : 'Riding With'}
+              {ride.groupName ? 'Hosted By' : 'Riding With'}
             </Text>
-            {ride.squadName ? (
+            {ride.groupName ? (
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                <Image source={{ uri: ride.squadAvatar }} style={{ width: 16, height: 16, borderRadius: 8 }} />
-                <Text style={[styles.rideCardCreatorName, { color: t.primary }]} numberOfLines={1}>{ride.squadName}</Text>
+                <Image source={{ uri: ride.groupAvatar }} style={{ width: 16, height: 16, borderRadius: 8 }} />
+                <Text style={[styles.rideCardCreatorName, { color: t.primary }]} numberOfLines={1}>{ride.groupName}</Text>
               </View>
             ) : (
               <TouchableOpacity onPress={() => onViewProfile?.(ride.creatorId)}>

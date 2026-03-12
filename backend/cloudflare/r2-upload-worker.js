@@ -1,4 +1,4 @@
-const ALLOWED_KEY_PREFIXES = ['profiles/', 'squads/', 'bikes/', 'rides/'];
+const ALLOWED_KEY_PREFIXES = ['profiles/', 'groups/', 'bikes/', 'rides/'];
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',

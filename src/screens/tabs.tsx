@@ -25,7 +25,7 @@ import { TOKENS, Theme, avatarFallback, formatClock, formatRelative } from '../a
 import { Badge, RideCard } from '../components/common';
 import { isNativePhoneAuthAvailable, requestPhoneOtp, verifyPhoneOtp } from '../firebase/auth';
 
-import { Conversation, HelpPost, NewsArticle, RidePost, Squad, User } from '../types';
+import { Conversation, HelpPost, NewsArticle, RidePost, Group, User } from '../types';
 
 const SyncErrorBanner = ({
   theme,
@@ -800,32 +800,32 @@ export const MyRidesTab = ({
 export const ChatsTab = ({
   theme,
   conversations,
-  squads,
+  groups,
   currentUser,
   syncError,
   isSyncing,
   users,
   onRetrySync,
   onOpenChatRoom,
-  onOpenSquadChat,
+  onOpenGroupChat,
   onViewProfile,
   onStartConversation
 }: {
   theme: Theme;
   conversations: Conversation[];
-  squads: Squad[];
+  groups: Group[];
   currentUser: User;
   users: User[];
   syncError: string | null;
   isSyncing: boolean;
   onRetrySync: () => void;
   onOpenChatRoom: (conversation: Conversation) => void;
-  onOpenSquadChat: (squad: Squad) => void;
+  onOpenGroupChat: (group: Group) => void;
   onViewProfile: (userId: string) => void;
   onStartConversation: (userId: string) => void;
 }) => {
   const t = TOKENS[theme];
-  type ChatFilter = 'all' | 'friends' | 'squads' | 'unread';
+  type ChatFilter = 'all' | 'friends' | 'groups' | 'unread';
   const [activeFilter, setActiveFilter] = useState<ChatFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -835,7 +835,7 @@ export const ChatsTab = ({
       .filter((u): u is User => !!u);
   }, [currentUser.friends, users]);
 
-  const mySquads = useMemo(() => squads.filter((sq) => sq.members.includes(currentUser.id)), [squads, currentUser.id]);
+  const myGroups = useMemo(() => groups.filter((sq) => sq.members.includes(currentUser.id)), [groups, currentUser.id]);
   const getUnreadCount = useCallback((conversation: Conversation): number => {
     const unread = typeof conversation.unreadCount === 'number' && Number.isFinite(conversation.unreadCount)
       ? Math.max(0, Math.floor(conversation.unreadCount))
@@ -864,14 +864,14 @@ export const ChatsTab = ({
     return result;
   }, [conversations, activeFilter, getUnreadCount, searchQuery]);
 
-  const filteredSquads = useMemo(() => {
-    let result = mySquads;
+  const filteredGroups = useMemo(() => {
+    let result = myGroups;
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       result = result.filter(s => s.name.toLowerCase().includes(query));
     }
     return result;
-  }, [mySquads, searchQuery]);
+  }, [myGroups, searchQuery]);
 
   const renderFilterPill = (filter: ChatFilter, label: string) => (
     <TouchableOpacity
@@ -915,7 +915,7 @@ export const ChatsTab = ({
         >
           {renderFilterPill('all', 'All')}
           {renderFilterPill('friends', 'Friends')}
-          {renderFilterPill('squads', 'Squads')}
+          {renderFilterPill('groups', 'Groups')}
           {renderFilterPill('unread', 'Unread')}
         </ScrollView>
       </View>
@@ -974,31 +974,31 @@ export const ChatsTab = ({
             );
           })
         )
-      ) : activeFilter === 'squads' ? (
-        filteredSquads.length === 0 ? (
+      ) : activeFilter === 'groups' ? (
+        filteredGroups.length === 0 ? (
           <View style={styles.emptyWrap}>
             <MaterialCommunityIcons name="account-group-outline" size={48} color={t.muted} />
-            <Text style={[styles.emptyTitle, { color: t.text }]}>No squads joined.</Text>
-            <Text style={[styles.emptySubtitle, { color: t.muted }]}>Join a squad to participate in group chats.</Text>
+            <Text style={[styles.emptyTitle, { color: t.text }]}>No groups joined.</Text>
+            <Text style={[styles.emptySubtitle, { color: t.muted }]}>Join a group to participate in group chats.</Text>
           </View>
         ) : (
-          filteredSquads.map((squad) => (
+          filteredGroups.map((group) => (
             <TouchableOpacity
-              key={squad.id}
+              key={group.id}
               style={styles.chatRow}
-              onPress={() => onOpenSquadChat(squad)}
+              onPress={() => onOpenGroupChat(group)}
             >
               <View>
-                <Image source={{ uri: squad.avatar || avatarFallback }} style={styles.chatAvatar} />
+                <Image source={{ uri: group.avatar || avatarFallback }} style={styles.chatAvatar} />
               </View>
               <View style={styles.chatInfo}>
                 <View style={styles.rowBetween}>
                   <Text style={[styles.chatParticipantName, { color: t.text }]} numberOfLines={1}>
-                    {squad.name}
+                    {group.name}
                   </Text>
                 </View>
                 <Text style={[styles.chatPreviewText, { color: t.muted }]} numberOfLines={1}>
-                  {squad.members.length} member{squad.members.length === 1 ? '' : 's'}
+                  {group.members.length} member{group.members.length === 1 ? '' : 's'}
                 </Text>
               </View>
             </TouchableOpacity>
@@ -1070,7 +1070,7 @@ export const ProfileTab = ({
     () => rides.reduce((count, ride) => (ride.creatorId === currentUser.id ? count + 1 : count), 0),
     [currentUser.id, rides]
   );
-  const squadFriends = useMemo(
+  const groupFriends = useMemo(
     () =>
       currentUser.friends
         .map((friendId) => {
@@ -1173,30 +1173,30 @@ export const ProfileTab = ({
   );
 };
 
-export const SquadTab = ({
+export const GroupTab = ({
   theme,
-  squads,
+  groups,
   rides,
   currentUser,
   users,
   searchQuery,
   onSearchChange,
-  onCreateSquad,
-  onOpenSquadDetail,
-  onJoinSquad,
-  onLeaveSquad
+  onCreateGroup,
+  onOpenGroupDetail,
+  onJoinGroup,
+  onLeaveGroup
 }: {
   theme: Theme;
-  squads: Squad[];
+  groups: Group[];
   rides: RidePost[];
   currentUser: User;
   users: User[];
   searchQuery: string;
   onSearchChange: (query: string) => void;
-  onCreateSquad: () => void;
-  onOpenSquadDetail: (squadId: string) => void;
-  onJoinSquad: (squadId: string) => void;
-  onLeaveSquad: (squadId: string) => void;
+  onCreateGroup: () => void;
+  onOpenGroupDetail: (groupId: string) => void;
+  onJoinGroup: (groupId: string) => void;
+  onLeaveGroup: (groupId: string) => void;
 }) => {
   const t = TOKENS[theme];
   const [searchDraft, setSearchDraft] = useState(searchQuery);
@@ -1215,35 +1215,35 @@ export const SquadTab = ({
     return byId;
   }, [currentUser, users]);
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
-  const filteredSquads = useMemo(
+  const filteredGroups = useMemo(
     () => {
-      if (!normalizedSearchQuery) return squads;
-      return squads.filter((squad) => {
-        const nameMatch = squad.name.toLowerCase().includes(normalizedSearchQuery);
-        const cityMatch = squad.city.toLowerCase().includes(normalizedSearchQuery);
-        const styleMatch = squad.rideStyles.some(style => style.toLowerCase().includes(normalizedSearchQuery));
+      if (!normalizedSearchQuery) return groups;
+      return groups.filter((group) => {
+        const nameMatch = group.name.toLowerCase().includes(normalizedSearchQuery);
+        const cityMatch = group.city.toLowerCase().includes(normalizedSearchQuery);
+        const styleMatch = group.rideStyles.some(style => style.toLowerCase().includes(normalizedSearchQuery));
         return nameMatch || cityMatch || styleMatch;
       });
     },
-    [normalizedSearchQuery, squads]
+    [normalizedSearchQuery, groups]
   );
-  const mySquads = useMemo(
-    () => filteredSquads.filter((squad) => squad.members.includes(currentUser.id)),
-    [currentUser.id, filteredSquads]
+  const myGroups = useMemo(
+    () => filteredGroups.filter((group) => group.members.includes(currentUser.id)),
+    [currentUser.id, filteredGroups]
   );
-  const discoverSquads = useMemo(
-    () => filteredSquads.filter((squad) => !squad.members.includes(currentUser.id)),
-    [currentUser.id, filteredSquads]
-  );
-
-  const nearbySquads = useMemo(
-    () => discoverSquads.filter((squad) => squad.city.toLowerCase() === currentUser.city.toLowerCase()),
-    [discoverSquads, currentUser.city]
+  const discoverGroups = useMemo(
+    () => filteredGroups.filter((group) => !group.members.includes(currentUser.id)),
+    [currentUser.id, filteredGroups]
   );
 
-  const otherDiscoverSquads = useMemo(
-    () => discoverSquads.filter((squad) => squad.city.toLowerCase() !== currentUser.city.toLowerCase()),
-    [discoverSquads, currentUser.city]
+  const nearbyGroups = useMemo(
+    () => discoverGroups.filter((group) => group.city.toLowerCase() === currentUser.city.toLowerCase()),
+    [discoverGroups, currentUser.city]
+  );
+
+  const otherDiscoverGroups = useMemo(
+    () => discoverGroups.filter((group) => group.city.toLowerCase() !== currentUser.city.toLowerCase()),
+    [discoverGroups, currentUser.city]
   );
 
   const renderMemberAvatars = (memberIds: string[], maxShow = 4) => {
@@ -1251,7 +1251,7 @@ export const SquadTab = ({
     const extra = memberIds.length - maxShow;
 
     return (
-      <View style={styles.squadMemberAvatars}>
+      <View style={styles.groupMemberAvatars}>
         {shown.map((id, idx) => {
           const user = usersById.get(id);
           return (
@@ -1259,7 +1259,7 @@ export const SquadTab = ({
               key={id}
               source={{ uri: user?.avatar || avatarFallback }}
               style={[
-                styles.squadMemberAvatar,
+                styles.groupMemberAvatar,
                 { borderColor: t.card, marginLeft: idx === 0 ? 0 : -8 }
               ]}
             />
@@ -1268,7 +1268,7 @@ export const SquadTab = ({
         {extra > 0 && (
           <View
             style={[
-              styles.squadMemberAvatar,
+              styles.groupMemberAvatar,
               {
                 borderColor: t.card,
                 backgroundColor: t.subtle,
@@ -1284,38 +1284,38 @@ export const SquadTab = ({
     );
   };
 
-  const renderSquadCard = (squad: Squad, isMember: boolean) => {
-    const hasPendingRequest = squad.joinRequests.includes(currentUser.id);
-    const isAdmin = squad.adminIds.includes(currentUser.id);
-    const canManageRequests = squad.creatorId === currentUser.id || isAdmin;
-    const pendingRequestCount = squad.joinRequests.length;
-    const squadRidesCount = rides.filter((r) => r.squadId === squad.id).length;
+  const renderGroupCard = (group: Group, isMember: boolean) => {
+    const hasPendingRequest = group.joinRequests.includes(currentUser.id);
+    const isAdmin = group.adminIds.includes(currentUser.id);
+    const canManageRequests = group.creatorId === currentUser.id || isAdmin;
+    const pendingRequestCount = group.joinRequests.length;
+    const groupRidesCount = rides.filter((r) => r.groupId === group.id).length;
 
     return (
       <TouchableOpacity
-        key={squad.id}
-        style={[styles.squadCard, { backgroundColor: t.card, borderColor: t.border, padding: 12, borderRadius: 12 }]}
-        onPress={() => onOpenSquadDetail(squad.id)}
+        key={group.id}
+        style={[styles.groupCard, { backgroundColor: t.card, borderColor: t.border, padding: 12, borderRadius: 12 }]}
+        onPress={() => onOpenGroupDetail(group.id)}
       >
         <View style={{ flexDirection: 'row', gap: 14 }}>
           <Image 
-            source={{ uri: squad.avatar || avatarFallback }} 
+            source={{ uri: group.avatar || avatarFallback }} 
             style={{ width: 84, height: 84, borderRadius: 8, backgroundColor: t.subtle }} 
             resizeMode="cover"
           />
           <View style={{ flex: 1, justifyContent: 'space-between', paddingVertical: 2 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-               <Text style={[styles.squadName, { color: t.text, flex: 1, marginRight: 8, fontSize: 15, textTransform: 'uppercase' }]} numberOfLines={2}>
-                 {squad.name}
+               <Text style={[styles.groupName, { color: t.text, flex: 1, marginRight: 8, fontSize: 15, textTransform: 'uppercase' }]} numberOfLines={2}>
+                 {group.name}
                </Text>
                {isMember ? (
-                  <TouchableOpacity onPress={(e) => { e.stopPropagation(); onOpenSquadDetail(squad.id); }}>
+                  <TouchableOpacity onPress={(e) => { e.stopPropagation(); onOpenGroupDetail(group.id); }}>
                      <MaterialCommunityIcons name="menu" size={22} color={t.muted} />
                   </TouchableOpacity>
                ) : (
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 2 }}>
                      <MaterialCommunityIcons name="map-marker" size={14} color={t.muted} />
-                     <Text style={[styles.metaText, { color: t.muted }]}>{squad.city}</Text>
+                     <Text style={[styles.metaText, { color: t.muted }]}>{group.city}</Text>
                   </View>
                )}
             </View>
@@ -1329,39 +1329,39 @@ export const SquadTab = ({
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginTop: 8 }}>
                <View style={{ flexDirection: 'row', gap: 16 }}>
                   <View>
-                     <Text style={[styles.profileStatValue, { color: t.text, fontSize: 15, marginBottom: 2 }]}>{squad.members.length}</Text>
+                     <Text style={[styles.profileStatValue, { color: t.text, fontSize: 15, marginBottom: 2 }]}>{group.members.length}</Text>
                      <Text style={[styles.metaText, { color: t.muted, fontSize: 11 }]}>Members</Text>
                   </View>
                   <View>
-                     <Text style={[styles.profileStatValue, { color: t.text, fontSize: 15, marginBottom: 2 }]}>{squadRidesCount}</Text>
+                     <Text style={[styles.profileStatValue, { color: t.text, fontSize: 15, marginBottom: 2 }]}>{groupRidesCount}</Text>
                      <Text style={[styles.metaText, { color: t.muted, fontSize: 11 }]}>Rides</Text>
                   </View>
                </View>
 
                {isMember ? (
                   <TouchableOpacity
-                     style={[styles.squadActionButton, { borderColor: t.primary, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}
-                     onPress={(e) => { e.stopPropagation?.(); onOpenSquadDetail(squad.id); }}
+                     style={[styles.groupActionButton, { borderColor: t.primary, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}
+                     onPress={(e) => { e.stopPropagation?.(); onOpenGroupDetail(group.id); }}
                   >
-                     <Text style={[styles.squadActionButtonText, { color: t.primary, fontWeight: '700', textTransform: 'none' }]}>View Details</Text>
+                     <Text style={[styles.groupActionButtonText, { color: t.primary, fontWeight: '700', textTransform: 'none' }]}>View Details</Text>
                   </TouchableOpacity>
                ) : hasPendingRequest ? (
-                  <View style={[styles.squadActionButton, { borderColor: t.border, backgroundColor: t.subtle, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}>
-                     <Text style={[styles.squadActionButtonText, { color: t.muted, fontWeight: '700', textTransform: 'none' }]}>Requested</Text>
+                  <View style={[styles.groupActionButton, { borderColor: t.border, backgroundColor: t.subtle, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}>
+                     <Text style={[styles.groupActionButtonText, { color: t.muted, fontWeight: '700', textTransform: 'none' }]}>Requested</Text>
                   </View>
-               ) : squad.joinPermission === 'invite_only' ? (
+               ) : group.joinPermission === 'invite_only' ? (
                   <View
-                     style={[styles.squadActionButton, { borderColor: t.text, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}
+                     style={[styles.groupActionButton, { borderColor: t.text, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}
                   >
-                     <Text style={[styles.squadActionButtonText, { color: t.text, fontWeight: '700', textTransform: 'none' }]}>Invite Only</Text>
+                     <Text style={[styles.groupActionButtonText, { color: t.text, fontWeight: '700', textTransform: 'none' }]}>Invite Only</Text>
                   </View>
                ) : (
                   <TouchableOpacity
-                     style={[styles.squadActionButton, { borderColor: t.primary, backgroundColor: t.primary, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}
-                     onPress={(e) => { e.stopPropagation?.(); onJoinSquad(squad.id); }}
+                     style={[styles.groupActionButton, { borderColor: t.primary, backgroundColor: t.primary, paddingHorizontal: 16, minHeight: 32, borderRadius: 16 }]}
+                     onPress={(e) => { e.stopPropagation?.(); onJoinGroup(group.id); }}
                   >
-                     <Text style={[styles.squadActionButtonText, { color: '#fff', fontWeight: '700', textTransform: 'none' }]}>
-                        {squad.joinPermission === 'request_to_join' ? 'Send Request' : 'Join'}
+                     <Text style={[styles.groupActionButtonText, { color: '#fff', fontWeight: '700', textTransform: 'none' }]}>
+                        {group.joinPermission === 'request_to_join' ? 'Send Request' : 'Join'}
                      </Text>
                   </TouchableOpacity>
                )}
@@ -1374,11 +1374,11 @@ export const SquadTab = ({
 
   return (
     <View style={styles.listWrap}>
-      <View style={styles.squadSearchRow}>
+      <View style={styles.groupSearchRow}>
         <View style={{ flex: 1 }}>
           <TextInput
-            style={[styles.squadSearchInput, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
-            placeholder="Search squads..."
+            style={[styles.groupSearchInput, { backgroundColor: t.subtle, borderColor: t.border, color: t.text }]}
+            placeholder="Search groups..."
             placeholderTextColor={t.muted}
             value={searchDraft}
             onChangeText={setSearchDraft}
@@ -1387,52 +1387,52 @@ export const SquadTab = ({
           />
         </View>
         <TouchableOpacity
-          style={[styles.squadActionButton, { borderColor: t.border, backgroundColor: t.subtle, minHeight: 44 }]}
+          style={[styles.groupActionButton, { borderColor: t.border, backgroundColor: t.subtle, minHeight: 44 }]}
           onPress={applySearch}
         >
           <MaterialCommunityIcons name="magnify" size={16} color={t.primary} />
-          <Text style={[styles.squadActionButtonText, { color: t.primary }]}>Search</Text>
+          <Text style={[styles.groupActionButtonText, { color: t.primary }]}>Search</Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.squadActionButton, { borderColor: t.primary, backgroundColor: t.primary, minHeight: 44 }]}
-          onPress={onCreateSquad}
+          style={[styles.groupActionButton, { borderColor: t.primary, backgroundColor: t.primary, minHeight: 44 }]}
+          onPress={onCreateGroup}
         >
           <MaterialCommunityIcons name="plus" size={16} color="#fff" />
-          <Text style={[styles.squadActionButtonText, { color: '#fff' }]}>Create</Text>
+          <Text style={[styles.groupActionButtonText, { color: '#fff' }]}>Create</Text>
         </TouchableOpacity>
       </View>
 
-      {mySquads.length > 0 && (
+      {myGroups.length > 0 && (
         <>
-          <Text style={[styles.cardHeader, { color: t.muted, marginTop: 6 }]}>MY SQUADS</Text>
-          {mySquads.map((squad) => renderSquadCard(squad, true))}
+          <Text style={[styles.cardHeader, { color: t.muted, marginTop: 6 }]}>MY GROUPS</Text>
+          {myGroups.map((group) => renderGroupCard(group, true))}
         </>
       )}
 
-      {nearbySquads.length > 0 && (
+      {nearbyGroups.length > 0 && (
         <>
-          <Text style={[styles.cardHeader, { color: t.muted, marginTop: 6 }]}>NEARBY SQUADS</Text>
-          {nearbySquads.map((squad) => renderSquadCard(squad, false))}
+          <Text style={[styles.cardHeader, { color: t.muted, marginTop: 6 }]}>NEARBY GROUPS</Text>
+          {nearbyGroups.map((group) => renderGroupCard(group, false))}
         </>
       )}
 
-      {otherDiscoverSquads.length > 0 && (
+      {otherDiscoverGroups.length > 0 && (
         <>
           <Text style={[styles.cardHeader, { color: t.muted, marginTop: 6 }]}>
-            {nearbySquads.length > 0 ? 'OTHER SQUADS' : 'DISCOVER SQUADS'}
+            {nearbyGroups.length > 0 ? 'OTHER GROUPS' : 'DISCOVER GROUPS'}
           </Text>
-          {otherDiscoverSquads.map((squad) => renderSquadCard(squad, false))}
+          {otherDiscoverGroups.map((group) => renderGroupCard(group, false))}
         </>
       )}
 
-      {filteredSquads.length === 0 && (
+      {filteredGroups.length === 0 && (
         <View style={styles.emptyWrap}>
           <MaterialCommunityIcons name="account-group-outline" size={48} color={t.muted} />
           <Text style={[styles.emptyTitle, { color: t.text }]}>
-            {searchQuery ? 'No squads found.' : 'No squads yet.'}
+            {searchQuery ? 'No groups found.' : 'No groups yet.'}
           </Text>
           <Text style={[styles.emptySubtitle, { color: t.muted }]}>
-            {searchQuery ? 'Try a different search term.' : 'Create your own riding squad!'}
+            {searchQuery ? 'Try a different search term.' : 'Create your own riding group!'}
           </Text>
         </View>
       )}

@@ -162,8 +162,8 @@ export const refreshSignedImageAsset = async (objectKey: string): Promise<Signed
 export const uploadProfilePhoto = async (userId: string, fileUri: string): Promise<SignedImageAsset> =>
   uploadFileUri(`profiles/${userId}/${Date.now()}.jpg`, fileUri);
 
-export const uploadSquadPhoto = async (squadId: string, userId: string, fileUri: string): Promise<SignedImageAsset> =>
-  uploadFileUri(`squads/${squadId}/${userId}/${Date.now()}.jpg`, fileUri);
+export const uploadGroupPhoto = async (groupId: string, userId: string, fileUri: string): Promise<SignedImageAsset> =>
+  uploadFileUri(`groups/${groupId}/${userId}/${Date.now()}.jpg`, fileUri);
 
 export const uploadBikePhoto = async (userId: string, bikeName: string, fileUri: string): Promise<SignedImageAsset> =>
   uploadFileUri(`bikes/${userId}/${sanitizeStoragePathSegment(bikeName)}/${Date.now()}.jpg`, fileUri);

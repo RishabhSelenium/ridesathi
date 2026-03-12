@@ -7,7 +7,7 @@ This worker receives authenticated image uploads and writes them to an R2 bucket
 Copy:
 
 ```bash
-cp /Users/rishabh/Projects/RideSathiReact/backend/cloudflare/wrangler.example.toml /Users/rishabh/Projects/RideSathiReact/backend/cloudflare/wrangler.toml
+cp /Users/rishabh/Projects/ThrottleUp/backend/cloudflare/wrangler.example.toml /Users/rishabh/Projects/ThrottleUp/backend/cloudflare/wrangler.toml
 ```
 
 Update in `wrangler.toml`:
@@ -18,7 +18,7 @@ Update in `wrangler.toml`:
 ## 2) Set worker secret
 
 ```bash
-cd /Users/rishabh/Projects/RideSathiReact/backend/cloudflare
+cd /Users/rishabh/Projects/ThrottleUp/backend/cloudflare
 wrangler secret put UPLOAD_TOKEN
 ```
 
@@ -27,7 +27,7 @@ Use a strong random value. Do not reuse Cloudflare API tokens or R2 secret keys.
 ## 3) Deploy worker
 
 ```bash
-cd /Users/rishabh/Projects/RideSathiReact/backend/cloudflare
+cd /Users/rishabh/Projects/ThrottleUp/backend/cloudflare
 wrangler deploy
 ```
 
@@ -46,5 +46,5 @@ Restart Metro after changing env values.
 ## Notes
 
 - Keep Cloudflare R2 access key and secret key only in backend infrastructure, never in mobile app code.
-- Allowed upload keys are restricted to `profiles/`, `squads/`, `bikes/`, and `rides/`.
+- Allowed upload keys are restricted to `profiles/`, `groups/`, `bikes/`, and `rides/`.
 - Uploaded files are served via worker URL: `/public/<object-key>`.

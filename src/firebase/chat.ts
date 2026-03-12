@@ -8,7 +8,7 @@ type RealtimeChatMessage = ChatMessage & {
 };
 
 const messagePathForConversation = (conversationId: string) => `chats/${conversationId}/messages`;
-const messagePathForSquad = (squadId: string) => `squadChats/${squadId}/messages`;
+const messagePathForGroup = (groupId: string) => `groupChats/${groupId}/messages`;
 
 const normalizeRealtimeMessage = (value: unknown): RealtimeChatMessage | null => {
   if (!value || typeof value !== 'object') return null;
@@ -38,12 +38,12 @@ export const subscribeChatMessages = (
   return subscribeMessages(path, onMessages, onError);
 };
 
-export const subscribeSquadChatMessages = (
-  squadId: string,
+export const subscribeGroupChatMessages = (
+  groupId: string,
   onMessages: (messages: ChatMessage[]) => void,
   onError?: (error: Error) => void
 ): (() => void) => {
-  const path = messagePathForSquad(squadId);
+  const path = messagePathForGroup(groupId);
   return subscribeMessages(path, onMessages, onError);
 };
 
@@ -117,8 +117,8 @@ export const sendChatMessageToRealtime = async (
   await set(messageRef, payload);
 };
 
-export const sendSquadChatMessageToRealtime = async (
-  squadId: string,
+export const sendGroupChatMessageToRealtime = async (
+  groupId: string,
   message: ChatMessage
 ): Promise<void> => {
   const services = getFirebaseServices();
@@ -133,7 +133,7 @@ export const sendSquadChatMessageToRealtime = async (
     timestampEpoch: Date.now()
   };
 
-  const path = messagePathForSquad(squadId);
+  const path = messagePathForGroup(groupId);
   const messageRef = ref(services.realtimeDb, `${path}/${message.id}`);
   await set(messageRef, payload);
 };

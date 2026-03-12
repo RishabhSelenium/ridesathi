@@ -111,33 +111,33 @@ service cloud.firestore {
         data.visibility is list &&
         data.visibility.size() > 0 &&
         (data.destinationPhotoRef == null || data.destinationPhotoRef is string) &&
-        validRideSquadHost(data) &&
+        validRideGroupHost(data) &&
         data.createdAt is string;
     }
 
-    function validRideSquadHost(data) {
+    function validRideGroupHost(data) {
       return (
-          !(data.squadId is string) ||
-          data.squadId == ''
+          !(data.groupId is string) ||
+          data.groupId == ''
         )
-        ? (data.squadName == null && data.squadAvatar == null)
+        ? (data.groupName == null && data.groupAvatar == null)
         : (
-          get(/databases/$(database)/documents/squads/$(data.squadId)).data != null &&
-          get(/databases/$(database)/documents/squads/$(data.squadId)).data.members is list &&
-          get(/databases/$(database)/documents/squads/$(data.squadId)).data.members.hasAny([request.auth.uid]) &&
+          get(/databases/$(database)/documents/groups/$(data.groupId)).data != null &&
+          get(/databases/$(database)/documents/groups/$(data.groupId)).data.members is list &&
+          get(/databases/$(database)/documents/groups/$(data.groupId)).data.members.hasAny([request.auth.uid]) &&
           (
-            !(get(/databases/$(database)/documents/squads/$(data.squadId)).data.rideCreatePermission is string) ||
-            get(/databases/$(database)/documents/squads/$(data.squadId)).data.rideCreatePermission == 'anyone' ||
-            get(/databases/$(database)/documents/squads/$(data.squadId)).data.creatorId == request.auth.uid ||
+            !(get(/databases/$(database)/documents/groups/$(data.groupId)).data.rideCreatePermission is string) ||
+            get(/databases/$(database)/documents/groups/$(data.groupId)).data.rideCreatePermission == 'anyone' ||
+            get(/databases/$(database)/documents/groups/$(data.groupId)).data.creatorId == request.auth.uid ||
             (
-              get(/databases/$(database)/documents/squads/$(data.squadId)).data.adminIds is list &&
-              get(/databases/$(database)/documents/squads/$(data.squadId)).data.adminIds.hasAny([request.auth.uid])
+              get(/databases/$(database)/documents/groups/$(data.groupId)).data.adminIds is list &&
+              get(/databases/$(database)/documents/groups/$(data.groupId)).data.adminIds.hasAny([request.auth.uid])
             )
           ) &&
-          data.squadName is string &&
-          data.squadName == get(/databases/$(database)/documents/squads/$(data.squadId)).data.name &&
-          (data.squadAvatar == null || data.squadAvatar is string) &&
-          data.squadAvatar == get(/databases/$(database)/documents/squads/$(data.squadId)).data.avatar
+          data.groupName is string &&
+          data.groupName == get(/databases/$(database)/documents/groups/$(data.groupId)).data.name &&
+          (data.groupAvatar == null || data.groupAvatar is string) &&
+          data.groupAvatar == get(/databases/$(database)/documents/groups/$(data.groupId)).data.avatar
         );
     }
 
@@ -258,7 +258,7 @@ service cloud.firestore {
         data.createdAt is string;
     }
 
-    function validSquad(data, squadId) {
+    function validGroup(data, groupId) {
       return data.keys().hasAll([
           'id',
           'name',
@@ -292,7 +292,7 @@ service cloud.firestore {
           'joinRequests',
           'createdAt'
         ]) &&
-        data.id == squadId &&
+        data.id == groupId &&
         data.name is string &&
         data.description is string &&
         data.creatorId is string &&
@@ -314,12 +314,12 @@ service cloud.firestore {
         data.createdAt is string;
     }
 
-    function isSquadAdmin() {
+    function isGroupAdmin() {
       return resource.data.adminIds is list &&
         resource.data.adminIds.hasAny([request.auth.uid]);
     }
 
-    function canSelfJoinOpenSquad() {
+    function canSelfJoinOpenGroup() {
       return request.auth.uid != resource.data.creatorId &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members']) &&
         request.resource.data.joinPermission == 'anyone' &&
@@ -331,7 +331,7 @@ service cloud.firestore {
         request.resource.data.members.size() == resource.data.members.size() + 1;
     }
 
-    function canAddOwnSquadJoinRequest() {
+    function canAddOwnGroupJoinRequest() {
       return request.auth.uid != resource.data.creatorId &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinRequests']) &&
         request.resource.data.joinPermission == 'request_to_join' &&
@@ -343,7 +343,7 @@ service cloud.firestore {
         request.resource.data.joinRequests.size() == resource.data.joinRequests.size() + 1;
     }
 
-    function canWithdrawOwnSquadJoinRequest() {
+    function canWithdrawOwnGroupJoinRequest() {
       return request.auth.uid != resource.data.creatorId &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinRequests']) &&
         request.resource.data.members == resource.data.members &&
@@ -354,7 +354,7 @@ service cloud.firestore {
         request.resource.data.joinRequests.size() == resource.data.joinRequests.size() - 1;
     }
 
-    function canSelfLeaveSquad() {
+    function canSelfLeaveGroup() {
       return request.auth.uid != resource.data.creatorId &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'adminIds']) &&
         resource.data.members.hasAny([request.auth.uid]) &&
@@ -374,8 +374,8 @@ service cloud.firestore {
         );
     }
 
-    function canAdminManageSquadMembers() {
-      return isSquadAdmin() &&
+    function canAdminManageGroupMembers() {
+      return isGroupAdmin() &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members', 'joinRequests']) &&
         request.resource.data.adminIds == resource.data.adminIds;
     }
@@ -486,26 +486,26 @@ service cloud.firestore {
       allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;
     }
 
-    match /squads/{squadId} {
+    match /groups/{groupId} {
       allow read: if isSignedIn();
 
       allow create: if isSignedIn() &&
-        validSquad(request.resource.data, squadId) &&
+        validGroup(request.resource.data, groupId) &&
         request.resource.data.creatorId == request.auth.uid &&
         request.resource.data.members.hasAny([request.auth.uid]);
 
       allow update: if isSignedIn() &&
-        validSquad(request.resource.data, squadId) &&
+        validGroup(request.resource.data, groupId) &&
         request.resource.data.id == resource.data.id &&
         request.resource.data.creatorId == resource.data.creatorId &&
         request.resource.data.createdAt == resource.data.createdAt &&
         (
           request.auth.uid == resource.data.creatorId ||
-          canAdminManageSquadMembers() ||
-          canSelfJoinOpenSquad() ||
-          canAddOwnSquadJoinRequest() ||
-          canWithdrawOwnSquadJoinRequest() ||
-          canSelfLeaveSquad()
+          canAdminManageGroupMembers() ||
+          canSelfJoinOpenGroup() ||
+          canAddOwnGroupJoinRequest() ||
+          canWithdrawOwnGroupJoinRequest() ||
+          canSelfLeaveGroup()
         );
 
       allow delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;

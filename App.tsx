@@ -58,7 +58,7 @@ import {
   ChatRoomScreen,
   CreateHelpModal,
   CreateRideModal,
-  CreateSquadModal,
+  CreateGroupModal,
   EditProfileModal,
   HelpDetailScreen,
   LocationSettingsModal,
@@ -66,20 +66,13 @@ import {
   NotificationsOverlay,
   RideDetailScreen,
   RideCreatedSuccessfullyModal,
-  SquadChatRoomScreen,
-  SquadDetailModal,
+  GroupChatRoomScreen,
+  GroupDetailModal,
   UserProfileModal
 } from './src/components/modals';
-import { ChatsTab, CompleteProfileScreen, FeedTab, LoginScreen, MyRidesTab, NewsTab, ProfileTab, SplashScreen, SquadTab } from './src/screens/tabs';
+import { ChatsTab, CompleteProfileScreen, FeedTab, LoginScreen, MyRidesTab, NewsTab, ProfileTab, SplashScreen, GroupTab } from './src/screens/tabs';
 import {
-  MOCK_CONVERSATIONS,
   MOCK_CURRENT_USER,
-  MOCK_HELP,
-  MOCK_NEWS,
-  MOCK_NOTIFICATIONS,
-  MOCK_RIDES,
-  MOCK_SQUADS,
-  MOCK_USERS
 } from './src/constants';
 import {
   ChatMessage,
@@ -95,17 +88,17 @@ import {
   RideTrackingSession,
   RideVisibility,
   SignedImageAsset,
-  Squad,
-  SquadJoinPermission,
-  SquadRideCreatePermission,
+  Group,
+  GroupJoinPermission,
+  GroupRideCreatePermission,
   User
 } from './src/types';
 import { signInWithBetaPhoneIdentity, signOutFirebase, subscribeToAuthState } from './src/firebase/auth';
 import {
   sendChatMessageToRealtime,
-  sendSquadChatMessageToRealtime,
+  sendGroupChatMessageToRealtime,
   subscribeChatMessages,
-  subscribeSquadChatMessages
+  subscribeGroupChatMessages
 } from './src/firebase/chat';
 import {
   sendRideSosSignal,
@@ -120,48 +113,48 @@ import {
   addFirebasePushTokenToUser,
   addExpoPushTokenToUser,
   createModerationReportInFirestore,
-  deleteSquadInFirestore,
+  deleteGroupInFirestore,
   deleteRideInFirestore,
   fetchUserByIdFromFirestore,
   fetchHelpPostsFromFirestore,
   fetchRidesFromFirestore,
-  fetchSquadsFromFirestore,
+  fetchGroupsFromFirestore,
   fetchUsersFromFirestore,
   subscribeHelpPostsFromFirestore,
   subscribeRidesFromFirestore,
-  subscribeSquadsFromFirestore,
+  subscribeGroupsFromFirestore,
   updateRideJoinStateInFirestore,
   upsertHelpPostInFirestore,
   upsertRideInFirestore,
-  upsertSquadInFirestore,
+  upsertGroupInFirestore,
   upsertUserInFirestore
 } from './src/firebase/firestore';
-import { uploadBikePhoto, uploadProfilePhoto, uploadSquadPhoto } from './src/firebase/storage';
+import { uploadBikePhoto, uploadProfilePhoto, uploadGroupPhoto } from './src/firebase/storage';
 import {
   triggerDirectChatMessageNotification,
   triggerRideCancelledNotification,
   triggerRideCreatedNotification,
   triggerRideRequestOwnerNotification,
-  triggerSquadChatMessageNotification
+  triggerGroupChatMessageNotification
 } from './src/backend/notifications';
 import { installCrashLogging, logAnalyticsEvent } from './src/firebase/telemetry';
 import { fetchLatestNewsArticles } from './src/news/live-news';
 import { AppStateProvider, useAppState } from './src/state/app-state-context';
 
 const STORAGE_KEYS = {
-  theme: 'ridesathi.theme',
-  currentUser: 'ridesathi.currentUser',
-  users: 'ridesathi.users',
-  notifications: 'ridesathi.notifications',
-  rides: 'ridesathi.rides',
-  helpPosts: 'ridesathi.helpPosts',
-  conversations: 'ridesathi.conversations',
-  squadChats: 'ridesathi.squadChats',
-  news: 'ridesathi.news',
-  squads: 'ridesathi.squads',
-  locationMode: 'ridesathi.locationMode',
-  moderationReports: 'ridesathi.moderationReports',
-  profileCompletionByPhone: 'ridesathi.profileCompletionByPhone'
+  theme: 'throttleup.theme',
+  currentUser: 'throttleup.currentUser',
+  users: 'throttleup.users',
+  notifications: 'throttleup.notifications',
+  rides: 'throttleup.rides',
+  helpPosts: 'throttleup.helpPosts',
+  conversations: 'throttleup.conversations',
+  groupChats: 'throttleup.groupChats',
+  news: 'throttleup.news',
+  groups: 'throttleup.groups',
+  locationMode: 'throttleup.locationMode',
+  moderationReports: 'throttleup.moderationReports',
+  profileCompletionByPhone: 'throttleup.profileCompletionByPhone'
 } as const;
 
 const SESSION_STORAGE_KEYS = [
@@ -171,8 +164,8 @@ const SESSION_STORAGE_KEYS = [
   STORAGE_KEYS.rides,
   STORAGE_KEYS.helpPosts,
   STORAGE_KEYS.conversations,
-  STORAGE_KEYS.squadChats,
-  STORAGE_KEYS.squads,
+  STORAGE_KEYS.groupChats,
+  STORAGE_KEYS.groups,
   STORAGE_KEYS.locationMode,
   STORAGE_KEYS.moderationReports
 ];
@@ -190,7 +183,7 @@ const NEWS_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 const NEWS_PAGE_SIZE = 5;
 const NEWS_LOAD_MORE_DISTANCE_FROM_BOTTOM = 220;
 const STORAGE_WRITE_DEBOUNCE_MS = 250;
-type SyncChannel = 'rides' | 'help' | 'chat' | 'squadChat' | 'news' | 'rideTracking';
+type SyncChannel = 'rides' | 'help' | 'chat' | 'groupChat' | 'news' | 'rideTracking';
 type SyncChannelState = {
   isSyncing: boolean;
   error: string | null;
@@ -220,10 +213,25 @@ const INITIAL_SYNC_STATE: SyncState = {
   rides: { isSyncing: false, error: null, lastSuccessAt: null },
   help: { isSyncing: false, error: null, lastSuccessAt: null },
   chat: { isSyncing: false, error: null, lastSuccessAt: null },
-  squadChat: { isSyncing: false, error: null, lastSuccessAt: null },
+  groupChat: { isSyncing: false, error: null, lastSuccessAt: null },
   news: { isSyncing: false, error: null, lastSuccessAt: null },
   rideTracking: { isSyncing: false, error: null, lastSuccessAt: null }
 };
+
+const EMPTY_USERS: User[] = [];
+const EMPTY_NOTIFICATIONS: Notification[] = [];
+const EMPTY_RIDES: RidePost[] = [];
+const EMPTY_HELP_POSTS: HelpPost[] = [];
+const EMPTY_CONVERSATIONS: Conversation[] = [];
+const EMPTY_NEWS: NewsArticle[] = [];
+const EMPTY_GROUPS: Group[] = [];
+const LEGACY_MOCK_USER_IDS = new Set(['u1', 'u2', 'u3']);
+const LEGACY_MOCK_RIDE_IDS = new Set(['r1', 'r2', 'r3']);
+const LEGACY_MOCK_HELP_IDS = new Set(['h1']);
+const LEGACY_MOCK_CONVERSATION_IDS = new Set(['c1', 'c2']);
+const LEGACY_MOCK_NOTIFICATION_IDS = new Set(['n1', 'n2']);
+const LEGACY_MOCK_NEWS_IDS = new Set(['news-1', 'news-2', 'news-3', 'news-4']);
+const LEGACY_MOCK_GROUP_IDS = new Set(['sq-1', 'sq-2', 'sq-3', 'sq-4']);
 
 const uniqueStrings = (values: string[]) => Array.from(new Set(values));
 const LEGACY_USER_ALIAS_REGEX = /^user-(\d{10})$/i;
@@ -269,7 +277,7 @@ const formatConversationPreviewTimestamp = (value?: string): string => {
   return new Date(parsed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-const replaceSquadNameMentions = (content: string, previousName: string, nextName: string): string => {
+const replaceGroupNameMentions = (content: string, previousName: string, nextName: string): string => {
   const from = previousName.trim();
   const to = nextName.trim();
   if (!content || !from || !to || from === to) return content;
@@ -282,10 +290,10 @@ const replaceSquadNameMentions = (content: string, previousName: string, nextNam
   return updated;
 };
 const RIDE_VISIBILITY_OPTIONS: RideVisibility[] = ['Nearby', 'City', 'Friends'];
-const SQUAD_JOIN_PERMISSION_OPTIONS: SquadJoinPermission[] = ['anyone', 'request_to_join', 'invite_only'];
+const GROUP_JOIN_PERMISSION_OPTIONS: GroupJoinPermission[] = ['anyone', 'request_to_join', 'invite_only'];
 const isRideVisibility = (value: string): value is RideVisibility => RIDE_VISIBILITY_OPTIONS.includes(value as RideVisibility);
-const isSquadJoinPermission = (value: string): value is SquadJoinPermission =>
-  SQUAD_JOIN_PERMISSION_OPTIONS.includes(value as SquadJoinPermission);
+const isGroupJoinPermission = (value: string): value is GroupJoinPermission =>
+  GROUP_JOIN_PERMISSION_OPTIONS.includes(value as GroupJoinPermission);
 const FRIEND_REQUEST_WINDOW_MS = 10 * 60 * 1000;
 const FRIEND_REQUEST_MAX_IN_WINDOW = 6;
 const FRIEND_REQUEST_TARGET_COOLDOWN_MS = 2 * 60 * 1000;
@@ -601,7 +609,7 @@ const normalizeRides = (items: RidePost[]): RidePost[] =>
     paymentStatusByUserId: normalizeRidePaymentStatusByUserId(ride.paymentStatusByUserId)
   }));
 
-type LegacySquad = Omit<Squad, 'rideStyles' | 'joinPermission' | 'joinRequests' | 'adminIds'> & {
+type LegacyGroup = Omit<Group, 'rideStyles' | 'joinPermission' | 'joinRequests' | 'adminIds'> & {
   rideStyle?: unknown;
   rideStyles?: unknown;
   adminIds?: unknown;
@@ -613,48 +621,48 @@ type LegacySquad = Omit<Squad, 'rideStyles' | 'joinPermission' | 'joinRequests' 
 const asStringArray = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
-const normalizeSquadRideStyles = (squad: LegacySquad): string[] => {
-  const normalizedStyles = asStringArray(squad.rideStyles).map((value) => value.trim()).filter(Boolean);
+const normalizeGroupRideStyles = (group: LegacyGroup): string[] => {
+  const normalizedStyles = asStringArray(group.rideStyles).map((value) => value.trim()).filter(Boolean);
   if (normalizedStyles.length > 0) return uniqueStrings(normalizedStyles);
 
-  if (typeof squad.rideStyle === 'string' && squad.rideStyle.trim().length > 0) {
-    return [squad.rideStyle.trim()];
+  if (typeof group.rideStyle === 'string' && group.rideStyle.trim().length > 0) {
+    return [group.rideStyle.trim()];
   }
 
   return ['Touring'];
 };
 
-const normalizeSquadJoinPermission = (value: unknown): SquadJoinPermission =>
-  typeof value === 'string' && isSquadJoinPermission(value) ? value : 'anyone';
+const normalizeGroupJoinPermission = (value: unknown): GroupJoinPermission =>
+  typeof value === 'string' && isGroupJoinPermission(value) ? value : 'anyone';
 
-const normalizeSquadRideCreatePermission = (value: unknown): SquadRideCreatePermission =>
+const normalizeGroupRideCreatePermission = (value: unknown): GroupRideCreatePermission =>
   value === 'admin' ? 'admin' : 'anyone';
 
-const normalizeSquad = (squad: LegacySquad): Squad => {
-  const memberIds = uniqueStrings(asStringArray(squad.members));
-  const adminIds = uniqueStrings(asStringArray(squad.adminIds)).filter((id) => id !== squad.creatorId && memberIds.includes(id));
-  const joinRequests = uniqueStrings(asStringArray(squad.joinRequests)).filter((id) => !memberIds.includes(id));
+const normalizeGroup = (group: LegacyGroup): Group => {
+  const memberIds = uniqueStrings(asStringArray(group.members));
+  const adminIds = uniqueStrings(asStringArray(group.adminIds)).filter((id) => id !== group.creatorId && memberIds.includes(id));
+  const joinRequests = uniqueStrings(asStringArray(group.joinRequests)).filter((id) => !memberIds.includes(id));
 
   return {
-    id: squad.id,
-    name: squad.name,
-    description: squad.description,
-    creatorId: squad.creatorId,
+    id: group.id,
+    name: group.name,
+    description: group.description,
+    creatorId: group.creatorId,
     members: memberIds,
     adminIds,
-    avatar: squad.avatar,
-    avatarAsset: squad.avatarAsset,
-    city: squad.city,
-    rideStyles: normalizeSquadRideStyles(squad),
-    joinPermission: normalizeSquadJoinPermission(squad.joinPermission),
-    rideCreatePermission: normalizeSquadRideCreatePermission(squad.rideCreatePermission),
+    avatar: group.avatar,
+    avatarAsset: group.avatarAsset,
+    city: group.city,
+    rideStyles: normalizeGroupRideStyles(group),
+    joinPermission: normalizeGroupJoinPermission(group.joinPermission),
+    rideCreatePermission: normalizeGroupRideCreatePermission(group.rideCreatePermission),
     joinRequests,
-    createdAt: squad.createdAt
+    createdAt: group.createdAt
   };
 };
 
-const normalizeSquads = (items: LegacySquad[]): Squad[] => items.map(normalizeSquad);
-const isRuntimeCreatedSquadId = (squadId: string): boolean => /^sq-\d{10,}$/.test(squadId);
+const normalizeGroups = (items: LegacyGroup[]): Group[] => items.map(normalizeGroup);
+const isRuntimeCreatedGroupId = (groupId: string): boolean => /^sq-\d{10,}$/.test(groupId);
 
 const getCurrentUserIdAliases = (currentUserId: string, currentUserPhoneNumber?: string): Set<string> => {
   const aliases = new Set<string>();
@@ -670,56 +678,56 @@ const getCurrentUserIdAliases = (currentUserId: string, currentUserPhoneNumber?:
   return aliases;
 };
 
-const mergeSquadsPreservingLocalMembership = (
-  remoteSquads: Squad[],
-  localSquads: Squad[],
+const mergeGroupsPreservingLocalMembership = (
+  remoteGroups: Group[],
+  localGroups: Group[],
   currentUserId: string,
   currentUserPhoneNumber?: string
-): Squad[] => {
-  if (!currentUserId) return remoteSquads;
+): Group[] => {
+  if (!currentUserId) return remoteGroups;
 
   const currentUserAliases = getCurrentUserIdAliases(currentUserId, currentUserPhoneNumber);
   const hasUserAlias = (ids: string[]): boolean => ids.some((id) => currentUserAliases.has(id));
 
-  const localById = new Map(localSquads.map((squad) => [squad.id, squad]));
-  const remoteIds = new Set(remoteSquads.map((squad) => squad.id));
-  const mergedRemoteSquads = remoteSquads.map((remoteSquad) => {
-    const localSquad = localById.get(remoteSquad.id);
-    if (!localSquad) return remoteSquad;
+  const localById = new Map(localGroups.map((group) => [group.id, group]));
+  const remoteIds = new Set(remoteGroups.map((group) => group.id));
+  const mergedRemoteGroups = remoteGroups.map((remoteGroup) => {
+    const localGroup = localById.get(remoteGroup.id);
+    if (!localGroup) return remoteGroup;
 
-    const localIsMember = hasUserAlias(localSquad.members);
-    const remoteIsMember = hasUserAlias(remoteSquad.members);
+    const localIsMember = hasUserAlias(localGroup.members);
+    const remoteIsMember = hasUserAlias(remoteGroup.members);
     if (localIsMember && !remoteIsMember) {
       return {
-        ...remoteSquad,
-        members: uniqueStrings([...remoteSquad.members, currentUserId]),
-        joinRequests: remoteSquad.joinRequests.filter((id) => !currentUserAliases.has(id))
+        ...remoteGroup,
+        members: uniqueStrings([...remoteGroup.members, currentUserId]),
+        joinRequests: remoteGroup.joinRequests.filter((id) => !currentUserAliases.has(id))
       };
     }
 
-    const localHasPendingRequest = hasUserAlias(localSquad.joinRequests);
-    const remoteHasPendingRequest = hasUserAlias(remoteSquad.joinRequests);
+    const localHasPendingRequest = hasUserAlias(localGroup.joinRequests);
+    const remoteHasPendingRequest = hasUserAlias(remoteGroup.joinRequests);
     if (localHasPendingRequest && !remoteHasPendingRequest && !remoteIsMember) {
       return {
-        ...remoteSquad,
-        joinRequests: uniqueStrings([...remoteSquad.joinRequests, currentUserId])
+        ...remoteGroup,
+        joinRequests: uniqueStrings([...remoteGroup.joinRequests, currentUserId])
       };
     }
 
-    return remoteSquad;
+    return remoteGroup;
   });
 
-  // Keep optimistic local squads (e.g., newly created) until they appear in cloud snapshots.
-  const localOnlyRelevantSquads = localSquads.filter((localSquad) => {
-    if (remoteIds.has(localSquad.id)) return false;
-    return currentUserAliases.has(localSquad.creatorId) || hasUserAlias(localSquad.members);
+  // Keep optimistic local groups (e.g., newly created) until they appear in cloud snapshots.
+  const localOnlyRelevantGroups = localGroups.filter((localGroup) => {
+    if (remoteIds.has(localGroup.id)) return false;
+    return currentUserAliases.has(localGroup.creatorId) || hasUserAlias(localGroup.members);
   });
 
-  if (localOnlyRelevantSquads.length === 0) {
-    return mergedRemoteSquads;
+  if (localOnlyRelevantGroups.length === 0) {
+    return mergedRemoteGroups;
   }
 
-  return [...localOnlyRelevantSquads, ...mergedRemoteSquads].sort((a, b) => {
+  return [...localOnlyRelevantGroups, ...mergedRemoteGroups].sort((a, b) => {
     const aTime = Date.parse(a.createdAt);
     const bTime = Date.parse(b.createdAt);
     if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0;
@@ -775,7 +783,7 @@ const fallbackSyncErrorByChannel: Record<SyncChannel, string> = {
   rides: 'Unable to sync rides right now. Check your network and retry.',
   help: 'Unable to sync help posts right now. Check your network and retry.',
   chat: 'Chat sync is unavailable right now. Check your network and retry.',
-  squadChat: 'Squad chat sync is unavailable right now. Check your network and retry.',
+  groupChat: 'Group chat sync is unavailable right now. Check your network and retry.',
   news: 'Unable to refresh the news feed right now. Check your network and retry.',
   rideTracking: 'Live tracking sync is unavailable right now. Check your network and retry.'
 };
@@ -970,14 +978,14 @@ const AppShell = () => {
     setActiveConversation,
     selectedUserId,
     setSelectedUserId,
-    squads,
-    setSquads,
-    isCreateSquadModalOpen,
-    setIsCreateSquadModalOpen,
-    selectedSquadId,
-    setSelectedSquadId,
-    squadSearchQuery,
-    setSquadSearchQuery
+    groups,
+    setGroups,
+    isCreateGroupModalOpen,
+    setIsCreateGroupModalOpen,
+    selectedGroupId,
+    setSelectedGroupId,
+    groupSearchQuery,
+    setGroupSearchQuery
   } = useAppState();
 
   const t = TOKENS[theme];
@@ -989,28 +997,28 @@ const AppShell = () => {
   const helpReplyMetaByPostRef = useRef<Map<string, { sentAt: number; text: string }>>(new Map());
   const chatTimestampsByConversationRef = useRef<Map<string, number[]>>(new Map());
   const chatLastMessageByConversationRef = useRef<Map<string, { sentAt: number; text: string }>>(new Map());
-  const squadChatTimestampsByRoomRef = useRef<Map<string, number[]>>(new Map());
-  const squadChatLastMessageByRoomRef = useRef<Map<string, { sentAt: number; text: string }>>(new Map());
+  const groupChatTimestampsByRoomRef = useRef<Map<string, number[]>>(new Map());
+  const groupChatLastMessageByRoomRef = useRef<Map<string, { sentAt: number; text: string }>>(new Map());
   const lastGuardrailNotificationRef = useRef<{ sentAt: number; message: string } | null>(null);
   const lastRideSosByRideRef = useRef<Map<string, string>>(new Map());
   const previousRidesForNotificationRef = useRef<RidePost[] | null>(null);
-  const previousSquadsForNotificationRef = useRef<Squad[] | null>(null);
+  const previousGroupsForNotificationRef = useRef<Group[] | null>(null);
   const previousCurrentUserIdentityRef = useRef<{ id: string; name: string } | null>(null);
-  const previousSquadNamesRef = useRef<Map<string, string>>(new Map());
+  const previousGroupNamesRef = useRef<Map<string, string>>(new Map());
   const rideNotificationUserRef = useRef<string | null>(null);
-  const squadNotificationUserRef = useRef<string | null>(null);
-  const attemptedSquadCloudSyncIdsRef = useRef<Set<string>>(new Set());
-  const attemptedSquadMemberProfileFetchIdsRef = useRef<Set<string>>(new Set());
+  const groupNotificationUserRef = useRef<string | null>(null);
+  const attemptedGroupCloudSyncIdsRef = useRef<Set<string>>(new Set());
+  const attemptedGroupMemberProfileFetchIdsRef = useRef<Set<string>>(new Set());
   const hasLoggedAppOpenRef = useRef(false);
   const [syncState, setSyncState] = useState<SyncState>(INITIAL_SYNC_STATE);
   const [chatSyncRetryToken, setChatSyncRetryToken] = useState(0);
-  const [squadChatSyncRetryToken, setSquadChatSyncRetryToken] = useState(0);
+  const [groupChatSyncRetryToken, setGroupChatSyncRetryToken] = useState(0);
   const [activeNewsArticleUrl, setActiveNewsArticleUrl] = useState<string | null>(null);
-  const [activeSquadChatId, setActiveSquadChatId] = useState<string | null>(null);
+  const [activeGroupChatId, setActiveGroupChatId] = useState<string | null>(null);
   const [editingRideId, setEditingRideId] = useState<string | null>(null);
   const [createdRide, setCreatedRide] = useState<RidePost | null>(null);
   const [pendingRideJoinRequest, setPendingRideJoinRequest] = useState<{ rideId: string } | null>(null);
-  const [squadChatMessagesByRoom, setSquadChatMessagesByRoom] = useState<Record<string, ChatMessage[]>>({});
+  const [groupChatMessagesByRoom, setGroupChatMessagesByRoom] = useState<Record<string, ChatMessage[]>>({});
   const [rideTrackingSyncRetryToken, setRideTrackingSyncRetryToken] = useState(0);
   const [visibleNewsCount, setVisibleNewsCount] = useState(NEWS_PAGE_SIZE);
   const [selectedRideTrackingSession, setSelectedRideTrackingSession] = useState<RideTrackingSession | null>(null);
@@ -1021,8 +1029,8 @@ const AppShell = () => {
   const [isSendingRideSos, setIsSendingRideSos] = useState(false);
   const [isUploadingProfilePhoto, setIsUploadingProfilePhoto] = useState(false);
   const [uploadingBikeName, setUploadingBikeName] = useState<string | null>(null);
-  const [isCreatingSquad, setIsCreatingSquad] = useState(false);
-  const [editingSquadId, setEditingSquadId] = useState<string | null>(null);
+  const [isCreatingGroup, setIsCreatingGroup] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const rideTrackingLocationAlertShownRef = useRef(false);
   const lastNewsLoadTriggerHeightRef = useRef(0);
   const hasFirebaseAuthSession = FIREBASE_ENABLED && Boolean(getFirebaseServices()?.auth.currentUser);
@@ -1035,22 +1043,22 @@ const AppShell = () => {
     }
   }, []);
 
-  const persistSquadsSnapshot = useCallback(
-    (nextSquads: Squad[]) => {
+  const persistGroupsSnapshot = useCallback(
+    (nextGroups: Group[]) => {
       if (!hydrated || !isLoggedIn) return;
-      void saveToStorage(STORAGE_KEYS.squads, nextSquads);
+      void saveToStorage(STORAGE_KEYS.groups, nextGroups);
     },
     [hydrated, isLoggedIn]
   );
 
   const resetSessionState = useCallback(() => {
     setCurrentUser(MOCK_CURRENT_USER);
-    setUsers(MOCK_USERS);
-    setNotifications(MOCK_NOTIFICATIONS);
-    setRides(MOCK_RIDES);
-    setHelpPosts(MOCK_HELP);
-    setConversations(normalizeConversationsSnapshot(MOCK_CONVERSATIONS));
-    setSquads(MOCK_SQUADS);
+    setUsers(EMPTY_USERS);
+    setNotifications(EMPTY_NOTIFICATIONS);
+    setRides(EMPTY_RIDES);
+    setHelpPosts(EMPTY_HELP_POSTS);
+    setConversations(normalizeConversationsSnapshot(EMPTY_CONVERSATIONS));
+    setGroups(EMPTY_GROUPS);
     setLocationMode('auto');
     setLocationPermissionStatus('undetermined');
     setNotificationPermissionStatus('undetermined');
@@ -1068,20 +1076,20 @@ const AppShell = () => {
     setSelectedHelpPost(null);
     setActiveConversation(null);
     setSelectedUserId(null);
-    setIsCreateSquadModalOpen(false);
-    setSelectedSquadId(null);
-    setSquadSearchQuery('');
+    setIsCreateGroupModalOpen(false);
+    setSelectedGroupId(null);
+    setGroupSearchQuery('');
     setFeedFilter('rides');
     setActiveTab('feed');
     setSyncState(INITIAL_SYNC_STATE);
     setChatSyncRetryToken(0);
-    setSquadChatSyncRetryToken(0);
+    setGroupChatSyncRetryToken(0);
     setRideTrackingSyncRetryToken(0);
     setActiveNewsArticleUrl(null);
-    setActiveSquadChatId(null);
+    setActiveGroupChatId(null);
     setEditingRideId(null);
     setPendingRideJoinRequest(null);
-    setSquadChatMessagesByRoom({});
+    setGroupChatMessagesByRoom({});
     setSelectedRideTrackingSession(null);
     setLocalRideTrackingSessions({});
     setIsStartingRideTracking(false);
@@ -1090,8 +1098,8 @@ const AppShell = () => {
     setIsSendingRideSos(false);
     setIsUploadingProfilePhoto(false);
     setUploadingBikeName(null);
-    setIsCreatingSquad(false);
-    setEditingSquadId(null);
+    setIsCreatingGroup(false);
+    setEditingGroupId(null);
 
     lastSyncedUsersRef.current = null;
     friendRequestTimestampsRef.current = [];
@@ -1100,23 +1108,23 @@ const AppShell = () => {
     helpReplyMetaByPostRef.current = new Map();
     chatTimestampsByConversationRef.current = new Map();
     chatLastMessageByConversationRef.current = new Map();
-    squadChatTimestampsByRoomRef.current = new Map();
-    squadChatLastMessageByRoomRef.current = new Map();
+    groupChatTimestampsByRoomRef.current = new Map();
+    groupChatLastMessageByRoomRef.current = new Map();
     lastGuardrailNotificationRef.current = null;
     lastRideSosByRideRef.current = new Map();
     previousRidesForNotificationRef.current = null;
-    previousSquadsForNotificationRef.current = null;
+    previousGroupsForNotificationRef.current = null;
     rideNotificationUserRef.current = null;
-    squadNotificationUserRef.current = null;
+    groupNotificationUserRef.current = null;
     rideTrackingLocationAlertShownRef.current = false;
   }, [
     setActiveConversation,
-    setActiveSquadChatId,
+    setActiveGroupChatId,
     setActiveNewsArticleUrl,
     setActiveTab,
     setChatSyncRetryToken,
-    setSquadChatMessagesByRoom,
-    setSquadChatSyncRetryToken,
+    setGroupChatMessagesByRoom,
+    setGroupChatSyncRetryToken,
     setRideTrackingSyncRetryToken,
     setConversations,
     setCurrentUser,
@@ -1125,7 +1133,7 @@ const AppShell = () => {
     setIsCreateHelpModalOpen,
     setIsCreateMenuOpen,
     setIsCreateRideModalOpen,
-    setIsCreateSquadModalOpen,
+    setIsCreateGroupModalOpen,
     setIsDetectingLocation,
     setIsEditProfileOpen,
     setIsHelpDetailOpen,
@@ -1141,10 +1149,10 @@ const AppShell = () => {
     setSelectedHelpPost,
     setSelectedRideId,
     setPendingRideJoinRequest,
-    setSelectedSquadId,
+    setSelectedGroupId,
     setSelectedUserId,
-    setSquadSearchQuery,
-    setSquads,
+    setGroupSearchQuery,
+    setGroups,
     setSyncState,
     setUsers,
     setSelectedRideTrackingSession,
@@ -1155,7 +1163,7 @@ const AppShell = () => {
     setIsSendingRideSos,
     setIsUploadingProfilePhoto,
     setUploadingBikeName,
-    setIsCreatingSquad
+    setIsCreatingGroup
   ]);
 
   const clearSession = useCallback(() => {
@@ -1494,7 +1502,7 @@ const AppShell = () => {
         return changed ? next : prev;
       });
 
-      setSquadChatMessagesByRoom((prev) => {
+      setGroupChatMessagesByRoom((prev) => {
         let changed = false;
         const nextEntries = Object.entries(prev).map(([roomId, messages]) => {
           let roomChanged = false;
@@ -1649,11 +1657,11 @@ const AppShell = () => {
       startSync('rides');
       startSync('help');
 
-      const [remoteUsersResult, remoteRidesResult, remoteHelpPostsResult, remoteSquadsResult] = await Promise.allSettled([
+      const [remoteUsersResult, remoteRidesResult, remoteHelpPostsResult, remoteGroupsResult] = await Promise.allSettled([
         fetchUsersFromFirestore(),
         fetchRidesFromFirestore(),
         fetchHelpPostsFromFirestore(),
-        fetchSquadsFromFirestore()
+        fetchGroupsFromFirestore()
       ]);
 
       if (remoteUsersResult.status === 'fulfilled' && remoteUsersResult.value.length > 0) {
@@ -1705,10 +1713,10 @@ const AppShell = () => {
         markSyncFailure('help', remoteHelpPostsResult.reason);
       }
 
-      if (remoteSquadsResult.status === 'fulfilled') {
-        const normalizedRemoteSquads = normalizeSquads(remoteSquadsResult.value);
-        setSquads((prev) =>
-          mergeSquadsPreservingLocalMembership(normalizedRemoteSquads, prev, payload.uid, payload.phoneNumber)
+      if (remoteGroupsResult.status === 'fulfilled') {
+        const normalizedRemoteGroups = normalizeGroups(remoteGroupsResult.value);
+        setGroups((prev) =>
+          mergeGroupsPreservingLocalMembership(normalizedRemoteGroups, prev, payload.uid, payload.phoneNumber)
         );
       }
 
@@ -1738,7 +1746,7 @@ const AppShell = () => {
       setIsLoggedIn,
       mergeRemoteRidesWithLocalCreated,
       setRides,
-      setSquads,
+      setGroups,
       setUsers,
       startSync
     ]
@@ -1756,9 +1764,9 @@ const AppShell = () => {
           savedRides,
           savedHelpPosts,
           savedConversations,
-          savedSquadChats,
+          savedGroupChats,
           savedNews,
-          savedSquads,
+          savedGroups,
           savedLocationMode
         ] =
           await Promise.all([
@@ -1768,9 +1776,9 @@ const AppShell = () => {
             AsyncStorage.getItem(STORAGE_KEYS.rides),
             AsyncStorage.getItem(STORAGE_KEYS.helpPosts),
             AsyncStorage.getItem(STORAGE_KEYS.conversations),
-            AsyncStorage.getItem(STORAGE_KEYS.squadChats),
+            AsyncStorage.getItem(STORAGE_KEYS.groupChats),
             AsyncStorage.getItem(STORAGE_KEYS.news),
-            AsyncStorage.getItem(STORAGE_KEYS.squads),
+            AsyncStorage.getItem(STORAGE_KEYS.groups),
             AsyncStorage.getItem(STORAGE_KEYS.locationMode)
           ]);
 
@@ -1804,6 +1812,26 @@ const AppShell = () => {
 
         if (!mounted) return;
 
+        const persistedUsers = safeParse<User[]>(savedUsers, EMPTY_USERS);
+        const persistedNotifications = safeParse<Notification[]>(savedNotifications, EMPTY_NOTIFICATIONS);
+        const persistedRides = normalizeRides(safeParse<RidePost[]>(savedRides, EMPTY_RIDES));
+        const persistedHelpPosts = safeParse<HelpPost[]>(savedHelpPosts, EMPTY_HELP_POSTS);
+        const persistedConversations = normalizeConversationsSnapshot(safeParse<Conversation[]>(savedConversations, EMPTY_CONVERSATIONS));
+        const persistedNews = safeParse<NewsArticle[]>(savedNews, EMPTY_NEWS);
+        const persistedGroups = normalizeGroups(safeParse<LegacyGroup[]>(savedGroups, EMPTY_GROUPS));
+        const hasLegacyMockSeed =
+          persistedUsers.some((item) => LEGACY_MOCK_USER_IDS.has(item.id)) ||
+          persistedNotifications.some((item) => LEGACY_MOCK_NOTIFICATION_IDS.has(item.id)) ||
+          persistedRides.some((item) => LEGACY_MOCK_RIDE_IDS.has(item.id)) ||
+          persistedHelpPosts.some((item) => LEGACY_MOCK_HELP_IDS.has(item.id)) ||
+          persistedConversations.some((item) => LEGACY_MOCK_CONVERSATION_IDS.has(item.id)) ||
+          persistedNews.some((item) => LEGACY_MOCK_NEWS_IDS.has(item.id)) ||
+          persistedGroups.some((item) => LEGACY_MOCK_GROUP_IDS.has(item.id));
+
+        if (hasLegacyMockSeed) {
+          void clearPersistedSessionStorage();
+        }
+
         setTheme(safeParse<Theme>(savedTheme, 'dark'));
         setCurrentUser(
           completedForAuthenticatedPhone && effectiveCurrentUser.profileComplete === false
@@ -1816,21 +1844,21 @@ const AppShell = () => {
         if (hasRestorableSession) {
           setIsLoggedIn(true);
         }
-        setUsers(hasRestorableSession ? safeParse<User[]>(savedUsers, MOCK_USERS) : MOCK_USERS);
-        setNotifications(hasRestorableSession ? safeParse<Notification[]>(savedNotifications, MOCK_NOTIFICATIONS) : MOCK_NOTIFICATIONS);
-        setRides(hasRestorableSession ? normalizeRides(safeParse<RidePost[]>(savedRides, MOCK_RIDES)) : MOCK_RIDES);
-        setHelpPosts(hasRestorableSession ? safeParse<HelpPost[]>(savedHelpPosts, MOCK_HELP) : MOCK_HELP);
+        setUsers(hasRestorableSession && !hasLegacyMockSeed ? persistedUsers : EMPTY_USERS);
+        setNotifications(hasRestorableSession && !hasLegacyMockSeed ? persistedNotifications : EMPTY_NOTIFICATIONS);
+        setRides(hasRestorableSession && !hasLegacyMockSeed ? persistedRides : EMPTY_RIDES);
+        setHelpPosts(hasRestorableSession && !hasLegacyMockSeed ? persistedHelpPosts : EMPTY_HELP_POSTS);
         setConversations(
-          hasRestorableSession
-            ? normalizeConversationsSnapshot(safeParse<Conversation[]>(savedConversations, MOCK_CONVERSATIONS))
-            : normalizeConversationsSnapshot(MOCK_CONVERSATIONS)
+          hasRestorableSession && !hasLegacyMockSeed
+            ? persistedConversations
+            : normalizeConversationsSnapshot(EMPTY_CONVERSATIONS)
         );
-        setSquadChatMessagesByRoom(hasRestorableSession ? safeParse<Record<string, ChatMessage[]>>(savedSquadChats, {}) : {});
-        setNewsArticles(safeParse<NewsArticle[]>(savedNews, MOCK_NEWS));
-        setSquads(
-          hasRestorableSession
-            ? normalizeSquads(safeParse<LegacySquad[]>(savedSquads, MOCK_SQUADS))
-            : normalizeSquads(MOCK_SQUADS)
+        setGroupChatMessagesByRoom(hasRestorableSession ? safeParse<Record<string, ChatMessage[]>>(savedGroupChats, {}) : {});
+        setNewsArticles(hasLegacyMockSeed ? EMPTY_NEWS : persistedNews);
+        setGroups(
+          hasRestorableSession && !hasLegacyMockSeed
+            ? persistedGroups
+            : normalizeGroups(EMPTY_GROUPS)
         );
         setLocationMode(hasRestorableSession ? safeParse<LocationMode>(savedLocationMode, 'auto') : 'auto');
 
@@ -1842,11 +1870,11 @@ const AppShell = () => {
           startSync('rides');
           startSync('help');
 
-          const [remoteUsersResult, remoteRidesResult, remoteHelpPostsResult, remoteSquadsResult] = await Promise.allSettled([
+          const [remoteUsersResult, remoteRidesResult, remoteHelpPostsResult, remoteGroupsResult] = await Promise.allSettled([
             fetchUsersFromFirestore(),
             fetchRidesFromFirestore(),
             fetchHelpPostsFromFirestore(),
-            fetchSquadsFromFirestore()
+            fetchGroupsFromFirestore()
           ]);
 
           if (!mounted) return;
@@ -1885,11 +1913,11 @@ const AppShell = () => {
             markSyncFailure('help', remoteHelpPostsResult.reason);
           }
 
-          if (remoteSquadsResult.status === 'fulfilled') {
-            const normalizedRemoteSquads = normalizeSquads(remoteSquadsResult.value);
-            setSquads((prev) =>
-              mergeSquadsPreservingLocalMembership(
-                normalizedRemoteSquads,
+          if (remoteGroupsResult.status === 'fulfilled') {
+            const normalizedRemoteGroups = normalizeGroups(remoteGroupsResult.value);
+            setGroups((prev) =>
+              mergeGroupsPreservingLocalMembership(
+                normalizedRemoteGroups,
                 prev,
                 effectiveCurrentUser.id,
                 effectiveCurrentUser.phoneNumber
@@ -2008,7 +2036,7 @@ const AppShell = () => {
     if (!FIREBASE_ENABLED || !hydrated || !isLoggedIn || !currentUser.id) return;
 
     let disposed = false;
-    let unsubscribeSquads: (() => void) | null = null;
+    let unsubscribeGroups: (() => void) | null = null;
 
     void (async () => {
       const hasAuthSession = await ensureFirebaseAuthSession();
@@ -2017,13 +2045,13 @@ const AppShell = () => {
       }
 
       if (disposed) return;
-      unsubscribeSquads = subscribeSquadsFromFirestore({
-        onChange: (remoteSquads) => {
+      unsubscribeGroups = subscribeGroupsFromFirestore({
+        onChange: (remoteGroups) => {
           if (disposed) return;
-          const normalizedRemoteSquads = normalizeSquads(remoteSquads);
-          setSquads((prev) =>
-            mergeSquadsPreservingLocalMembership(
-              normalizedRemoteSquads,
+          const normalizedRemoteGroups = normalizeGroups(remoteGroups);
+          setGroups((prev) =>
+            mergeGroupsPreservingLocalMembership(
+              normalizedRemoteGroups,
               prev,
               currentUser.id,
               currentUser.phoneNumber
@@ -2031,16 +2059,16 @@ const AppShell = () => {
           );
         },
         onError: () => {
-          // Squads do not currently expose a dedicated sync status channel.
+          // Groups do not currently expose a dedicated sync status channel.
         }
       });
     })();
 
     return () => {
       disposed = true;
-      unsubscribeSquads?.();
+      unsubscribeGroups?.();
     };
-  }, [currentUser.id, ensureFirebaseAuthSession, hydrated, isLoggedIn, setSquads]);
+  }, [currentUser.id, ensureFirebaseAuthSession, hydrated, isLoggedIn, setGroups]);
 
   useDebouncedStorageValue(hydrated, STORAGE_KEYS.theme, theme);
   useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.currentUser, currentUser);
@@ -2049,9 +2077,9 @@ const AppShell = () => {
   useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.rides, rides);
   useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.helpPosts, helpPosts);
   useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.conversations, conversations);
-  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.squadChats, squadChatMessagesByRoom);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.groupChats, groupChatMessagesByRoom);
   useDebouncedStorageValue(hydrated, STORAGE_KEYS.news, newsArticles);
-  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.squads, squads);
+  useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.groups, groups);
   useDebouncedStorageValue(hydrated && isLoggedIn, STORAGE_KEYS.locationMode, locationMode);
 
   useEffect(() => {
@@ -2075,31 +2103,31 @@ const AppShell = () => {
   }, [currentUser.id, currentUser.name, propagateUserNameAcrossState]);
 
   useEffect(() => {
-    const nextSquadNames = new Map(squads.map((squad) => [squad.id, squad.name]));
-    const previousSquadNames = previousSquadNamesRef.current;
-    previousSquadNamesRef.current = nextSquadNames;
+    const nextGroupNames = new Map(groups.map((group) => [group.id, group.name]));
+    const previousGroupNames = previousGroupNamesRef.current;
+    previousGroupNamesRef.current = nextGroupNames;
 
-    if (previousSquadNames.size === 0) return;
+    if (previousGroupNames.size === 0) return;
 
-    const renamedSquads = new Map<string, { from: string; to: string }>();
-    nextSquadNames.forEach((nextName, squadId) => {
-      const previousName = previousSquadNames.get(squadId);
+    const renamedGroups = new Map<string, { from: string; to: string }>();
+    nextGroupNames.forEach((nextName, groupId) => {
+      const previousName = previousGroupNames.get(groupId);
       if (!previousName || previousName === nextName) return;
-      renamedSquads.set(squadId, { from: previousName, to: nextName });
+      renamedGroups.set(groupId, { from: previousName, to: nextName });
     });
 
-    if (renamedSquads.size === 0) return;
+    if (renamedGroups.size === 0) return;
 
     setNotifications((prev) => {
       let changed = false;
       const next = prev.map((notification) => {
         const data = notification.data;
-        const squadId = typeof data?.squadId === 'string' ? data.squadId : '';
-        if (!squadId) return notification;
-        const rename = renamedSquads.get(squadId);
+        const groupId = typeof data?.groupId === 'string' ? data.groupId : '';
+        if (!groupId) return notification;
+        const rename = renamedGroups.get(groupId);
         if (!rename) return notification;
 
-        const nextContent = replaceSquadNameMentions(notification.content, rename.from, rename.to);
+        const nextContent = replaceGroupNameMentions(notification.content, rename.from, rename.to);
         if (nextContent === notification.content) return notification;
 
         changed = true;
@@ -2111,7 +2139,7 @@ const AppShell = () => {
 
       return changed ? next : prev;
     });
-  }, [squads]);
+  }, [groups]);
 
   useEffect(() => {
     if (!hydrated || !isLoggedIn || !FIREBASE_ENABLED) return;
@@ -2212,19 +2240,19 @@ const AppShell = () => {
   }, [currentUser, users]);
   const ridesById = useMemo(() => new Map<string, RidePost>(rides.map((ride) => [ride.id, ride])), [rides]);
   const helpPostsById = useMemo(() => new Map<string, HelpPost>(helpPosts.map((post) => [post.id, post])), [helpPosts]);
-  const squadsById = useMemo(() => new Map<string, Squad>(squads.map((squad) => [squad.id, squad])), [squads]);
-  const canCurrentUserCreateSquadRide = useCallback(
-    (squad: Squad): boolean => {
-      const isMember = squad.creatorId === currentUser.id || squad.members.includes(currentUser.id);
+  const groupsById = useMemo(() => new Map<string, Group>(groups.map((group) => [group.id, group])), [groups]);
+  const canCurrentUserCreateGroupRide = useCallback(
+    (group: Group): boolean => {
+      const isMember = group.creatorId === currentUser.id || group.members.includes(currentUser.id);
       if (!isMember) return false;
-      if (squad.rideCreatePermission !== 'admin') return true;
-      return squad.creatorId === currentUser.id || squad.adminIds.includes(currentUser.id);
+      if (group.rideCreatePermission !== 'admin') return true;
+      return group.creatorId === currentUser.id || group.adminIds.includes(currentUser.id);
     },
     [currentUser.id]
   );
-  const rideComposerSquads = useMemo(
-    () => squads.filter((squad) => canCurrentUserCreateSquadRide(squad)),
-    [canCurrentUserCreateSquadRide, squads]
+  const rideComposerGroups = useMemo(
+    () => groups.filter((group) => canCurrentUserCreateGroupRide(group)),
+    [canCurrentUserCreateGroupRide, groups]
   );
 
   const allUsers = useMemo(() => Array.from(usersById.values()), [usersById]);
@@ -2473,25 +2501,25 @@ const AppShell = () => {
     return buildInferredUserRecord(selectedUserId);
   }, [blockedUserIds, buildInferredUserRecord, resolveCanonicalUser, selectedUserId]);
 
-  const selectedSquad = useMemo(() => {
-    if (!selectedSquadId) return null;
-    return squadsById.get(selectedSquadId) ?? null;
-  }, [selectedSquadId, squadsById]);
-  const editingSquad = useMemo(() => {
-    if (!editingSquadId) return null;
-    return squadsById.get(editingSquadId) ?? null;
-  }, [editingSquadId, squadsById]);
+  const selectedGroup = useMemo(() => {
+    if (!selectedGroupId) return null;
+    return groupsById.get(selectedGroupId) ?? null;
+  }, [selectedGroupId, groupsById]);
+  const editingGroup = useMemo(() => {
+    if (!editingGroupId) return null;
+    return groupsById.get(editingGroupId) ?? null;
+  }, [editingGroupId, groupsById]);
 
-  const activeSquadChat = useMemo(() => {
-    if (!activeSquadChatId) return null;
-    return squadsById.get(activeSquadChatId) ?? null;
-  }, [activeSquadChatId, squadsById]);
+  const activeGroupChat = useMemo(() => {
+    if (!activeGroupChatId) return null;
+    return groupsById.get(activeGroupChatId) ?? null;
+  }, [activeGroupChatId, groupsById]);
 
-  const squadUsersForModal = useMemo(() => {
-    if (!selectedSquad) return allUsers;
+  const groupUsersForModal = useMemo(() => {
+    if (!selectedGroup) return allUsers;
 
     const byId = new Map<string, User>(allUsers.map((user) => [user.id, user]));
-    uniqueStrings([...selectedSquad.members, ...selectedSquad.joinRequests]).forEach((userId) => {
+    uniqueStrings([...selectedGroup.members, ...selectedGroup.joinRequests]).forEach((userId) => {
       const resolvedUser = resolveCanonicalUser(userId);
       if (resolvedUser) {
         byId.set(resolvedUser.id, resolvedUser);
@@ -2505,13 +2533,13 @@ const AppShell = () => {
     });
 
     return Array.from(byId.values());
-  }, [allUsers, buildInferredUserRecord, resolveCanonicalUser, selectedSquad]);
+  }, [allUsers, buildInferredUserRecord, resolveCanonicalUser, selectedGroup]);
 
-  const activeSquadChatMessages = useMemo(() => {
-    if (!activeSquadChat) return [];
-    const roomMessages = squadChatMessagesByRoom[activeSquadChat.id] ?? [];
+  const activeGroupChatMessages = useMemo(() => {
+    if (!activeGroupChat) return [];
+    const roomMessages = groupChatMessagesByRoom[activeGroupChat.id] ?? [];
     return roomMessages.filter((message) => message.senderId === currentUser.id || !blockedUserIds.has(message.senderId));
-  }, [activeSquadChat, squadChatMessagesByRoom, currentUser.id, blockedUserIds]);
+  }, [activeGroupChat, groupChatMessagesByRoom, currentUser.id, blockedUserIds]);
 
   const selectedFriendStatus: FriendStatus = useMemo(() => {
     if (!selectedUserProfile) return 'none';
@@ -2560,11 +2588,11 @@ const AppShell = () => {
   }, [helpPostsById, selectedHelpPost, setIsHelpDetailOpen, setSelectedHelpPost]);
 
   useEffect(() => {
-    if (!activeSquadChatId) return;
-    const squad = squadsById.get(activeSquadChatId);
-    if (squad && squad.members.includes(currentUser.id)) return;
-    setActiveSquadChatId(null);
-  }, [activeSquadChatId, currentUser.id, squadsById]);
+    if (!activeGroupChatId) return;
+    const group = groupsById.get(activeGroupChatId);
+    if (group && group.members.includes(currentUser.id)) return;
+    setActiveGroupChatId(null);
+  }, [activeGroupChatId, currentUser.id, groupsById]);
 
   useEffect(() => {
     if (!FIREBASE_ENABLED || !hydrated || !isLoggedIn || !selectedRide) return;
@@ -2667,17 +2695,17 @@ const AppShell = () => {
   }, [currentUser.id, ensureFirebaseAuthSession, hydrated, isLoggedIn, selectedRide]);
 
   useEffect(() => {
-    if (!FIREBASE_ENABLED || !hydrated || !isLoggedIn || !selectedSquad) return;
+    if (!FIREBASE_ENABLED || !hydrated || !isLoggedIn || !selectedGroup) return;
 
-    const idsToFetch = uniqueStrings([...selectedSquad.members, ...selectedSquad.joinRequests]).filter((userId) => {
+    const idsToFetch = uniqueStrings([...selectedGroup.members, ...selectedGroup.joinRequests]).filter((userId) => {
       if (!userId || userId === currentUser.id) return false;
-      if (attemptedSquadMemberProfileFetchIdsRef.current.has(userId)) return false;
+      if (attemptedGroupMemberProfileFetchIdsRef.current.has(userId)) return false;
       return true;
     });
 
     if (idsToFetch.length === 0) return;
     idsToFetch.forEach((userId) => {
-      attemptedSquadMemberProfileFetchIdsRef.current.add(userId);
+      attemptedGroupMemberProfileFetchIdsRef.current.add(userId);
     });
 
     let disposed = false;
@@ -2730,7 +2758,7 @@ const AppShell = () => {
     return () => {
       disposed = true;
     };
-  }, [currentUser.id, hydrated, isLoggedIn, selectedSquad]);
+  }, [currentUser.id, hydrated, isLoggedIn, selectedGroup]);
 
   useEffect(() => {
     if (!FIREBASE_ENABLED || !activeConversation) return;
@@ -2811,25 +2839,25 @@ const AppShell = () => {
   }, [activeConversation?.id, chatSyncRetryToken, ensureFirebaseAuthSession, markSyncFailure, markSyncSuccess, startSync]);
 
   useEffect(() => {
-    if (!FIREBASE_ENABLED || !activeSquadChatId) return;
-    const squad = squadsById.get(activeSquadChatId);
-    if (!squad || !squad.members.includes(currentUser.id)) return;
-    const squadChatId = activeSquadChatId;
+    if (!FIREBASE_ENABLED || !activeGroupChatId) return;
+    const group = groupsById.get(activeGroupChatId);
+    if (!group || !group.members.includes(currentUser.id)) return;
+    const groupChatId = activeGroupChatId;
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
     let retriedAfterPermissionError = false;
 
     const subscribe = () => {
       if (disposed) return;
-      startSync('squadChat');
+      startSync('groupChat');
       unsubscribe?.();
-      unsubscribe = subscribeSquadChatMessages(
-        squadChatId,
+      unsubscribe = subscribeGroupChatMessages(
+        groupChatId,
         (messages) => {
-          markSyncSuccess('squadChat');
-          setSquadChatMessagesByRoom((prev) => ({
+          markSyncSuccess('groupChat');
+          setGroupChatMessagesByRoom((prev) => ({
             ...prev,
-            [squadChatId]: messages
+            [groupChatId]: messages
           }));
         },
         (error) => {
@@ -2840,14 +2868,14 @@ const AppShell = () => {
               const hasAuthSession = await ensureFirebaseAuthSession();
               if (disposed) return;
               if (!hasAuthSession) {
-                markSyncFailure('squadChat', error);
+                markSyncFailure('groupChat', error);
                 return;
               }
               subscribe();
             })();
             return;
           }
-          markSyncFailure('squadChat', error);
+          markSyncFailure('groupChat', error);
         }
       );
     };
@@ -2856,7 +2884,7 @@ const AppShell = () => {
       const hasAuthSession = await ensureFirebaseAuthSession();
       if (disposed) return;
       if (!hasAuthSession) {
-        markSyncFailure('squadChat', new Error('Squad chat sync requires an authenticated Firebase session. Please log in again.'));
+        markSyncFailure('groupChat', new Error('Group chat sync requires an authenticated Firebase session. Please log in again.'));
         return;
       }
       subscribe();
@@ -2867,13 +2895,13 @@ const AppShell = () => {
       unsubscribe?.();
     };
   }, [
-    activeSquadChatId,
+    activeGroupChatId,
     currentUser.id,
     ensureFirebaseAuthSession,
     markSyncFailure,
     markSyncSuccess,
-    squadChatSyncRetryToken,
-    squadsById,
+    groupChatSyncRetryToken,
+    groupsById,
     startSync
   ]);
 
@@ -3491,24 +3519,24 @@ const AppShell = () => {
 
   useEffect(() => {
     if (!hydrated || !isLoggedIn) {
-      previousSquadsForNotificationRef.current = null;
-      squadNotificationUserRef.current = null;
+      previousGroupsForNotificationRef.current = null;
+      groupNotificationUserRef.current = null;
       return;
     }
 
-    if (squadNotificationUserRef.current !== currentUser.id) {
-      squadNotificationUserRef.current = currentUser.id;
-      previousSquadsForNotificationRef.current = squads;
+    if (groupNotificationUserRef.current !== currentUser.id) {
+      groupNotificationUserRef.current = currentUser.id;
+      previousGroupsForNotificationRef.current = groups;
       return;
     }
 
-    const previousSquads = previousSquadsForNotificationRef.current;
-    if (!previousSquads) {
-      previousSquadsForNotificationRef.current = squads;
+    const previousGroups = previousGroupsForNotificationRef.current;
+    if (!previousGroups) {
+      previousGroupsForNotificationRef.current = groups;
       return;
     }
 
-    const previousById = new Map<string, Squad>(previousSquads.map((squad) => [squad.id, squad]));
+    const previousById = new Map<string, Group>(previousGroups.map((group) => [group.id, group]));
     const resolveSender = (userId: string, fallbackName = 'A rider') => {
       const user = usersById.get(userId);
       return {
@@ -3518,12 +3546,12 @@ const AppShell = () => {
       };
     };
 
-    squads.forEach((squad) => {
-      const previousSquad = previousById.get(squad.id);
-      if (!previousSquad) return;
+    groups.forEach((group) => {
+      const previousGroup = previousById.get(group.id);
+      if (!previousGroup) return;
 
-      if (squad.creatorId === currentUser.id) {
-        const newRequesterIds = squad.joinRequests.filter((id) => id !== currentUser.id && !previousSquad.joinRequests.includes(id));
+      if (group.creatorId === currentUser.id) {
+        const newRequesterIds = group.joinRequests.filter((id) => id !== currentUser.id && !previousGroup.joinRequests.includes(id));
         newRequesterIds.forEach((requesterId) => {
           const requester = resolveSender(requesterId);
           pushAppNotification({
@@ -3531,47 +3559,47 @@ const AppShell = () => {
             senderId: requester.senderId,
             senderName: requester.senderName,
             senderAvatar: requester.senderAvatar,
-            content: `requested to join squad "${squad.name}"`,
+            content: `requested to join group "${group.name}"`,
             data: {
-              target: 'squad',
-              squadId: squad.id,
+              target: 'group',
+              groupId: group.id,
               requesterId
             },
             sendPush: true,
             pushTitle: 'Request received',
-            pushBody: `${requester.senderName} requested to join squad "${squad.name}".`
+            pushBody: `${requester.senderName} requested to join group "${group.name}".`
           });
         });
       }
 
-      const hadPendingRequest = previousSquad.joinRequests.includes(currentUser.id);
-      const hasPendingRequest = squad.joinRequests.includes(currentUser.id);
+      const hadPendingRequest = previousGroup.joinRequests.includes(currentUser.id);
+      const hasPendingRequest = group.joinRequests.includes(currentUser.id);
       if (hadPendingRequest && !hasPendingRequest) {
-        const creator = resolveSender(squad.creatorId, 'Squad owner');
-        const wasApproved = squad.members.includes(currentUser.id);
+        const creator = resolveSender(group.creatorId, 'Group owner');
+        const wasApproved = group.members.includes(currentUser.id);
         pushAppNotification({
           type: wasApproved ? 'ride_joined' : 'ride_request',
           senderId: creator.senderId,
           senderName: creator.senderName,
           senderAvatar: creator.senderAvatar,
-          content: `${wasApproved ? 'approved' : 'rejected'} your join request for squad "${squad.name}"`,
+          content: `${wasApproved ? 'approved' : 'rejected'} your join request for group "${group.name}"`,
           data: {
-            target: 'squad',
-            squadId: squad.id
+            target: 'group',
+            groupId: group.id
           },
           sendPush: true,
           pushTitle: wasApproved ? 'Request approved' : 'Request rejected',
           pushBody: wasApproved
-            ? `Your request to join "${squad.name}" was approved.`
-            : `Your request to join "${squad.name}" was rejected.`
+            ? `Your request to join "${group.name}" was approved.`
+            : `Your request to join "${group.name}" was rejected.`
         });
       }
 
       const shouldNotifyMemberChanges =
-        squad.creatorId === currentUser.id || previousSquad.members.includes(currentUser.id) || squad.members.includes(currentUser.id);
+        group.creatorId === currentUser.id || previousGroup.members.includes(currentUser.id) || group.members.includes(currentUser.id);
       if (!shouldNotifyMemberChanges) return;
 
-      const newMemberIds = squad.members.filter((memberId) => memberId !== currentUser.id && !previousSquad.members.includes(memberId));
+      const newMemberIds = group.members.filter((memberId) => memberId !== currentUser.id && !previousGroup.members.includes(memberId));
       newMemberIds.forEach((memberId) => {
         const member = resolveSender(memberId);
         pushAppNotification({
@@ -3579,21 +3607,21 @@ const AppShell = () => {
           senderId: member.senderId,
           senderName: member.senderName,
           senderAvatar: member.senderAvatar,
-          content: `joined squad "${squad.name}"`,
+          content: `joined group "${group.name}"`,
           data: {
-            target: 'squad',
-            squadId: squad.id,
+            target: 'group',
+            groupId: group.id,
             userId: memberId
           },
           sendPush: true,
           pushTitle: 'New member joined',
-          pushBody: `${member.senderName} joined squad "${squad.name}".`
+          pushBody: `${member.senderName} joined group "${group.name}".`
         });
       });
     });
 
-    previousSquadsForNotificationRef.current = squads;
-  }, [currentUser.id, hydrated, isLoggedIn, pushAppNotification, squads, usersById]);
+    previousGroupsForNotificationRef.current = groups;
+  }, [currentUser.id, hydrated, isLoggedIn, pushAppNotification, groups, usersById]);
 
   const persistModerationReport = async (report: ModerationReport) => {
     try {
@@ -3903,7 +3931,7 @@ const AppShell = () => {
       const rideId = typeof payload.rideId === 'string' ? payload.rideId.trim() : '';
       const helpPostId = typeof payload.helpPostId === 'string' ? payload.helpPostId.trim() : '';
       const conversationId = typeof payload.conversationId === 'string' ? payload.conversationId.trim() : '';
-      const squadId = typeof payload.squadId === 'string' ? payload.squadId.trim() : '';
+      const groupId = typeof payload.groupId === 'string' ? payload.groupId.trim() : '';
       const senderName = typeof payload.senderName === 'string' ? payload.senderName.trim() : '';
       const senderAvatar = typeof payload.senderAvatar === 'string' ? payload.senderAvatar.trim() : '';
       const userIdCandidates = [payload.userId, payload.senderId, payload.requesterId]
@@ -3961,18 +3989,18 @@ const AppShell = () => {
         return;
       }
 
-      if (squadId) {
-        if (!squadsById.has(squadId)) {
+      if (groupId) {
+        if (!groupsById.has(groupId)) {
           setIsNotificationsOpen(true);
           return;
         }
-        setActiveTab('squad');
-        if (target === 'squad_chat' || type === 'squad_chat_message') {
-          setSelectedSquadId(null);
-          setActiveSquadChatId(squadId);
+        setActiveTab('group');
+        if (target === 'group_chat' || type === 'group_chat_message') {
+          setSelectedGroupId(null);
+          setActiveGroupChatId(groupId);
           return;
         }
-        setSelectedSquadId(squadId);
+        setSelectedGroupId(groupId);
         return;
       }
 
@@ -3984,16 +4012,16 @@ const AppShell = () => {
       openOrCreateConversation,
       pushSystemNotification,
       ridesById,
-      setActiveSquadChatId,
+      setActiveGroupChatId,
       setFeedFilter,
       setIsHelpDetailOpen,
       setIsNotificationsOpen,
       setIsRideDetailOpen,
       setSelectedHelpPost,
       setSelectedRideId,
-      setSelectedSquadId,
+      setSelectedGroupId,
       setActiveTab,
-      squadsById
+      groupsById
     ]
   );
 
@@ -4629,11 +4657,11 @@ const AppShell = () => {
     }
 
     const needsJoinApproval = ride.joinPermission !== 'anyone';
-    const sharesSquadWithCreator = squads.some(
-      (squad) => squad.members.includes(currentUser.id) && squad.members.includes(ride.creatorId)
+    const sharesGroupWithCreator = groups.some(
+      (group) => group.members.includes(currentUser.id) && group.members.includes(ride.creatorId)
     );
 
-    if (needsJoinApproval && !sharesSquadWithCreator) {
+    if (needsJoinApproval && !sharesGroupWithCreator) {
       setPendingRideJoinRequest(null);
       Alert.alert(
         'Request to join ride?',
@@ -4675,7 +4703,7 @@ const AppShell = () => {
     setPendingRideJoinRequest,
     setSelectedRideId,
     showActionGuardrail,
-    squads,
+    groups,
     syncState.rides.isSyncing
   ]);
 
@@ -4936,30 +4964,30 @@ const AppShell = () => {
   const handleSubmitRideComposer = (
     data: Omit<RidePost, 'id' | 'creatorId' | 'creatorName' | 'creatorAvatar' | 'currentParticipants' | 'requests' | 'createdAt' | 'city'>
   ) => {
-    const selectedSquadId = typeof data.squadId === 'string' ? data.squadId.trim() : '';
+    const selectedGroupId = typeof data.groupId === 'string' ? data.groupId.trim() : '';
     let normalizedData = data;
-    if (selectedSquadId) {
-      const selectedSquad = squadsById.get(selectedSquadId);
-      if (!selectedSquad) {
-        showActionGuardrail('Selected squad was not found. Please choose again.');
+    if (selectedGroupId) {
+      const selectedGroup = groupsById.get(selectedGroupId);
+      if (!selectedGroup) {
+        showActionGuardrail('Selected group was not found. Please choose again.');
         return;
       }
-      if (!canCurrentUserCreateSquadRide(selectedSquad)) {
-        showActionGuardrail('Only squad admins can host rides for this squad.');
+      if (!canCurrentUserCreateGroupRide(selectedGroup)) {
+        showActionGuardrail('Only group admins can host rides for this group.');
         return;
       }
       normalizedData = {
         ...data,
-        squadId: selectedSquad.id,
-        squadName: selectedSquad.name,
-        squadAvatar: selectedSquad.avatar
+        groupId: selectedGroup.id,
+        groupName: selectedGroup.name,
+        groupAvatar: selectedGroup.avatar
       };
     } else {
       normalizedData = {
         ...data,
-        squadId: undefined,
-        squadName: undefined,
-        squadAvatar: undefined
+        groupId: undefined,
+        groupName: undefined,
+        groupAvatar: undefined
       };
     }
 
@@ -5083,18 +5111,18 @@ const AppShell = () => {
     }
   };
 
-  const syncSquadToCloud = useCallback(
-    async (squad: Squad): Promise<void> => {
+  const syncGroupToCloud = useCallback(
+    async (group: Group): Promise<void> => {
       if (!FIREBASE_ENABLED) return;
 
       const hasAuthSession = await ensureFirebaseAuthSession(currentUser.phoneNumber);
       if (!hasAuthSession) {
-        throw new Error('Squad sync requires an authenticated Firebase session.');
+        throw new Error('Group sync requires an authenticated Firebase session.');
       }
 
       const authUid = getFirebaseServices()?.auth.currentUser?.uid;
       if (!authUid) {
-        throw new Error('No Firebase auth user is available for squad sync.');
+        throw new Error('No Firebase auth user is available for group sync.');
       }
 
       const authAliases = getCurrentUserIdAliases(authUid, currentUser.phoneNumber);
@@ -5107,63 +5135,63 @@ const AppShell = () => {
             .filter((id) => id.trim().length > 0)
         );
 
-      const normalizedSquadForCloud: Squad = {
-        ...squad,
-        creatorId: authAliases.has(squad.creatorId) ? authUid : squad.creatorId,
-        members: uniqueStrings([...replaceAliasWithAuthUid(squad.members), authUid]),
-        adminIds: replaceAliasWithAuthUid(squad.adminIds).filter((id) => id !== authUid),
-        joinRequests: replaceAliasWithAuthUid(squad.joinRequests).filter((id) => id !== authUid)
+      const normalizedGroupForCloud: Group = {
+        ...group,
+        creatorId: authAliases.has(group.creatorId) ? authUid : group.creatorId,
+        members: uniqueStrings([...replaceAliasWithAuthUid(group.members), authUid]),
+        adminIds: replaceAliasWithAuthUid(group.adminIds).filter((id) => id !== authUid),
+        joinRequests: replaceAliasWithAuthUid(group.joinRequests).filter((id) => id !== authUid)
       };
 
-      await upsertSquadInFirestore(normalizedSquadForCloud);
+      await upsertGroupInFirestore(normalizedGroupForCloud);
     },
     [currentUser.phoneNumber, ensureFirebaseAuthSession]
   );
 
-  const syncSquadToCloudInBackground = useCallback(
-    (squad: Squad) => {
+  const syncGroupToCloudInBackground = useCallback(
+    (group: Group) => {
       if (!FIREBASE_ENABLED) return;
-      void syncSquadToCloud(squad).catch((error) => {
-        console.warn('[squad-sync] Failed to upsert squad to cloud:', error);
+      void syncGroupToCloud(group).catch((error) => {
+        console.warn('[group-sync] Failed to upsert group to cloud:', error);
       });
     },
-    [syncSquadToCloud]
+    [syncGroupToCloud]
   );
 
   useEffect(() => {
     if (!FIREBASE_ENABLED || !hydrated || !isLoggedIn || !currentUser.id) return;
 
     const userAliases = getCurrentUserIdAliases(currentUser.id, currentUser.phoneNumber);
-    squads.forEach((squad) => {
-      if (attemptedSquadCloudSyncIdsRef.current.has(squad.id)) return;
-      // Avoid trying to backfill static/mock squads like "sq-1", "sq-2", etc.
-      if (!isRuntimeCreatedSquadId(squad.id)) return;
-      if (!userAliases.has(squad.creatorId)) return;
-      attemptedSquadCloudSyncIdsRef.current.add(squad.id);
-      void syncSquadToCloud(squad).catch((error) => {
+    groups.forEach((group) => {
+      if (attemptedGroupCloudSyncIdsRef.current.has(group.id)) return;
+      // Avoid trying to backfill static/mock groups like "sq-1", "sq-2", etc.
+      if (!isRuntimeCreatedGroupId(group.id)) return;
+      if (!userAliases.has(group.creatorId)) return;
+      attemptedGroupCloudSyncIdsRef.current.add(group.id);
+      void syncGroupToCloud(group).catch((error) => {
         const errorCode = error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
-        console.warn('[squad-sync] Background backfill failed:', {
+        console.warn('[group-sync] Background backfill failed:', {
           error,
           code: errorCode,
-          squadId: squad.id,
-          squadCreatorId: squad.creatorId,
+          groupId: group.id,
+          groupCreatorId: group.creatorId,
           currentUserId: currentUser.id,
           authUid: getFirebaseServices()?.auth.currentUser?.uid ?? null
         });
       });
     });
-  }, [currentUser.id, currentUser.phoneNumber, hydrated, isLoggedIn, squads, syncSquadToCloud]);
+  }, [currentUser.id, currentUser.phoneNumber, hydrated, isLoggedIn, groups, syncGroupToCloud]);
 
-  const handleCreateSquad = async (data: {
+  const handleCreateGroup = async (data: {
     name: string;
     description: string;
     rideStyles: string[];
-    joinPermission: SquadJoinPermission;
-    rideCreatePermission: SquadRideCreatePermission;
+    joinPermission: GroupJoinPermission;
+    rideCreatePermission: GroupRideCreatePermission;
     avatarUri?: string;
   }) => {
-    if (isCreatingSquad) return;
-    setIsCreatingSquad(true);
+    if (isCreatingGroup) return;
+    setIsCreatingGroup(true);
     try {
       let creatorId = currentUser.id;
       if (FIREBASE_ENABLED) {
@@ -5175,39 +5203,39 @@ const AppShell = () => {
       }
 
       const rideStyles = uniqueStrings(data.rideStyles.map((style) => style.trim()).filter(Boolean));
-      const squadId = `sq-${Date.now()}`;
-      let squadAvatar = `https://api.dicebear.com/7.x/identicon/png?seed=${encodeURIComponent(data.name)}`;
-      let squadAvatarAsset: SignedImageAsset | undefined;
+      const groupId = `sq-${Date.now()}`;
+      let groupAvatar = `https://api.dicebear.com/7.x/identicon/png?seed=${encodeURIComponent(data.name)}`;
+      let groupAvatarAsset: SignedImageAsset | undefined;
 
       if (data.avatarUri) {
         try {
           const uploadedAvatar = FIREBASE_ENABLED
             ? await withTimeout(
-              uploadSquadPhoto(squadId, creatorId, data.avatarUri),
+              uploadGroupPhoto(groupId, creatorId, data.avatarUri),
               20_000,
-              'Squad photo upload timed out.'
+              'Group photo upload timed out.'
             )
             : {
               objectKey: data.avatarUri,
               signedUrl: data.avatarUri,
               expiresAt: '2099-12-31T23:59:59.000Z'
             };
-          squadAvatar = uploadedAvatar.signedUrl;
-          squadAvatarAsset = uploadedAvatar;
+          groupAvatar = uploadedAvatar.signedUrl;
+          groupAvatarAsset = uploadedAvatar;
         } catch {
-          Alert.alert('Upload failed', 'Squad photo upload failed. Using a default squad avatar.');
+          Alert.alert('Upload failed', 'Group photo upload failed. Using a default group avatar.');
         }
       }
 
-      const newSquad: Squad = {
-        id: squadId,
+      const newGroup: Group = {
+        id: groupId,
         name: data.name,
         description: data.description,
         creatorId,
         members: [creatorId],
         adminIds: [],
-        avatar: squadAvatar,
-        avatarAsset: squadAvatarAsset,
+        avatar: groupAvatar,
+        avatarAsset: groupAvatarAsset,
         city: currentUser.city,
         rideStyles: rideStyles.length > 0 ? rideStyles : ['Touring'],
         joinPermission: data.joinPermission,
@@ -5215,43 +5243,43 @@ const AppShell = () => {
         joinRequests: [],
         createdAt: new Date().toISOString()
       };
-      setSquads((prev) => {
-        const next = [newSquad, ...prev];
-        persistSquadsSnapshot(next);
+      setGroups((prev) => {
+        const next = [newGroup, ...prev];
+        persistGroupsSnapshot(next);
         return next;
       });
       if (FIREBASE_ENABLED) {
         try {
-          await syncSquadToCloud(newSquad);
+          await syncGroupToCloud(newGroup);
         } catch {
-          Alert.alert('Saved on this device only', 'Squad was created locally but could not sync to cloud yet. Please check login/connectivity and try again.');
+          Alert.alert('Saved on this device only', 'Group was created locally but could not sync to cloud yet. Please check login/connectivity and try again.');
         }
       }
-      setIsCreateSquadModalOpen(false);
+      setIsCreateGroupModalOpen(false);
     } finally {
-      setIsCreatingSquad(false);
+      setIsCreatingGroup(false);
     }
   };
 
-  const handleUpdateSquad = async (data: {
+  const handleUpdateGroup = async (data: {
     name: string;
     description: string;
     rideStyles: string[];
-    joinPermission: SquadJoinPermission;
-    rideCreatePermission: SquadRideCreatePermission;
+    joinPermission: GroupJoinPermission;
+    rideCreatePermission: GroupRideCreatePermission;
     avatarUri?: string;
   }) => {
-    if (!editingSquadId) return;
-    if (isCreatingSquad) return;
+    if (!editingGroupId) return;
+    if (isCreatingGroup) return;
 
-    const existing = squadsById.get(editingSquadId);
+    const existing = groupsById.get(editingGroupId);
     if (!existing) {
-      setEditingSquadId(null);
-      setIsCreateSquadModalOpen(false);
+      setEditingGroupId(null);
+      setIsCreateGroupModalOpen(false);
       return;
     }
 
-    setIsCreatingSquad(true);
+    setIsCreatingGroup(true);
     try {
       const rideStyles = uniqueStrings(data.rideStyles.map((style) => style.trim()).filter(Boolean));
       let avatar = existing.avatar;
@@ -5260,9 +5288,9 @@ const AppShell = () => {
         try {
           const uploadedAvatar = FIREBASE_ENABLED
             ? await withTimeout(
-              uploadSquadPhoto(existing.id, existing.creatorId, data.avatarUri),
+              uploadGroupPhoto(existing.id, existing.creatorId, data.avatarUri),
               20_000,
-              'Squad photo upload timed out.'
+              'Group photo upload timed out.'
             )
             : {
               objectKey: data.avatarUri,
@@ -5272,7 +5300,7 @@ const AppShell = () => {
           avatar = uploadedAvatar.signedUrl;
           avatarAsset = uploadedAvatar;
         } catch {
-          Alert.alert('Upload failed', 'Could not update squad photo. Keeping previous photo.');
+          Alert.alert('Upload failed', 'Could not update group photo. Keeping previous photo.');
         }
       }
 
@@ -5280,7 +5308,7 @@ const AppShell = () => {
         ? uniqueStrings([...existing.members, ...existing.joinRequests])
         : existing.members;
 
-      const updatedSquad: Squad = {
+      const updatedGroup: Group = {
         ...existing,
         name: data.name,
         description: data.description,
@@ -5293,27 +5321,27 @@ const AppShell = () => {
         joinRequests: data.joinPermission === 'anyone' ? [] : existing.joinRequests
       };
 
-      setSquads((prev) => {
-        const next = prev.map((item) => (item.id === updatedSquad.id ? updatedSquad : item));
-        persistSquadsSnapshot(next);
+      setGroups((prev) => {
+        const next = prev.map((item) => (item.id === updatedGroup.id ? updatedGroup : item));
+        persistGroupsSnapshot(next);
         return next;
       });
       if (FIREBASE_ENABLED) {
-        syncSquadToCloudInBackground(updatedSquad);
+        syncGroupToCloudInBackground(updatedGroup);
       }
-      setEditingSquadId(null);
-      setIsCreateSquadModalOpen(false);
+      setEditingGroupId(null);
+      setIsCreateGroupModalOpen(false);
     } finally {
-      setIsCreatingSquad(false);
+      setIsCreatingGroup(false);
     }
   };
 
-  const handleJoinSquad = (squadId: string) => {
+  const handleJoinGroup = (groupId: string) => {
     let shouldShowInviteOnlyAlert = false;
-    setSquads((prev) => {
-      let updatedSquad: Squad | null = null;
+    setGroups((prev) => {
+      let updatedGroup: Group | null = null;
       const next = prev.map((s) => {
-        if (s.id !== squadId) return s;
+        if (s.id !== groupId) return s;
         if (s.members.includes(currentUser.id)) return s;
         if (s.joinPermission === 'invite_only') {
           shouldShowInviteOnlyAlert = true;
@@ -5321,235 +5349,235 @@ const AppShell = () => {
         }
         if (s.joinPermission === 'request_to_join') {
           if (s.joinRequests.includes(currentUser.id)) return s;
-          updatedSquad = { ...s, joinRequests: [...s.joinRequests, currentUser.id] };
-          return updatedSquad;
+          updatedGroup = { ...s, joinRequests: [...s.joinRequests, currentUser.id] };
+          return updatedGroup;
         }
 
-        updatedSquad = {
+        updatedGroup = {
           ...s,
           members: [...s.members, currentUser.id],
           joinRequests: s.joinRequests.filter((id) => id !== currentUser.id)
         };
-        return updatedSquad;
+        return updatedGroup;
       });
 
-      persistSquadsSnapshot(next);
+      persistGroupsSnapshot(next);
 
-      if (updatedSquad && FIREBASE_ENABLED) {
-        syncSquadToCloudInBackground(updatedSquad);
+      if (updatedGroup && FIREBASE_ENABLED) {
+        syncGroupToCloudInBackground(updatedGroup);
       }
 
       return next;
     });
 
     if (shouldShowInviteOnlyAlert) {
-      showActionGuardrail('This squad is invite only.');
+      showActionGuardrail('This group is invite only.');
     }
   };
 
-  const handleLeaveSquad = (squadId: string) => {
-    setSquads((prev) => {
-      let updatedSquad: Squad | null = null;
+  const handleLeaveGroup = (groupId: string) => {
+    setGroups((prev) => {
+      let updatedGroup: Group | null = null;
       const next = prev.map((s) => {
-        if (s.id !== squadId) return s;
+        if (s.id !== groupId) return s;
         if (s.creatorId === currentUser.id) return s;
         const isMember = s.members.includes(currentUser.id);
         const hasPendingRequest = s.joinRequests.includes(currentUser.id);
         if (!isMember && !hasPendingRequest) return s;
-        updatedSquad = {
+        updatedGroup = {
           ...s,
           members: s.members.filter((id) => id !== currentUser.id),
           adminIds: s.adminIds.filter((id) => id !== currentUser.id),
           joinRequests: s.joinRequests.filter((id) => id !== currentUser.id)
         };
-        return updatedSquad;
+        return updatedGroup;
       });
 
-      persistSquadsSnapshot(next);
+      persistGroupsSnapshot(next);
 
-      if (updatedSquad && FIREBASE_ENABLED) {
-        syncSquadToCloudInBackground(updatedSquad);
+      if (updatedGroup && FIREBASE_ENABLED) {
+        syncGroupToCloudInBackground(updatedGroup);
       }
 
       return next;
     });
   };
 
-  const handleAcceptSquadJoinRequest = (squadId: string, userId: string) => {
-    setSquads((prev) => {
-      let updatedSquad: Squad | null = null;
+  const handleAcceptGroupJoinRequest = (groupId: string, userId: string) => {
+    setGroups((prev) => {
+      let updatedGroup: Group | null = null;
       const next = prev.map((s) => {
-        if (s.id !== squadId) return s;
+        if (s.id !== groupId) return s;
         const canApprove = s.creatorId === currentUser.id || s.adminIds.includes(currentUser.id);
         if (!canApprove) return s;
         if (!s.joinRequests.includes(userId)) return s;
 
-        updatedSquad = {
+        updatedGroup = {
           ...s,
           members: s.members.includes(userId) ? s.members : [...s.members, userId],
           joinRequests: s.joinRequests.filter((id) => id !== userId)
         };
-        return updatedSquad;
+        return updatedGroup;
       });
 
-      persistSquadsSnapshot(next);
+      persistGroupsSnapshot(next);
 
-      if (updatedSquad && FIREBASE_ENABLED) {
-        syncSquadToCloudInBackground(updatedSquad);
+      if (updatedGroup && FIREBASE_ENABLED) {
+        syncGroupToCloudInBackground(updatedGroup);
       }
 
       return next;
     });
   };
 
-  const handleRejectSquadJoinRequest = (squadId: string, userId: string) => {
-    setSquads((prev) => {
-      let updatedSquad: Squad | null = null;
+  const handleRejectGroupJoinRequest = (groupId: string, userId: string) => {
+    setGroups((prev) => {
+      let updatedGroup: Group | null = null;
       const next = prev.map((s) => {
-        if (s.id !== squadId) return s;
+        if (s.id !== groupId) return s;
         const canApprove = s.creatorId === currentUser.id || s.adminIds.includes(currentUser.id);
         if (!canApprove) return s;
         if (!s.joinRequests.includes(userId)) return s;
 
-        updatedSquad = {
+        updatedGroup = {
           ...s,
           joinRequests: s.joinRequests.filter((id) => id !== userId)
         };
-        return updatedSquad;
+        return updatedGroup;
       });
 
-      persistSquadsSnapshot(next);
+      persistGroupsSnapshot(next);
 
-      if (updatedSquad && FIREBASE_ENABLED) {
-        syncSquadToCloudInBackground(updatedSquad);
+      if (updatedGroup && FIREBASE_ENABLED) {
+        syncGroupToCloudInBackground(updatedGroup);
       }
 
       return next;
     });
   };
 
-  const handlePromoteSquadAdmin = (squadId: string, userId: string) => {
-    setSquads((prev) => {
-      let updatedSquad: Squad | null = null;
+  const handlePromoteGroupAdmin = (groupId: string, userId: string) => {
+    setGroups((prev) => {
+      let updatedGroup: Group | null = null;
       const next = prev.map((s) => {
-        if (s.id !== squadId) return s;
+        if (s.id !== groupId) return s;
         if (s.creatorId !== currentUser.id) return s;
         if (userId === s.creatorId) return s;
         if (!s.members.includes(userId)) return s;
         if (s.adminIds.includes(userId)) return s;
 
-        updatedSquad = {
+        updatedGroup = {
           ...s,
           adminIds: [...s.adminIds, userId]
         };
-        return updatedSquad;
+        return updatedGroup;
       });
 
-      persistSquadsSnapshot(next);
+      persistGroupsSnapshot(next);
 
-      if (updatedSquad && FIREBASE_ENABLED) {
-        syncSquadToCloudInBackground(updatedSquad);
+      if (updatedGroup && FIREBASE_ENABLED) {
+        syncGroupToCloudInBackground(updatedGroup);
       }
 
       return next;
     });
   };
 
-  const handleDemoteSquadAdmin = (squadId: string, userId: string) => {
-    setSquads((prev) => {
-      let updatedSquad: Squad | null = null;
+  const handleDemoteGroupAdmin = (groupId: string, userId: string) => {
+    setGroups((prev) => {
+      let updatedGroup: Group | null = null;
       const next = prev.map((s) => {
-        if (s.id !== squadId) return s;
+        if (s.id !== groupId) return s;
         if (s.creatorId !== currentUser.id) return s;
         if (!s.adminIds.includes(userId)) return s;
 
-        updatedSquad = {
+        updatedGroup = {
           ...s,
           adminIds: s.adminIds.filter((id) => id !== userId)
         };
-        return updatedSquad;
+        return updatedGroup;
       });
 
-      persistSquadsSnapshot(next);
+      persistGroupsSnapshot(next);
 
-      if (updatedSquad && FIREBASE_ENABLED) {
-        syncSquadToCloudInBackground(updatedSquad);
+      if (updatedGroup && FIREBASE_ENABLED) {
+        syncGroupToCloudInBackground(updatedGroup);
       }
 
       return next;
     });
   };
 
-  const handleOpenSquadDetail = (squadId: string) => {
-    setSelectedSquadId(squadId);
+  const handleOpenGroupDetail = (groupId: string) => {
+    setSelectedGroupId(groupId);
   };
 
-  const handleDeleteSquad = (squadId: string) => {
-    const squad = squadsById.get(squadId);
-    if (!squad || squad.creatorId !== currentUser.id) return;
+  const handleDeleteGroup = (groupId: string) => {
+    const group = groupsById.get(groupId);
+    if (!group || group.creatorId !== currentUser.id) return;
 
-    Alert.alert('Delete Squad', 'This will permanently delete the squad for all members.', [
+    Alert.alert('Delete Group', 'This will permanently delete the group for all members.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
         onPress: () => {
-          setSquads((prev) => {
-            const next = prev.filter((item) => item.id !== squadId);
-            persistSquadsSnapshot(next);
+          setGroups((prev) => {
+            const next = prev.filter((item) => item.id !== groupId);
+            persistGroupsSnapshot(next);
             return next;
           });
           if (FIREBASE_ENABLED) {
-            void deleteSquadInFirestore(squadId);
+            void deleteGroupInFirestore(groupId);
           }
-          if (selectedSquadId === squadId) {
-            setSelectedSquadId(null);
+          if (selectedGroupId === groupId) {
+            setSelectedGroupId(null);
           }
-          if (activeSquadChatId === squadId) {
-            setActiveSquadChatId(null);
+          if (activeGroupChatId === groupId) {
+            setActiveGroupChatId(null);
           }
         }
       }
     ]);
   };
 
-  const handleRemoveSquadMember = (squadId: string, memberId: string) => {
+  const handleRemoveGroupMember = (groupId: string, memberId: string) => {
     if (!memberId || memberId === currentUser.id) return;
 
-    setSquads((prev) => {
-      let updatedSquad: Squad | null = null;
-      const next = prev.map((squad) => {
-        if (squad.id !== squadId) return squad;
-        if (squad.creatorId !== currentUser.id) return squad;
-        if (memberId === squad.creatorId) return squad;
-        if (!squad.members.includes(memberId)) return squad;
+    setGroups((prev) => {
+      let updatedGroup: Group | null = null;
+      const next = prev.map((group) => {
+        if (group.id !== groupId) return group;
+        if (group.creatorId !== currentUser.id) return group;
+        if (memberId === group.creatorId) return group;
+        if (!group.members.includes(memberId)) return group;
 
-        updatedSquad = {
-          ...squad,
-          members: squad.members.filter((id) => id !== memberId),
-          adminIds: squad.adminIds.filter((id) => id !== memberId),
-          joinRequests: squad.joinRequests.filter((id) => id !== memberId)
+        updatedGroup = {
+          ...group,
+          members: group.members.filter((id) => id !== memberId),
+          adminIds: group.adminIds.filter((id) => id !== memberId),
+          joinRequests: group.joinRequests.filter((id) => id !== memberId)
         };
-        return updatedSquad;
+        return updatedGroup;
       });
 
-      persistSquadsSnapshot(next);
-      if (updatedSquad && FIREBASE_ENABLED) {
-        syncSquadToCloudInBackground(updatedSquad);
+      persistGroupsSnapshot(next);
+      if (updatedGroup && FIREBASE_ENABLED) {
+        syncGroupToCloudInBackground(updatedGroup);
       }
       return next;
     });
   };
 
-  const handleOpenSquadChat = (squadId: string) => {
-    const squad = squadsById.get(squadId);
-    if (!squad || !squad.members.includes(currentUser.id)) {
-      showActionGuardrail('Join this squad to access the squad room.');
+  const handleOpenGroupChat = (groupId: string) => {
+    const group = groupsById.get(groupId);
+    if (!group || !group.members.includes(currentUser.id)) {
+      showActionGuardrail('Join this group to access the group room.');
       return;
     }
 
-    setSelectedSquadId(null);
-    setActiveSquadChatId(squadId);
+    setSelectedGroupId(null);
+    setActiveGroupChatId(groupId);
   };
 
   const handleResolveHelp = (id: string) => {
@@ -5745,7 +5773,7 @@ const AppShell = () => {
 
     if (currentUser.friends.includes(userId)) {
       setSelectedUserId(null);
-      showActionGuardrail(`${targetUser.name} is already in your riding squad.`);
+      showActionGuardrail(`${targetUser.name} is already in your riding group.`);
       return;
     }
 
@@ -5874,20 +5902,20 @@ const AppShell = () => {
     })();
   };
 
-  const handleRetrySquadChatSync = () => {
+  const handleRetryGroupChatSync = () => {
     void (async () => {
       const hasSession = hasFirebaseAuthSession || await ensureFirebaseAuthSession();
       if (!hasSession) {
-        markSyncFailure('squadChat', new Error('Squad chat sync requires an authenticated Firebase session.'));
+        markSyncFailure('groupChat', new Error('Group chat sync requires an authenticated Firebase session.'));
         return;
       }
 
-      if (!activeSquadChatId) {
-        markSyncFailure('squadChat', new Error('Open a squad chat room to retry sync.'));
+      if (!activeGroupChatId) {
+        markSyncFailure('groupChat', new Error('Open a group chat room to retry sync.'));
         return;
       }
 
-      setSquadChatSyncRetryToken((prev) => prev + 1);
+      setGroupChatSyncRetryToken((prev) => prev + 1);
     })();
   };
 
@@ -5997,9 +6025,9 @@ const AppShell = () => {
     openOrCreateConversation(conversation.participantId, { conversationId: conversation.id });
   };
 
-  const handleSendSquadMessage = (squadId: string, text: string) => {
-    const targetSquad = squadsById.get(squadId);
-    if (!targetSquad || !targetSquad.members.includes(currentUser.id)) return;
+  const handleSendGroupMessage = (groupId: string, text: string) => {
+    const targetGroup = groupsById.get(groupId);
+    if (!targetGroup || !targetGroup.members.includes(currentUser.id)) return;
 
     const normalizedText = text.trim();
     if (!normalizedText) return;
@@ -6010,7 +6038,7 @@ const AppShell = () => {
     }
 
     const now = Date.now();
-    const previousTimestamps = squadChatTimestampsByRoomRef.current.get(squadId) ?? [];
+    const previousTimestamps = groupChatTimestampsByRoomRef.current.get(groupId) ?? [];
     const recentMessages = pruneTimestamps(previousTimestamps, now, CHAT_BURST_WINDOW_MS);
     const lastSentAt = recentMessages[recentMessages.length - 1];
     if (lastSentAt && now - lastSentAt < CHAT_MIN_INTERVAL_MS) {
@@ -6025,14 +6053,14 @@ const AppShell = () => {
       return;
     }
 
-    const lastMessageForRoom = squadChatLastMessageByRoomRef.current.get(squadId);
+    const lastMessageForRoom = groupChatLastMessageByRoomRef.current.get(groupId);
     if (lastMessageForRoom && lastMessageForRoom.text === normalizedText && now - lastMessageForRoom.sentAt < CHAT_DUPLICATE_COOLDOWN_MS) {
       showActionGuardrail('Duplicate message blocked. Please send a different message.');
       return;
     }
 
-    squadChatTimestampsByRoomRef.current.set(squadId, [...recentMessages, now]);
-    squadChatLastMessageByRoomRef.current.set(squadId, { sentAt: now, text: normalizedText });
+    groupChatTimestampsByRoomRef.current.set(groupId, [...recentMessages, now]);
+    groupChatLastMessageByRoomRef.current.set(groupId, { sentAt: now, text: normalizedText });
 
     const newMsg: ChatMessage = {
       id: `sqm-${Date.now()}`,
@@ -6042,37 +6070,37 @@ const AppShell = () => {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
-    setSquadChatMessagesByRoom((prev) => ({
+    setGroupChatMessagesByRoom((prev) => ({
       ...prev,
-      [squadId]: [...(prev[squadId] ?? []), newMsg]
+      [groupId]: [...(prev[groupId] ?? []), newMsg]
     }));
 
     if (FIREBASE_ENABLED) {
-      startSync('squadChat');
+      startSync('groupChat');
       void (async () => {
         const hasAuthSession = await ensureFirebaseAuthSession();
         if (!hasAuthSession) {
-          throw new Error('Squad chat sync requires an authenticated Firebase session. Please log in again.');
+          throw new Error('Group chat sync requires an authenticated Firebase session. Please log in again.');
         }
-        await sendSquadChatMessageToRealtime(squadId, newMsg);
-        markSyncSuccess('squadChat');
-        void triggerSquadChatMessageNotification({
-          squadId,
-          squadName: targetSquad.name,
+        await sendGroupChatMessageToRealtime(groupId, newMsg);
+        markSyncSuccess('groupChat');
+        void triggerGroupChatMessageNotification({
+          groupId,
+          groupName: targetGroup.name,
           senderId: currentUser.id,
           senderName: currentUser.name,
           text: normalizedText,
-          memberIds: targetSquad.members
+          memberIds: targetGroup.members
         }).catch((error) => {
-          console.warn('[notifications] Failed to dispatch squad chat push event:', error);
+          console.warn('[notifications] Failed to dispatch group chat push event:', error);
         });
       })().catch((error) => {
-        markSyncFailure('squadChat', error);
+        markSyncFailure('groupChat', error);
       });
     }
 
-    void logAnalyticsEvent('send_squad_message', {
-      squad_id: squadId,
+    void logAnalyticsEvent('send_group_message', {
+      group_id: groupId,
       message_length: normalizedText.length
     });
   };
@@ -6229,8 +6257,8 @@ const AppShell = () => {
                   ? 'MY RIDES'
                   : activeTab === 'chats'
                     ? 'MESSAGES'
-                    : activeTab === 'squad'
-                      ? 'SQUADS'
+                    : activeTab === 'group'
+                      ? 'GROUPS'
                       : 'MY PROFILE'}
             </Text>
           )}
@@ -6290,35 +6318,35 @@ const AppShell = () => {
             <ChatsTab
               theme={theme}
               conversations={visibleConversations}
-              squads={squads}
+              groups={groups}
               currentUser={currentUser}
               users={visibleUsers}
               syncError={syncState.chat.error}
               isSyncing={syncState.chat.isSyncing}
               onRetrySync={handleRetryChatSync}
               onOpenChatRoom={handleOpenChatRoom}
-              onOpenSquadChat={(squad) => handleOpenSquadChat(squad.id)}
+              onOpenGroupChat={(group) => handleOpenGroupChat(group.id)}
               onViewProfile={handleViewProfile}
               onStartConversation={openOrCreateConversation}
             />
           )}
 
-          {activeTab === 'squad' && (
-            <SquadTab
+          {activeTab === 'group' && (
+            <GroupTab
               theme={theme}
-              squads={squads}
+              groups={groups}
               rides={visibleRides}
               currentUser={currentUser}
               users={visibleUsers}
-              searchQuery={squadSearchQuery}
-              onSearchChange={setSquadSearchQuery}
-              onCreateSquad={() => {
-                setEditingSquadId(null);
-                setIsCreateSquadModalOpen(true);
+              searchQuery={groupSearchQuery}
+              onSearchChange={setGroupSearchQuery}
+              onCreateGroup={() => {
+                setEditingGroupId(null);
+                setIsCreateGroupModalOpen(true);
               }}
-              onOpenSquadDetail={handleOpenSquadDetail}
-              onJoinSquad={handleJoinSquad}
-              onLeaveSquad={handleLeaveSquad}
+              onOpenGroupDetail={handleOpenGroupDetail}
+              onJoinGroup={handleJoinGroup}
+              onLeaveGroup={handleLeaveGroup}
             />
           )}
 
@@ -6380,7 +6408,7 @@ const AppShell = () => {
             onPress={() => setActiveTab('my-rides')}
           />
           <TabButton theme={theme} icon="message-outline" label="Chats" active={activeTab === 'chats'} onPress={() => setActiveTab('chats')} />
-          <TabButton theme={theme} icon="account-group-outline" label="Squad" active={activeTab === 'squad'} onPress={() => setActiveTab('squad')} />
+          <TabButton theme={theme} icon="account-group-outline" label="Groups" active={activeTab === 'group'} onPress={() => setActiveTab('group')} />
         </View>
       </View>
 
@@ -6427,17 +6455,17 @@ const AppShell = () => {
         theme={theme}
       />
 
-      <SquadChatRoomScreen
-        visible={Boolean(activeSquadChat)}
-        squad={activeSquadChat}
-        messages={activeSquadChatMessages}
+      <GroupChatRoomScreen
+        visible={Boolean(activeGroupChat)}
+        group={activeGroupChat}
+        messages={activeGroupChatMessages}
         currentUserId={currentUser.id}
         users={allUsers}
-        syncError={syncState.squadChat.error}
-        isSyncing={syncState.squadChat.isSyncing}
-        onRetrySync={handleRetrySquadChatSync}
-        onClose={() => setActiveSquadChatId(null)}
-        onSendMessage={handleSendSquadMessage}
+        syncError={syncState.groupChat.error}
+        isSyncing={syncState.groupChat.isSyncing}
+        onRetrySync={handleRetryGroupChatSync}
+        onClose={() => setActiveGroupChatId(null)}
+        onSendMessage={handleSendGroupMessage}
         theme={theme}
       />
 
@@ -6452,7 +6480,7 @@ const AppShell = () => {
         visible={isCreateRideModalOpen || Boolean(editingRide)}
         theme={theme}
         currentCity={currentUser.city}
-        userSquads={rideComposerSquads}
+        userGroups={rideComposerGroups}
         initialRide={editingRide}
         onClose={handleCloseRideComposer}
         onSubmit={handleSubmitRideComposer}
@@ -6530,40 +6558,40 @@ const AppShell = () => {
         isBlocked={Boolean(selectedUserProfile && blockedUserIds.has(selectedUserProfile.id))}
       />
 
-      <CreateSquadModal
-        visible={isCreateSquadModalOpen}
+      <CreateGroupModal
+        visible={isCreateGroupModalOpen}
         theme={theme}
-        mode={editingSquad ? 'edit' : 'create'}
-        initialData={editingSquad}
+        mode={editingGroup ? 'edit' : 'create'}
+        initialData={editingGroup}
         onClose={() => {
-          setIsCreateSquadModalOpen(false);
-          setEditingSquadId(null);
+          setIsCreateGroupModalOpen(false);
+          setEditingGroupId(null);
         }}
-        onSubmit={editingSquad ? handleUpdateSquad : handleCreateSquad}
-        isSubmitting={isCreatingSquad}
+        onSubmit={editingGroup ? handleUpdateGroup : handleCreateGroup}
+        isSubmitting={isCreatingGroup}
       />
 
-      <SquadDetailModal
-        visible={Boolean(selectedSquad)}
-        squad={selectedSquad}
+      <GroupDetailModal
+        visible={Boolean(selectedGroup)}
+        group={selectedGroup}
         rides={visibleRides}
         currentUser={currentUser}
-        users={squadUsersForModal}
+        users={groupUsersForModal}
         theme={theme}
-        onClose={() => setSelectedSquadId(null)}
-        onOpenSquadChat={handleOpenSquadChat}
-        onJoinSquad={handleJoinSquad}
-        onLeaveSquad={handleLeaveSquad}
-        onAcceptJoinRequest={handleAcceptSquadJoinRequest}
-        onRejectJoinRequest={handleRejectSquadJoinRequest}
-        onPromoteAdmin={handlePromoteSquadAdmin}
-        onDemoteAdmin={handleDemoteSquadAdmin}
-        onEditSquad={(squadId) => {
-          setEditingSquadId(squadId);
-          setIsCreateSquadModalOpen(true);
+        onClose={() => setSelectedGroupId(null)}
+        onOpenGroupChat={handleOpenGroupChat}
+        onJoinGroup={handleJoinGroup}
+        onLeaveGroup={handleLeaveGroup}
+        onAcceptJoinRequest={handleAcceptGroupJoinRequest}
+        onRejectJoinRequest={handleRejectGroupJoinRequest}
+        onPromoteAdmin={handlePromoteGroupAdmin}
+        onDemoteAdmin={handleDemoteGroupAdmin}
+        onEditGroup={(groupId) => {
+          setEditingGroupId(groupId);
+          setIsCreateGroupModalOpen(true);
         }}
-        onDeleteSquad={handleDeleteSquad}
-        onRemoveMember={handleRemoveSquadMember}
+        onDeleteGroup={handleDeleteGroup}
+        onRemoveMember={handleRemoveGroupMember}
         onViewProfile={handleViewProfile}
       />
 

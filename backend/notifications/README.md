@@ -34,6 +34,6 @@ npm start
 - `POST /notifications/ride-cancelled`
 - `POST /notifications/ride-request-owner`
 - `POST /notifications/chat-message`
-- `POST /notifications/squad-chat-message`
+- `POST /notifications/group-chat-message`
 
 The service reads recipient device tokens from Firestore `users/{uid}.firebasePushTokens`.

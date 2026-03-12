@@ -6,9 +6,9 @@ export type RidePaymentMethod = 'UPI_LINK';
 export type RidePaymentState = 'pending' | 'paid';
 export type RideInviteAudience = 'groups' | 'riders';
 export type RideJoinPermission = 'anyone' | 'request_to_join';
-export type SquadJoinPermission = 'anyone' | 'request_to_join' | 'invite_only';
-export type SquadRideCreatePermission = 'anyone' | 'admin';
-export type SquadRole = 'owner' | 'admin' | 'member';
+export type GroupJoinPermission = 'anyone' | 'request_to_join' | 'invite_only';
+export type GroupRideCreatePermission = 'anyone' | 'admin';
+export type GroupRole = 'owner' | 'admin' | 'member';
 
 export interface SignedImageAsset {
   objectKey: string;
@@ -147,9 +147,9 @@ export interface RidePost {
   isPrivate?: boolean;
   joinPermission?: RideJoinPermission;
   destinationPhotoRef?: string;
-  squadId?: string;
-  squadName?: string;
-  squadAvatar?: string;
+  groupId?: string;
+  groupName?: string;
+  groupAvatar?: string;
 }
 
 export interface HelpPost {
@@ -226,7 +226,7 @@ export interface Conversation {
   messages: ChatMessage[];
 }
 
-export interface Squad {
+export interface Group {
   id: string;
   name: string;
   description: string;
@@ -237,8 +237,8 @@ export interface Squad {
   avatarAsset?: SignedImageAsset;
   city: string;
   rideStyles: string[];
-  joinPermission: SquadJoinPermission;
-  rideCreatePermission: SquadRideCreatePermission;
+  joinPermission: GroupJoinPermission;
+  rideCreatePermission: GroupRideCreatePermission;
   joinRequests: string[];
   createdAt: string;
 }

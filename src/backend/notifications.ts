@@ -107,24 +107,24 @@ export const triggerDirectChatMessageNotification = async ({
   });
 };
 
-export const triggerSquadChatMessageNotification = async ({
-  squadId,
-  squadName,
+export const triggerGroupChatMessageNotification = async ({
+  groupId,
+  groupName,
   senderId,
   senderName,
   text,
   memberIds
 }: {
-  squadId: string;
-  squadName: string;
+  groupId: string;
+  groupName: string;
   senderId: string;
   senderName: string;
   text: string;
   memberIds: string[];
 }): Promise<void> => {
-  await postNotificationEvent('/notifications/squad-chat-message', {
-    squadId,
-    squadName,
+  await postNotificationEvent('/notifications/group-chat-message', {
+    groupId,
+    groupName,
     senderId,
     senderName,
     text,

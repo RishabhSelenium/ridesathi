@@ -1267,12 +1267,12 @@ export const styles = StyleSheet.create({
     letterSpacing: 4,
     fontWeight: '900'
   },
-  squadSearchRow: {
+  groupSearchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8
   },
-  squadSearchInput: {
+  groupSearchInput: {
     flex: 1,
     borderWidth: 1,
     borderRadius: 14,
@@ -1281,38 +1281,38 @@ export const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600'
   },
-  squadCard: {
+  groupCard: {
     borderWidth: 1,
     borderRadius: 18,
     padding: 14,
     gap: 10
   },
-  squadCardHeader: {
+  groupCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12
   },
-  squadAvatar: {
+  groupAvatar: {
     width: 50,
     height: 50,
     borderRadius: 14
   },
-  squadName: {
+  groupName: {
     fontSize: 16,
     fontWeight: '800'
   },
-  squadMemberAvatars: {
+  groupMemberAvatars: {
     flexDirection: 'row',
     marginLeft: 4
   },
-  squadMemberAvatar: {
+  groupMemberAvatar: {
     width: 28,
     height: 28,
     borderRadius: 14,
     borderWidth: 2,
     marginLeft: -8
   },
-  squadActionButton: {
+  groupActionButton: {
     borderWidth: 1,
     borderRadius: 12,
     minHeight: 38,
@@ -1322,32 +1322,32 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 6
   },
-  squadActionButtonText: {
+  groupActionButtonText: {
     fontSize: 11,
     fontWeight: '800',
     textTransform: 'uppercase'
   },
-  squadFooterRow: {
+  groupFooterRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8
   },
-  squadFooterMeta: {
+  groupFooterMeta: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     flex: 1,
     minWidth: 0
   },
-  squadRideStyleTag: {
+  groupRideStyleTag: {
     flexShrink: 1,
     minWidth: 0
   },
-  squadJoinModeTag: {
+  groupJoinModeTag: {
     flexShrink: 0
   },
-  squadFooterAction: {
+  groupFooterAction: {
     flexShrink: 0
   },
   headerProfileButton: {

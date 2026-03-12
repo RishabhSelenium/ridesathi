@@ -52,7 +52,7 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow ThrottleUp to access your photos so you can upload profile, squad, and bike images."
+          "photosPermission": "Allow ThrottleUp to access your photos so you can upload profile, group, and bike images."
         }
       ],
       [

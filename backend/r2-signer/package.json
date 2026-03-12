@@ -1,5 +1,5 @@
 {
-  "name": "ridesathi-r2-signer",
+  "name": "throttleup-r2-signer",
   "private": true,
   "version": "1.0.0",
   "main": "server.js",

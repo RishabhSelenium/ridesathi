@@ -2,16 +2,9 @@ import React, { createContext, useContext, useState } from 'react';
 
 import { LocationMode, PermissionStatus, Tab, Theme } from '../app/ui';
 import {
-  MOCK_CONVERSATIONS,
   MOCK_CURRENT_USER,
-  MOCK_HELP,
-  MOCK_NEWS,
-  MOCK_NOTIFICATIONS,
-  MOCK_RIDES,
-  MOCK_SQUADS,
-  MOCK_USERS
 } from '../constants';
-import { Conversation, HelpPost, NewsArticle, Notification, RidePost, Squad, User } from '../types';
+import { Conversation, HelpPost, NewsArticle, Notification, RidePost, Group, User } from '../types';
 
 type FeedFilter = 'rides' | 'help';
 
@@ -74,14 +67,14 @@ type AppStateContextValue = {
   setActiveConversation: React.Dispatch<React.SetStateAction<Conversation | null>>;
   selectedUserId: string | null;
   setSelectedUserId: React.Dispatch<React.SetStateAction<string | null>>;
-  squads: Squad[];
-  setSquads: React.Dispatch<React.SetStateAction<Squad[]>>;
-  isCreateSquadModalOpen: boolean;
-  setIsCreateSquadModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  selectedSquadId: string | null;
-  setSelectedSquadId: React.Dispatch<React.SetStateAction<string | null>>;
-  squadSearchQuery: string;
-  setSquadSearchQuery: React.Dispatch<React.SetStateAction<string>>;
+  groups: Group[];
+  setGroups: React.Dispatch<React.SetStateAction<Group[]>>;
+  isCreateGroupModalOpen: boolean;
+  setIsCreateGroupModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  selectedGroupId: string | null;
+  setSelectedGroupId: React.Dispatch<React.SetStateAction<string | null>>;
+  groupSearchQuery: string;
+  setGroupSearchQuery: React.Dispatch<React.SetStateAction<string>>;
 };
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
@@ -94,12 +87,12 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
   const [feedFilter, setFeedFilter] = useState<FeedFilter>('rides');
 
   const [currentUser, setCurrentUser] = useState<User>(MOCK_CURRENT_USER);
-  const [users, setUsers] = useState<User[]>(MOCK_USERS);
-  const [notifications, setNotifications] = useState<Notification[]>(MOCK_NOTIFICATIONS);
-  const [rides, setRides] = useState<RidePost[]>(MOCK_RIDES);
-  const [helpPosts, setHelpPosts] = useState<HelpPost[]>(MOCK_HELP);
-  const [conversations, setConversations] = useState<Conversation[]>(MOCK_CONVERSATIONS);
-  const [newsArticles, setNewsArticles] = useState<NewsArticle[]>(MOCK_NEWS);
+  const [users, setUsers] = useState<User[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [rides, setRides] = useState<RidePost[]>([]);
+  const [helpPosts, setHelpPosts] = useState<HelpPost[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [newsArticles, setNewsArticles] = useState<NewsArticle[]>([]);
   const [locationMode, setLocationMode] = useState<LocationMode>('auto');
   const [locationPermissionStatus, setLocationPermissionStatus] = useState<PermissionStatus>('undetermined');
   const [notificationPermissionStatus, setNotificationPermissionStatus] = useState<PermissionStatus>('undetermined');
@@ -119,10 +112,10 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
   const [selectedHelpPost, setSelectedHelpPost] = useState<HelpPost | null>(null);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-  const [squads, setSquads] = useState<Squad[]>(MOCK_SQUADS);
-  const [isCreateSquadModalOpen, setIsCreateSquadModalOpen] = useState(false);
-  const [selectedSquadId, setSelectedSquadId] = useState<string | null>(null);
-  const [squadSearchQuery, setSquadSearchQuery] = useState('');
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [groupSearchQuery, setGroupSearchQuery] = useState('');
 
   return (
     <AppStateContext.Provider
@@ -185,14 +178,14 @@ export const AppStateProvider = ({ children }: { children: React.ReactNode }) =>
         setActiveConversation,
         selectedUserId,
         setSelectedUserId,
-        squads,
-        setSquads,
-        isCreateSquadModalOpen,
-        setIsCreateSquadModalOpen,
-        selectedSquadId,
-        setSelectedSquadId,
-        squadSearchQuery,
-        setSquadSearchQuery
+        groups,
+        setGroups,
+        isCreateGroupModalOpen,
+        setIsCreateGroupModalOpen,
+        selectedGroupId,
+        setSelectedGroupId,
+        groupSearchQuery,
+        setGroupSearchQuery
       }}
     >
       {children}

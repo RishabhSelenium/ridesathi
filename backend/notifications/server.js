@@ -250,7 +250,7 @@ const deliverPushToUsers = async ({ userDocs, title, body, data, soundName }) =>
       data: toNotificationData(data),
       android: {
         priority: 'high',
-        notification: soundName ? { sound: soundName, channelId: 'ridesathi.notifications' } : { channelId: 'ridesathi.notifications' }
+        notification: soundName ? { sound: soundName, channelId: 'throttleup.notifications' } : { channelId: 'throttleup.notifications' }
       },
       apns: soundName
         ? {
@@ -521,18 +521,18 @@ app.post('/notifications/chat-message', ensureAuthorized, async (req, res) => {
   }
 });
 
-app.post('/notifications/squad-chat-message', ensureAuthorized, async (req, res) => {
+app.post('/notifications/group-chat-message', ensureAuthorized, async (req, res) => {
   try {
     const payload = req.body ?? {};
-    const squadId = asString(payload.squadId);
-    const squadName = asString(payload.squadName, 'Squad');
+    const groupId = asString(payload.groupId);
+    const groupName = asString(payload.groupName, 'Group');
     const senderId = asString(payload.senderId);
     const senderName = asString(payload.senderName, 'New message');
     const text = asString(payload.text);
     const memberIds = uniqueStrings(asStringArray(payload.memberIds)).filter((memberId) => memberId !== senderId);
 
-    if (!squadId || !senderId || !text || memberIds.length === 0) {
-      res.status(400).json({ ok: false, error: 'squadId, senderId, text, and memberIds are required.' });
+    if (!groupId || !senderId || !text || memberIds.length === 0) {
+      res.status(400).json({ ok: false, error: 'groupId, senderId, text, and memberIds are required.' });
       return;
     }
 
@@ -544,12 +544,12 @@ app.post('/notifications/squad-chat-message', ensureAuthorized, async (req, res)
 
     const delivery = await deliverPushToUsers({
       userDocs: recipients,
-      title: `${senderName} in ${truncate(squadName, 40)}`,
+      title: `${senderName} in ${truncate(groupName, 40)}`,
       body: truncate(text, 120),
       data: {
-        type: 'squad_chat_message',
-        target: 'squad_chat',
-        squadId,
+        type: 'group_chat_message',
+        target: 'group_chat',
+        groupId,
         senderId
       },
       soundName: 'msg_notification'
@@ -561,8 +561,8 @@ app.post('/notifications/squad-chat-message', ensureAuthorized, async (req, res)
       ...delivery
     });
   } catch (error) {
-    console.error('[notify][squad-chat-message] failed:', error);
-    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Squad chat notification failed.' });
+    console.error('[notify][group-chat-message] failed:', error);
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Group chat notification failed.' });
   }
 });
 

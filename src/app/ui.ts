@@ -1,5 +1,5 @@
 export type AppState = 'splash' | 'login' | 'main';
-export type Tab = 'feed' | 'news' | 'my-rides' | 'chats' | 'squad' | 'profile';
+export type Tab = 'feed' | 'news' | 'my-rides' | 'chats' | 'group' | 'profile';
 export type Theme = 'dark' | 'light';
 export type FriendStatus = 'self' | 'friend' | 'requested' | 'none';
 export type LocationMode = 'auto' | 'manual';

@@ -5,7 +5,7 @@ from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.utils import simpleSplit
 from reportlab.pdfgen import canvas
 
-OUTPUT_PATH = Path('output/pdf/ridesathi-app-summary.pdf')
+OUTPUT_PATH = Path('output/pdf/throttleup-app-summary.pdf')
 
 
 def wrapped_lines(text: str, font: str, size: int, max_width: float):
@@ -60,7 +60,7 @@ def generate_pdf(output_path: Path):
     y = top_y
 
     c.setFont('Helvetica-Bold', 17)
-    c.drawString(margin_x, y, 'RideSathiReact App Summary')
+    c.drawString(margin_x, y, 'ThrottleUpReact App Summary')
     y -= 16
 
     c.setFont('Helvetica', 8)
@@ -75,8 +75,8 @@ def generate_pdf(output_path: Path):
 
     y = draw_section_heading(c, 'What it is', margin_x, y)
     what_it_is = (
-        'RideSathiReact is an Expo React Native app (package: throttleup-react) migrated from a web prototype to a mobile-first rider community app. '
-        'It combines ride coordination, help posts, chat, squads, and bike news with local AsyncStorage plus Firebase sync.'
+        'ThrottleUpReact is an Expo React Native app (package: throttleup-react) migrated from a web prototype to a mobile-first rider community app. '
+        'It combines ride coordination, help posts, chat, groups, and bike news with local AsyncStorage plus Firebase sync.'
     )
     y = draw_wrapped(c, what_it_is, margin_x, y, 'Helvetica', 9, content_width, 11)
     y -= 6
@@ -93,8 +93,8 @@ def generate_pdf(output_path: Path):
         'Splash and login flow with phone-based auth paths and beta OTP mode.',
         'Feed for ride posts and help posts, with create and detail flows.',
         'My Rides management with participation requests and ride visibility controls.',
-        'One-to-one chats and squad chats backed by Firebase Realtime Database.',
-        'Squads, friend requests, notifications, and profile edit/completion flows.',
+        'One-to-one chats and group chats backed by Firebase Realtime Database.',
+        'Groups, friend requests, notifications, and profile edit/completion flows.',
         'Live bike news tab from Google News RSS, ranked and refreshed on interval.',
         'Live ride tracking support: participant check-in, location updates, and SOS signal state.'
     ]
@@ -103,10 +103,10 @@ def generate_pdf(output_path: Path):
     y = draw_section_heading(c, 'How it works (repo evidence)', margin_x, y)
     arch_bullets = [
         'UI layer: App.tsx orchestrates navigation and app logic; tabs in src/screens/tabs.tsx; modals/components in src/components/.',
-        'State layer: src/state/app-state-context.tsx keeps session, theme, feed data, chat data, squads, and modal states in a shared React context.',
-        'Local data layer: AsyncStorage keys (ridesathi.*) cache theme and app datasets for hydration and offline fallback behavior.',
+        'State layer: src/state/app-state-context.tsx keeps session, theme, feed data, chat data, groups, and modal states in a shared React context.',
+        'Local data layer: AsyncStorage keys (throttleup.*) cache theme and app datasets for hydration and offline fallback behavior.',
         'Firebase services: src/firebase/client.ts initializes Auth, Firestore, Realtime DB, Storage, and Functions from EXPO_PUBLIC_* env config.',
-        'Service modules: Firestore for users/rides/help/squads and moderation reports; Realtime DB for chats and rideTracking; Storage for photo upload; Functions for ride notifications.',
+        'Service modules: Firestore for users/rides/help/groups and moderation reports; Realtime DB for chats and rideTracking; Storage for photo upload; Functions for ride notifications.',
         'Primary flow: hydrate cached state -> subscribe auth/realtime channels -> fetch Firestore and news -> persist mutations back to Firebase and local cache.',
         'Separate non-Firebase backend service: Not found in repo (README states Firebase is the backend).'
     ]
